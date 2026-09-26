@@ -8,7 +8,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_hooks/flutter_hooks.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 
-import '../../shared/theme/theme.dart';
+import '../theme/theme.dart';
 import 'message_action_backdrop_state.dart';
 
 /// Shared channel/thread motion for an explicit return-to-latest action.

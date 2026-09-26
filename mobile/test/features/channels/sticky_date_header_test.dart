@@ -1,4 +1,4 @@
-import 'package:buzz/features/channels/message_action_backdrop_state.dart';
+import 'package:buzz/shared/widgets/message_action_backdrop_state.dart';
 import 'package:buzz/features/channels/sticky_date_header.dart';
 import 'package:buzz/shared/theme/theme.dart';
 import 'package:flutter/foundation.dart';

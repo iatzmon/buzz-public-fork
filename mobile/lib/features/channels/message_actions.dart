@@ -29,7 +29,7 @@ import '../../shared/reminders/remind_me_later_sheet.dart';
 import '../../shared/reminders/reminder_service.dart';
 import 'channel_management_provider.dart';
 import 'emoji_picker.dart';
-import 'message_action_backdrop_state.dart';
+import '../../shared/widgets/message_action_backdrop_state.dart';
 import 'message_actions/native_message_action_selection.dart';
 import 'reaction_row.dart';
 import 'recent_emoji_provider.dart';

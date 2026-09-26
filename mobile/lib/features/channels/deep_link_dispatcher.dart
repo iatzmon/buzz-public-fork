@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 
+import '../../shared/widgets/adaptive_workspace.dart';
 import '../../shared/deeplink/deep_link.dart';
 import '../../shared/deeplink/pending_deep_link_provider.dart';
 import '../invites/invite_join_provider.dart';
@@ -10,6 +11,7 @@ import '../invites/invite_join_sheet.dart';
 import 'channel.dart';
 import 'channel_detail_page.dart';
 import 'channels_provider.dart';
+import 'notification_destination.dart';
 
 /// Routes pending `buzz://message` deep links into the channel view.
 ///
@@ -142,17 +144,22 @@ class _DeepLinkDispatcherState extends ConsumerState<DeepLinkDispatcher> {
   }
 
   void _pushChannel(Channel channel, BuzzDeepLink link) {
-    Navigator.of(context).push(
+    AdaptiveWorkspace.open(
+      context,
       MaterialPageRoute<void>(
         builder: (_) =>
             widget.destinationBuilder?.call(channel, link) ??
-            ChannelDetailPage(
-              channel: channel,
-              initialMessageId: link is MessageDeepLink ? link.messageId : null,
-              initialThreadRootId: link is MessageDeepLink
-                  ? link.threadRootId
-                  : null,
-            ),
+            (link is MessageDeepLink && link.communityId != null
+                ? NotificationDestination(channel: channel, link: link)
+                : ChannelDetailPage(
+                    channel: channel,
+                    initialMessageId: link is MessageDeepLink
+                        ? link.messageId
+                        : null,
+                    initialThreadRootId: link is MessageDeepLink
+                        ? link.threadRootId
+                        : null,
+                  )),
       ),
     );
   }

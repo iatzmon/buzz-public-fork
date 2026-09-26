@@ -16,6 +16,7 @@ import '../../shared/community/community_storage_test.dart'
 import 'package:buzz/shared/push/push_bootstrap.dart';
 import 'package:buzz/shared/relay/relay.dart';
 import 'package:buzz/shared/theme/theme_provider.dart';
+import 'package:buzz/shared/widgets/adaptive_workspace.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -279,7 +280,14 @@ void main() {
 
       expect(find.bySemanticsLabel('Checking age eligibility'), findsNothing);
       expect(find.byType(HomePage), findsOneWidget);
-      expect(find.byType(Navigator), findsOneWidget);
+      expect(find.byType(AdaptiveWorkspace), findsOneWidget);
+      expect(
+        find.descendant(
+          of: find.byType(AdaptiveWorkspace),
+          matching: find.byType(Navigator),
+        ),
+        findsOneWidget,
+      );
       expect(relaySession.builds, 1);
       expect(requests, ageGatingEnabled ? 1 : 0);
       await tester.pump();

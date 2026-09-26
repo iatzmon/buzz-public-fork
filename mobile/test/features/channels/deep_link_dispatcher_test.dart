@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:buzz/features/channels/channel.dart';
+import 'package:buzz/shared/widgets/adaptive_workspace.dart';
 import 'package:buzz/features/channels/channels_provider.dart';
 import 'package:buzz/features/channels/deep_link_dispatcher.dart';
 import 'package:buzz/features/invites/invite_join_provider.dart';
@@ -82,6 +83,57 @@ void main() {
     );
     expect(destination.channel.id, 'channel-1');
     expect(destination.link, same(next));
+  });
+
+  testWidgets('deep link opens in adaptive pane and survives folding', (
+    tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(900, 800);
+    addTearDown(tester.view.reset);
+    const link = MessageDeepLink(
+      channelId: 'channel-1',
+      messageId: 'message-2',
+      threadRootId: 'message-1',
+    );
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          pendingDeepLinkProvider.overrideWith(
+            () => _FakePendingDeepLinkNotifier(link),
+          ),
+          channelsProvider.overrideWith(
+            () => _FakeChannelsNotifier(Future.value([_channel])),
+          ),
+        ],
+        child: MaterialApp(
+          home: AdaptiveWorkspace(
+            child: DeepLinkDispatcher(
+              destinationBuilder: (channel, link) =>
+                  _CapturedDestination(channel: channel, link: link),
+              child: const Scaffold(body: SizedBox()),
+            ),
+          ),
+        ),
+      ),
+    );
+
+    await tester.pumpAndSettle();
+
+    final destination = tester.widget<_CapturedDestination>(
+      find.byType(_CapturedDestination),
+    );
+    final messageLink = destination.link as MessageDeepLink;
+    expect(destination.channel.id, 'channel-1');
+    expect(messageLink.messageId, 'message-2');
+    expect(messageLink.threadRootId, 'message-1');
+    expect(find.byKey(const ValueKey('workspace-list')), findsOneWidget);
+    final element = tester.element(find.byType(_CapturedDestination));
+    tester.view.physicalSize = const Size(390, 844);
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('workspace-list')), findsNothing);
+    expect(tester.element(find.byType(_CapturedDestination)), same(element));
   });
 
   testWidgets('dispatches a link that is already ready on mount', (

@@ -121,6 +121,7 @@ late SharedPreferences _testPrefs;
 Widget _buildThreadPage({
   required ForumThreadResponse threadResponse,
   String postEventId = 'post1',
+  String? initialMessageId,
   String? currentPubkey = 'self',
   bool isMember = true,
   bool isArchived = false,
@@ -154,6 +155,7 @@ Widget _buildThreadPage({
           child: ForumThreadPage(
             channelId: _channelId,
             postEventId: postEventId,
+            initialMessageId: initialMessageId,
             currentPubkey: currentPubkey,
             isMember: isMember,
             isArchived: isArchived,
@@ -581,6 +583,42 @@ void main() {
   });
 
   group('ForumThreadPage', () {
+    testWidgets(
+      'notification scrolls to and highlights a distant forum reply',
+      (tester) async {
+        final replies = List.generate(
+          50,
+          (i) => ThreadReply(
+            eventId: 'reply-$i',
+            pubkey: 'alice',
+            content: 'Forum reply $i',
+            kind: 45003,
+            createdAt: 1000 + i,
+            channelId: _channelId,
+            tags: const [],
+            depth: 1,
+          ),
+        );
+        await tester.pumpWidget(
+          _buildThreadPage(
+            initialMessageId: 'reply-40',
+            threadResponse: ForumThreadResponse(
+              post: _makePost(),
+              replies: replies,
+              totalReplies: 50,
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+        final target = find.byKey(const ValueKey('forum-message-reply-40'));
+        expect(target.hitTestable(), findsOneWidget);
+        expect(tester.widget<ColoredBox>(target).color.a, closeTo(0.12, .001));
+        await tester.pump(const Duration(seconds: 3));
+        expect(tester.widget<ColoredBox>(target).color, Colors.transparent);
+        await tester.pumpWidget(const SizedBox());
+      },
+    );
+
     AvatarImage avatarIn(WidgetTester tester, Key key) =>
         tester.widget<AvatarImage>(
           find.descendant(

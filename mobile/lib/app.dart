@@ -39,6 +39,7 @@ import 'shared/relay/relay.dart';
 import 'shared/read_state/read_state_provider.dart';
 import 'shared/theme/theme.dart';
 import 'shared/widgets/buzz_loading_indicator.dart';
+import 'shared/widgets/adaptive_workspace.dart';
 
 const _starterChannelNamespace = '3ce33bea-8f09-5f1b-9c85-8a7d2659e6b0';
 
@@ -411,10 +412,13 @@ class App extends HookConsumerWidget {
         loading: () => const _SplashScreen(),
         error: (_, _) => const PairingPage(),
         data: (state) => switch (state.status) {
-          AuthStatus.authenticated => DeepLinkDispatcher(
-            child: HomePage(
-              settingsPageBuilder: _buildSettingsPage,
-              hasUnreadInbox: hasUnreadInbox,
+          AuthStatus.authenticated => AdaptiveWorkspace(
+            key: ValueKey(state.community?.id),
+            child: DeepLinkDispatcher(
+              child: HomePage(
+                settingsPageBuilder: _buildSettingsPage,
+                hasUnreadInbox: hasUnreadInbox,
+              ),
             ),
           ),
           _ => const DeepLinkDispatcher(

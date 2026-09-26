@@ -5,10 +5,12 @@ import 'package:flutter/services.dart';
 import 'package:flutter_hooks/flutter_hooks.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
+import 'package:scrollable_positioned_list/scrollable_positioned_list.dart';
 
 import '../../shared/mentions/agent_identity_provider.dart';
 import '../../shared/theme/theme.dart';
 import '../../shared/widgets/avatar_image.dart';
+import '../../shared/widgets/bee_refresh_indicator.dart';
 import '../../shared/widgets/buzz_loading_indicator.dart';
 import '../../shared/widgets/frosted_app_bar.dart';
 import '../../shared/widgets/frosted_scaffold.dart';
@@ -29,6 +31,8 @@ class ForumThreadPage extends HookConsumerWidget {
   final String? currentPubkey;
   final bool isMember;
   final bool isArchived;
+  final String? initialMessageId;
+  final ThreadReply? initialReply;
 
   const ForumThreadPage({
     super.key,
@@ -37,6 +41,8 @@ class ForumThreadPage extends HookConsumerWidget {
     required this.currentPubkey,
     required this.isMember,
     required this.isArchived,
+    this.initialMessageId,
+    this.initialReply,
   });
 
   @override
@@ -44,6 +50,21 @@ class ForumThreadPage extends HookConsumerWidget {
     final threadAsync = ref.watch(
       forumThreadProvider((channelId: channelId, eventId: postEventId)),
     );
+
+    // Manual refresh for pull-down and the error state's Retry button.
+    Future<void> refresh() async {
+      final next = ref.refresh(
+        forumThreadProvider((
+          channelId: channelId,
+          eventId: postEventId,
+        )).future,
+      );
+      try {
+        await next;
+      } on Object {
+        // The page's error state shows the failure.
+      }
+    }
 
     // Periodic refresh (every 10s, matching desktop).
     useEffect(() {
@@ -91,11 +112,17 @@ class ForumThreadPage extends HookConsumerWidget {
         error: (e, _) => Padding(
           padding: EdgeInsets.only(top: frostedAppBarHeight(context)),
           child: Center(
-            child: Text(
-              'Failed to load thread',
-              style: context.textTheme.bodyMedium?.copyWith(
-                color: context.colors.error,
-              ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  'Failed to load thread',
+                  style: context.textTheme.bodyMedium?.copyWith(
+                    color: context.colors.error,
+                  ),
+                ),
+                TextButton(onPressed: refresh, child: const Text('Retry')),
+              ],
             ),
           ),
         ),
@@ -105,6 +132,9 @@ class ForumThreadPage extends HookConsumerWidget {
           currentPubkey: currentPubkey,
           isMember: isMember,
           isArchived: isArchived,
+          initialMessageId: initialMessageId,
+          initialReply: initialReply,
+          onRefresh: refresh,
         ),
       ),
     );
@@ -201,6 +231,9 @@ class _ThreadContent extends HookConsumerWidget {
   final String? currentPubkey;
   final bool isMember;
   final bool isArchived;
+  final Future<void> Function() onRefresh;
+  final String? initialMessageId;
+  final ThreadReply? initialReply;
 
   const _ThreadContent({
     required this.thread,
@@ -208,6 +241,9 @@ class _ThreadContent extends HookConsumerWidget {
     required this.currentPubkey,
     required this.isMember,
     required this.isArchived,
+    required this.onRefresh,
+    this.initialMessageId,
+    this.initialReply,
   });
 
   @override
@@ -216,7 +252,19 @@ class _ThreadContent extends HookConsumerWidget {
     final providerContainer = ProviderScope.containerOf(context, listen: false);
     final forumDelivery = ForumEventDelivery.capture(providerContainer);
     final post = thread.post;
-    final replies = thread.replies;
+    // The notification may point outside the relay's newest reply window.
+    final replies =
+        [
+          ...thread.replies,
+          if (initialReply != null &&
+              !thread.replies.any(
+                (reply) => reply.eventId == initialReply!.eventId,
+              ))
+            initialReply!,
+        ]..sort((a, b) {
+          final byTime = a.createdAt.compareTo(b.createdAt);
+          return byTime == 0 ? a.eventId.compareTo(b.eventId) : byTime;
+        });
 
     // Preload profiles for all participants and tagged mentions.
     final allPubkeys = useMemoized(() {
@@ -240,62 +288,111 @@ class _ThreadContent extends HookConsumerWidget {
       return null;
     }, [allPubkeysKey]);
 
+    final scrollController = useMemoized(ItemScrollController.new);
+    final jumped = useRef(false);
+    final highlighted = useState<String?>(null);
+    final targetIndex = initialMessageId == post.eventId
+        ? 0
+        : replies.indexWhere((reply) => reply.eventId == initialMessageId) + 2;
+    final targetExists =
+        initialMessageId != null &&
+        (initialMessageId == post.eventId || targetIndex >= 2);
+    useEffect(() {
+      if (!targetExists || jumped.value) return null;
+      var disposed = false;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (disposed || !scrollController.isAttached) return;
+        jumped.value = true;
+        scrollController.jumpTo(index: targetIndex, alignment: 0.2);
+        highlighted.value = initialMessageId;
+      });
+      return () {
+        disposed = true;
+      };
+    }, [initialMessageId, targetExists, targetIndex]);
+    useEffect(() {
+      if (highlighted.value == null) return null;
+      final timer = Timer(
+        const Duration(seconds: 3),
+        () => highlighted.value = null,
+      );
+      return timer.cancel;
+    }, [highlighted.value]);
+
+    Widget highlight(String id, Widget child) => ColoredBox(
+      key: ValueKey('forum-message-$id'),
+      color: highlighted.value == id
+          ? context.colors.primary.withValues(alpha: 0.12)
+          : Colors.transparent,
+      child: child,
+    );
+    final rows = [
+      highlight(post.eventId, _OriginalPost(post: post)),
+
+      Padding(
+        padding: const EdgeInsets.symmetric(
+          horizontal: Grid.gutter,
+          vertical: Grid.xxs,
+        ),
+        child: Row(
+          children: [
+            Icon(
+              LucideIcons.messageSquare,
+              size: 16,
+              color: context.colors.onSurfaceVariant,
+            ),
+            const SizedBox(width: Grid.half),
+            Text(
+              '${replies.length} ${replies.length == 1 ? 'reply' : 'replies'}',
+              style: context.textTheme.labelMedium?.copyWith(
+                color: context.colors.onSurfaceVariant,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ],
+        ),
+      ),
+
+      // Reply list
+      if (replies.isEmpty)
+        Padding(
+          padding: const EdgeInsets.all(Grid.sm),
+          child: Text(
+            'No replies yet. Be the first to respond.',
+            style: context.textTheme.bodyMedium?.copyWith(
+              color: context.colors.onSurfaceVariant,
+            ),
+            textAlign: TextAlign.center,
+          ),
+        )
+      else
+        for (final reply in replies)
+          highlight(
+            reply.eventId,
+            _ReplyRow(
+              reply: reply,
+              currentPubkey: currentPubkey,
+              channelId: channelId,
+              rootEventId: post.eventId,
+            ),
+          ),
+    ];
+
     return Column(
       children: [
         Expanded(
-          child: ListView(
-            padding: EdgeInsets.only(
-              top: frostedAppBarHeight(context),
-              bottom: Grid.xs,
-            ),
-            children: [
-              _OriginalPost(post: post),
-
-              Padding(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: Grid.gutter,
-                  vertical: Grid.xxs,
-                ),
-                child: Row(
-                  children: [
-                    Icon(
-                      LucideIcons.messageSquare,
-                      size: 16,
-                      color: context.colors.onSurfaceVariant,
-                    ),
-                    const SizedBox(width: Grid.half),
-                    Text(
-                      '${replies.length} ${replies.length == 1 ? 'reply' : 'replies'}',
-                      style: context.textTheme.labelMedium?.copyWith(
-                        color: context.colors.onSurfaceVariant,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                  ],
-                ),
+          child: BeeRefreshIndicator(
+            edgeOffset: frostedAppBarHeight(context),
+            onRefresh: onRefresh,
+            child: ScrollablePositionedList.builder(
+              itemScrollController: scrollController,
+              padding: EdgeInsets.only(
+                top: frostedAppBarHeight(context),
+                bottom: Grid.xs,
               ),
-
-              // Reply list
-              if (replies.isEmpty)
-                Padding(
-                  padding: const EdgeInsets.all(Grid.sm),
-                  child: Text(
-                    'No replies yet. Be the first to respond.',
-                    style: context.textTheme.bodyMedium?.copyWith(
-                      color: context.colors.onSurfaceVariant,
-                    ),
-                    textAlign: TextAlign.center,
-                  ),
-                )
-              else
-                for (final reply in replies)
-                  _ReplyRow(
-                    reply: reply,
-                    currentPubkey: currentPubkey,
-                    channelId: channelId,
-                    rootEventId: post.eventId,
-                  ),
-            ],
+              itemCount: rows.length,
+              itemBuilder: (context, index) => rows[index],
+            ),
           ),
         ),
 

@@ -16,6 +16,8 @@ import '../../shared/widgets/frosted_app_bar.dart';
 import '../../shared/widgets/frosted_scaffold.dart';
 import '../../shared/widgets/modal_presentation.dart';
 import '../channels/compose_bar.dart';
+import '../channels/jump_to_latest_button.dart';
+import '../channels/jump_to_latest_switcher.dart';
 import '../channels/message_content.dart';
 import '../../shared/profile/user_cache_provider.dart';
 import '../../shared/utils/string_utils.dart';
@@ -289,6 +291,7 @@ class _ThreadContent extends HookConsumerWidget {
     }, [allPubkeysKey]);
 
     final scrollController = useMemoized(ItemScrollController.new);
+    final positionsListener = useMemoized(ItemPositionsListener.create);
     final jumped = useRef(false);
     final highlighted = useState<String?>(null);
     final targetIndex = initialMessageId == post.eventId
@@ -376,23 +379,76 @@ class _ThreadContent extends HookConsumerWidget {
               rootEventId: post.eventId,
             ),
           ),
+      // Zero-height end marker: jumping to it with alignment 1.0 puts the
+      // end of the thread at the bottom of the viewport.
+      const SizedBox.shrink(key: ValueKey('forum-thread-end')),
     ];
+    final endIndex = rows.length - 1;
+
+    final isAtLatest = useState(true);
+    useEffect(() {
+      void update() {
+        // The list does not report the zero-height end marker, so check the
+        // last real row. Rows with no reported position are off screen.
+        isAtLatest.value = positionsListener.itemPositions.value.any(
+          (item) =>
+              item.index == endIndex - 1 && item.itemTrailingEdge <= 1.001,
+        );
+      }
+
+      positionsListener.itemPositions.addListener(update);
+      return () => positionsListener.itemPositions.removeListener(update);
+    }, [positionsListener, endIndex]);
+
+    void scrollToLatest() {
+      if (!scrollController.isAttached) return;
+      final reduceMotion = MediaQuery.disableAnimationsOf(context);
+      if (reduceMotion) {
+        scrollController.jumpTo(index: endIndex, alignment: 1);
+        return;
+      }
+      unawaited(
+        scrollController.scrollTo(
+          index: endIndex,
+          alignment: 1,
+          duration: jumpToLatestScrollDuration,
+          curve: jumpToLatestScrollCurve,
+        ),
+      );
+    }
 
     return Column(
       children: [
         Expanded(
-          child: BeeRefreshIndicator(
-            edgeOffset: frostedAppBarHeight(context),
-            onRefresh: onRefresh,
-            child: ScrollablePositionedList.builder(
-              itemScrollController: scrollController,
-              padding: EdgeInsets.only(
-                top: frostedAppBarHeight(context),
-                bottom: Grid.xs,
+          child: Stack(
+            children: [
+              BeeRefreshIndicator(
+                edgeOffset: frostedAppBarHeight(context),
+                onRefresh: onRefresh,
+                child: ScrollablePositionedList.builder(
+                  itemScrollController: scrollController,
+                  itemPositionsListener: positionsListener,
+                  padding: EdgeInsets.only(
+                    top: frostedAppBarHeight(context),
+                    bottom: Grid.xs,
+                  ),
+                  itemCount: rows.length,
+                  itemBuilder: (context, index) => rows[index],
+                ),
               ),
-              itemCount: rows.length,
-              itemBuilder: (context, index) => rows[index],
-            ),
+              Positioned(
+                left: 0,
+                right: 0,
+                bottom: Grid.xs,
+                child: Center(
+                  child: JumpToLatestSwitcher(
+                    id: 'forum-thread',
+                    visible: replies.isNotEmpty && !isAtLatest.value,
+                    onPressed: scrollToLatest,
+                  ),
+                ),
+              ),
+            ],
           ),
         ),
 

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:buzz/features/channels/channel.dart';
+import 'package:buzz/features/channels/compose_bar.dart';
 import 'package:buzz/features/forum/forum_models.dart';
 import 'package:buzz/features/forum/forum_post_card.dart';
 import 'package:buzz/features/forum/forum_posts_view.dart';
@@ -129,6 +130,7 @@ Widget _buildThreadPage({
   Set<String> knownAgentPubkeys = const {},
   Set<String> channelBotPubkeys = const {},
   TextScaler textScaler = TextScaler.noScaling,
+  ForumThreadResponse Function()? loadThread,
 }) {
   return ProviderScope(
     overrides: [
@@ -141,7 +143,7 @@ Widget _buildThreadPage({
       forumThreadProvider((
         channelId: _channelId,
         eventId: postEventId,
-      )).overrideWith((ref) async => threadResponse),
+      )).overrideWith((ref) async => loadThread?.call() ?? threadResponse),
       savedPrefsProvider.overrideWithValue(_testPrefs),
       relayClientProvider.overrideWithValue(
         RelayClient(baseUrl: 'http://localhost:3000'),
@@ -981,6 +983,109 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.byTooltip('Post actions'), findsNothing);
+    });
+  });
+
+  group('ForumThreadPage jump to latest', () {
+    ForumThreadResponse threadWithReplies(int count) => ForumThreadResponse(
+      post: _makePost(),
+      replies: [
+        for (var i = 0; i < count; i++)
+          ThreadReply(
+            eventId: 'r$i',
+            pubkey: 'bob',
+            content: 'Reply number $i',
+            kind: 45003,
+            createdAt: 2000 + i,
+            channelId: _channelId,
+            tags: const [
+              ['h', _channelId],
+            ],
+            depth: 1,
+          ),
+      ],
+      totalReplies: count,
+    );
+
+    final jumpButton = find.byKey(
+      const ValueKey('forum-thread-jump-to-latest'),
+    );
+
+    testWidgets('hides the button when the whole thread fits', (tester) async {
+      _setSurfaceSize(tester, const Size(400, 800));
+      addTearDown(tester.view.reset);
+      await tester.pumpWidget(
+        _buildThreadPage(threadResponse: threadWithReplies(1)),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('Reply number 0'), findsOneWidget);
+      expect(jumpButton, findsNothing);
+    });
+
+    testWidgets('scrolls a long thread to its newest reply', (tester) async {
+      _setSurfaceSize(tester, const Size(400, 800));
+      addTearDown(tester.view.reset);
+      await tester.pumpWidget(
+        _buildThreadPage(threadResponse: threadWithReplies(40)),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('Reply number 39'), findsNothing);
+      expect(jumpButton, findsOneWidget);
+
+      await tester.tap(jumpButton);
+      await tester.pumpAndSettle();
+
+      final newest = find.text('Reply number 39');
+      expect(newest, findsOneWidget);
+      final composerTop = tester.getTopLeft(find.byType(ComposeBar)).dy;
+      expect(tester.getBottomLeft(newest).dy, lessThanOrEqualTo(composerTop));
+      expect(jumpButton, findsNothing);
+    });
+
+    testWidgets('shows the button when a new reply lands below the view', (
+      tester,
+    ) async {
+      _setSurfaceSize(tester, const Size(400, 800));
+      addTearDown(tester.view.reset);
+      var thread = threadWithReplies(40);
+      await tester.pumpWidget(
+        _buildThreadPage(threadResponse: thread, loadThread: () => thread),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(jumpButton);
+      await tester.pumpAndSettle();
+      expect(jumpButton, findsNothing);
+
+      thread = threadWithReplies(41);
+      ProviderScope.containerOf(
+        tester.element(find.byType(ForumThreadPage)),
+      ).invalidate(
+        forumThreadProvider((channelId: _channelId, eventId: 'post1')),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('Reply number 39'), findsOneWidget);
+      expect(find.text('Reply number 40'), findsNothing);
+      expect(jumpButton, findsOneWidget);
+    });
+
+    testWidgets('shows the button again after scrolling away', (tester) async {
+      _setSurfaceSize(tester, const Size(400, 800));
+      addTearDown(tester.view.reset);
+      await tester.pumpWidget(
+        _buildThreadPage(threadResponse: threadWithReplies(40)),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(jumpButton);
+      await tester.pumpAndSettle();
+      expect(jumpButton, findsNothing);
+
+      await tester.drag(find.text('Reply number 39'), const Offset(0, 1500));
+      await tester.pumpAndSettle();
+
+      expect(jumpButton, findsOneWidget);
     });
   });
 }

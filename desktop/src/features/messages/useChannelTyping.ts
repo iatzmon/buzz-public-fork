@@ -16,6 +16,8 @@ import { resolveEventAuthorPubkey } from "@/shared/lib/authors";
 export type TypingIndicatorEntry = {
   pubkey: string;
   threadHeadId: string | null;
+  /** Thread root when the typing event names one (differs from the head for nested replies). */
+  threadRootId: string | null;
 };
 
 type TypingEntry = {
@@ -23,6 +25,7 @@ type TypingEntry = {
   firstSeenAt: number;
   pubkey: string;
   threadHeadId: string | null;
+  threadRootId: string | null;
 };
 type TypingState = Record<string, TypingEntry>;
 
@@ -72,7 +75,6 @@ export function useChannelTyping(
   relaySelfPubkey?: string | null,
 ) {
   const channelId = channel?.id ?? null;
-  const channelType = channel?.channelType ?? null;
   const [typingByPubkey, setTypingByPubkey] = useState<TypingState>({});
   const normalizedCurrentPubkey = currentPubkey?.toLowerCase();
   const typingSuppressUntilByPubkeyRef = useRef<Record<string, number>>({});
@@ -95,6 +97,7 @@ export function useChannelTyping(
 
     const typingPubkey = event.pubkey.toLowerCase();
     const threadHeadId = getTypingScopeId(event);
+    const threadRootId = getThreadReference(event.tags).rootId;
     const typingKey = getTypingStateKey(typingPubkey, threadHeadId);
     if (normalizedCurrentPubkey && typingPubkey === normalizedCurrentPubkey) {
       return;
@@ -125,6 +128,7 @@ export function useChannelTyping(
           firstSeenAt: existing?.firstSeenAt ?? now,
           pubkey: typingPubkey,
           threadHeadId,
+          threadRootId,
         },
       };
     });
@@ -177,7 +181,7 @@ export function useChannelTyping(
   }, [channelId, latestMessageEvent, relaySelfPubkey]);
 
   useEffect(() => {
-    if (!channelId || channelType === "forum") {
+    if (!channelId) {
       return;
     }
 
@@ -212,7 +216,7 @@ export function useChannelTyping(
         void cleanup();
       }
     };
-  }, [channelId, channelType]);
+  }, [channelId]);
 
   const hasActiveTypers = Object.keys(typingByPubkey).length > 0;
 
@@ -234,7 +238,11 @@ export function useChannelTyping(
     () =>
       Object.values(typingByPubkey)
         .sort((left, right) => left.firstSeenAt - right.firstSeenAt)
-        .map(({ pubkey, threadHeadId }) => ({ pubkey, threadHeadId })),
+        .map(({ pubkey, threadHeadId, threadRootId }) => ({
+          pubkey,
+          threadHeadId,
+          threadRootId,
+        })),
     [typingByPubkey],
   );
 }

@@ -5,16 +5,20 @@ import 'package:flutter_hooks/flutter_hooks.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 
+import '../../shared/read_state/read_state_provider.dart';
 import '../../shared/theme/theme.dart';
 import '../../shared/widgets/buzz_loading_indicator.dart';
 import '../../shared/widgets/frosted_app_bar.dart';
 import '../../shared/widgets/bee_refresh_indicator.dart';
 import '../channels/channel.dart';
+import '../channels/channel_typing_provider.dart';
 import '../channels/compose_bar.dart';
+import 'forum_activity.dart';
 import 'forum_models.dart';
 import 'forum_post_card.dart';
 import 'forum_provider.dart';
 import 'forum_thread_page.dart';
+import 'forum_working_indicator.dart';
 
 /// Main forum view — replaces the old _ForumPlaceholder.
 ///
@@ -48,6 +52,41 @@ class ForumPostsView extends HookConsumerWidget {
     }, [channel.id]);
 
     final canPost = channel.isMember && !channel.isArchived;
+
+    // The channel read marker is the new-reply baseline for posts never
+    // opened. Capture it once, before the channel page marks the forum read
+    // on open, so replies stay flagged while the list is on screen.
+    final channelRead = ref.watch(
+      readStateProvider.select(
+        (state) => (
+          isReady: state.isReady,
+          readAt: state.effectiveTimestamp(channel.id),
+        ),
+      ),
+    );
+    final readSnapshot = useRef<({String channelId, int? readAt})?>(null);
+    if (channelRead.isReady && readSnapshot.value?.channelId != channel.id) {
+      readSnapshot.value = (channelId: channel.id, readAt: channelRead.readAt);
+    }
+    final channelReadSnapshot = readSnapshot.value?.channelId == channel.id
+        ? readSnapshot.value?.readAt
+        : null;
+
+    // People writing without naming a post: a new post, or an agent harness
+    // that does not yet tag the post it is replying to.
+    final channelWorkingKey = ref.watch(
+      channelTypingProvider(channel.id).select(
+        (entries) => forumTypingPubkeys(
+          entries,
+          threadHeadId: null,
+          currentPubkey: currentPubkey,
+        ).join(','),
+      ),
+    );
+    final channelWorkingPubkeys = channelWorkingKey.isEmpty
+        ? const <String>[]
+        : channelWorkingKey.split(',');
+    final headerCount = channelWorkingPubkeys.isEmpty ? 0 : 1;
 
     return Column(
       children: [
@@ -105,14 +144,24 @@ class ForumPostsView extends HookConsumerWidget {
                       right: Grid.gutter,
                       bottom: Grid.xs,
                     ),
-                    itemCount: posts.length,
+                    itemCount: posts.length + headerCount,
                     separatorBuilder: (_, _) =>
                         const SizedBox(height: Grid.xxs),
                     itemBuilder: (context, index) {
-                      final post = posts[index];
+                      if (index < headerCount) {
+                        return ForumWorkingIndicator(
+                          key: const ValueKey('forum-channel-working'),
+                          channelId: channel.id,
+                          pubkeys: channelWorkingPubkeys,
+                          scope: ForumWorkingScope.forum,
+                        );
+                      }
+                      final post = posts[index - headerCount];
                       return ForumPostCard(
+                        key: ValueKey(post.eventId),
                         post: post,
                         currentPubkey: currentPubkey,
+                        channelReadSnapshot: channelReadSnapshot,
                         onTap: () => _openThread(context, post),
                         onDelete: (eventId) async {
                           await deleteForumEvent(

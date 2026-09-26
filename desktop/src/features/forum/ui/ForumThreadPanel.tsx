@@ -17,6 +17,7 @@ import { Button } from "@/shared/ui/button";
 import { parseImetaTags } from "@/shared/ui/markdown/parseImeta";
 import { Markdown } from "@/shared/ui/markdown";
 import { hasLinkPreviewSuppression } from "@/features/messages/lib/formatTimelineMessages";
+import { TypingIndicatorRow } from "@/features/messages/ui/TypingIndicatorRow";
 import { Skeleton } from "@/shared/ui/skeleton";
 
 import { formatRelativeTime } from "../lib/time";
@@ -31,6 +32,7 @@ type ForumThreadPanelProps = {
   postId: string;
   currentPubkey?: string;
   profiles?: UserProfileLookup;
+  typingPubkeys?: string[];
   onBack: () => void;
   onReply: (
     content: string,
@@ -150,6 +152,7 @@ export function ForumThreadPanel({
   postId,
   currentPubkey,
   profiles,
+  typingPubkeys,
   onBack,
   onReply,
   onDeletePost,
@@ -331,6 +334,16 @@ export function ForumThreadPanel({
           ) : null}
         </div>
       </div>
+
+      {typingPubkeys && typingPubkeys.length > 0 ? (
+        <TypingIndicatorRow
+          channel={null}
+          className="border-t border-border/60"
+          currentPubkey={currentPubkey}
+          profiles={profiles}
+          typingPubkeys={typingPubkeys}
+        />
+      ) : null}
 
       <div className="border-t border-border/60 p-4">
         <ForumComposer

@@ -1,9 +1,12 @@
 import { MessageSquareText } from "lucide-react";
 import * as React from "react";
 
+import { useAppShell } from "@/app/AppShellContext";
 import { handleTimelineMentionCopy } from "@/features/messages/lib/timelineMentionCopy";
 import { useProfileQuery, useUsersBatchQuery } from "@/features/profile/hooks";
 import { mergeCurrentProfileIntoLookup } from "@/features/profile/lib/identity";
+import type { TypingIndicatorEntry } from "@/features/messages/useChannelTyping";
+import { TypingIndicatorRow } from "@/features/messages/ui/TypingIndicatorRow";
 import { getMentionTagPubkey } from "@/shared/lib/resolveMentionNames";
 import type { Channel } from "@/shared/api/types";
 import { channelChrome } from "@/shared/layout/chromeLayout";
@@ -19,12 +22,22 @@ import {
   useForumPostsQuery,
   useForumThreadQuery,
 } from "../hooks";
+import {
+  groupForumTypingByPost,
+  hasUnreadForumReplies,
+  latestForumThreadActivityAt,
+} from "../lib/forumActivity";
 import { ForumComposer } from "./ForumComposer";
 import { ForumPostCard } from "./ForumPostCard";
 import { ForumThreadPanel } from "./ForumThreadPanel";
 
 type ForumViewProps = {
   channel: Channel;
+  /**
+   * The forum's read marker as it stood when the channel was opened, before
+   * opening it advanced the marker. Baseline for posts never opened.
+   */
+  channelOpenReadAt?: number | null;
   currentPubkey?: string;
   onClosePost: () => void;
   onSelectPost: (postId: string) => void;
@@ -33,7 +46,10 @@ type ForumViewProps = {
   targetReplyId: string | null;
   targetSearchMessageId?: string;
   targetSearchQuery?: string;
+  typingEntries?: TypingIndicatorEntry[];
 };
+
+const EMPTY_TYPING_ENTRIES: TypingIndicatorEntry[] = [];
 
 function canDelete(postPubkey: string, currentPubkey?: string): boolean {
   if (!currentPubkey) return false;
@@ -44,6 +60,7 @@ function canDelete(postPubkey: string, currentPubkey?: string): boolean {
 
 export function ForumView({
   channel,
+  channelOpenReadAt = null,
   currentPubkey,
   onClosePost,
   onSelectPost,
@@ -52,9 +69,11 @@ export function ForumView({
   targetReplyId,
   targetSearchMessageId,
   targetSearchQuery,
+  typingEntries = EMPTY_TYPING_ENTRIES,
 }: ForumViewProps) {
   const [isComposerOpen, setIsComposerOpen] = React.useState(false);
   const postsScrollRef = React.useRef<HTMLDivElement>(null);
+  const { getThreadReadAt, markThreadRead, readStateVersion } = useAppShell();
 
   const profileQuery = useProfileQuery();
   const postsQuery = useForumPostsQuery(channel);
@@ -71,6 +90,60 @@ export function ForumView({
   );
 
   const posts = postsQuery.data?.posts ?? [];
+  const typingGroups = React.useMemo(
+    () => groupForumTypingByPost(typingEntries),
+    [typingEntries],
+  );
+
+  // readStateVersion changes whenever a read marker moves; recompute then.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: readStateVersion invalidates getThreadReadAt results
+  const unreadPostIds = React.useMemo(() => {
+    const ids = new Set<string>();
+    for (const post of posts) {
+      if (
+        hasUnreadForumReplies({
+          lastReplyAt: post.threadSummary?.lastReplyAt,
+          threadReadAt: getThreadReadAt(post.eventId),
+          channelBaselineAt: channelOpenReadAt,
+        })
+      ) {
+        ids.add(post.eventId);
+      }
+    }
+    return ids;
+  }, [channelOpenReadAt, getThreadReadAt, posts, readStateVersion]);
+
+  // Opening a post marks it read up to the newest activity it shows, and keeps
+  // doing so while it stays open (new replies, including the viewer's own).
+  const selectedThread = threadQuery.data;
+  const selectedListSummary = selectedPostId
+    ? (posts.find((post) => post.eventId === selectedPostId)?.threadSummary ??
+      null)
+    : null;
+  React.useEffect(() => {
+    if (
+      !selectedPostId ||
+      !selectedThread ||
+      selectedThread.post.eventId !== selectedPostId
+    ) {
+      return;
+    }
+    const latest = latestForumThreadActivityAt(
+      selectedThread,
+      selectedListSummary,
+    );
+    const threadReadAt = getThreadReadAt(selectedPostId);
+    if (threadReadAt !== null && threadReadAt >= latest) {
+      return;
+    }
+    markThreadRead(selectedPostId, latest);
+  }, [
+    getThreadReadAt,
+    markThreadRead,
+    selectedListSummary,
+    selectedPostId,
+    selectedThread,
+  ]);
 
   // Collect all pubkeys from posts and thread for profile resolution.
   // Mentioned pubkeys (`p`/`mention` tags) must be included too: mention
@@ -86,6 +159,9 @@ export function ForumView({
         }
       }
     };
+    for (const entry of typingEntries) {
+      pubkeys.add(entry.pubkey);
+    }
     for (const post of posts) {
       pubkeys.add(post.pubkey);
       addMentionPubkeys(post.tags);
@@ -104,7 +180,7 @@ export function ForumView({
       }
     }
     return [...pubkeys];
-  }, [posts, threadQuery.data]);
+  }, [posts, threadQuery.data, typingEntries]);
 
   const profilesQuery = useUsersBatchQuery(allPubkeys, {
     enabled: allPubkeys.length > 0,
@@ -166,6 +242,7 @@ export function ForumView({
         targetSearchMessageId={targetSearchMessageId}
         targetSearchQuery={targetSearchQuery}
         thread={threadQuery.data}
+        typingPubkeys={typingGroups.byPostId.get(selectedPostId)}
       />
     );
   }
@@ -208,6 +285,16 @@ export function ForumView({
         )}
       </div>
 
+      {typingGroups.channelLevel.length > 0 ? (
+        <TypingIndicatorRow
+          channel={channel}
+          className="border-b border-border/60"
+          currentPubkey={effectiveCurrentPubkey}
+          profiles={profiles}
+          typingPubkeys={typingGroups.channelLevel}
+        />
+      ) : null}
+
       <div
         className="flex-1 overflow-y-auto"
         data-scroll-restoration-id={`forum-list:${channel.id}`}
@@ -243,6 +330,7 @@ export function ForumView({
                 <ForumPostCard
                   canDelete={canDelete(post.pubkey, effectiveCurrentPubkey)}
                   currentPubkey={effectiveCurrentPubkey}
+                  hasUnreadReplies={unreadPostIds.has(post.eventId)}
                   isActive={selectedPostId === post.eventId}
                   isDeleting={
                     deletePostMutation.isPending &&
@@ -254,6 +342,7 @@ export function ForumView({
                   }}
                   post={post}
                   profiles={profiles}
+                  typingPubkeys={typingGroups.byPostId.get(post.eventId)}
                 />
               </div>
             )}

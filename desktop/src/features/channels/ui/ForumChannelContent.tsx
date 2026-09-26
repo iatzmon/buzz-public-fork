@@ -9,6 +9,7 @@ import type {
   ProfilePanelTab,
   ProfilePanelView,
 } from "@/features/profile/ui/UserProfilePanelUtils";
+import type { TypingIndicatorEntry } from "@/features/messages/useChannelTyping";
 import type { Channel } from "@/shared/api/types";
 import type { ProfilePanelOpenOptions } from "@/shared/context/ProfilePanelContext";
 import { ViewLoadingFallback } from "@/shared/ui/ViewLoadingFallback";
@@ -16,6 +17,8 @@ import { ViewLoadingFallback } from "@/shared/ui/ViewLoadingFallback";
 type ForumChannelContentProps = {
   canResetPanelWidth: boolean;
   channel: Channel;
+  /** The forum's read marker as it stood when the channel was opened. */
+  channelOpenReadAt?: number | null;
   currentPubkey?: string;
   header: React.ReactNode;
   onClosePost: () => void;
@@ -44,6 +47,7 @@ type ForumChannelContentProps = {
   targetReplyId: string | null;
   targetSearchMessageId?: string;
   targetSearchQuery?: string;
+  typingEntries?: TypingIndicatorEntry[];
 };
 
 /**
@@ -56,6 +60,7 @@ type ForumChannelContentProps = {
 export function ForumChannelContent({
   canResetPanelWidth,
   channel,
+  channelOpenReadAt,
   currentPubkey,
   header,
   onClosePost,
@@ -75,6 +80,7 @@ export function ForumChannelContent({
   targetReplyId,
   targetSearchMessageId,
   targetSearchQuery,
+  typingEntries,
 }: ForumChannelContentProps) {
   return (
     <>
@@ -87,6 +93,7 @@ export function ForumChannelContent({
           <React.Suspense fallback={<ViewLoadingFallback kind="forum" />}>
             <ForumView
               channel={channel}
+              channelOpenReadAt={channelOpenReadAt}
               currentPubkey={currentPubkey}
               onClosePost={onClosePost}
               onSelectPost={onSelectPost}
@@ -94,6 +101,7 @@ export function ForumChannelContent({
               targetReplyId={targetReplyId}
               targetSearchMessageId={targetSearchMessageId}
               targetSearchQuery={targetSearchQuery}
+              typingEntries={typingEntries}
             />
           </React.Suspense>
         </section>

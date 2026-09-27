@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-use buzz_auth::{LimitType, RateLimiter};
+use buzz_auth::{LimitType, RateLimitResult, RateLimiter};
 use buzz_core::TenantContext;
 use nostr::PublicKey;
 
@@ -46,6 +46,40 @@ impl LocalAdmissionFallback {
         }
     }
 
+    /// Mirrors a shared-counter answer into the local window, so a later Redis
+    /// failure continues from the shared count and admissions made while Redis
+    /// was down still count after it recovers.
+    ///
+    /// A shared denial stays authoritative. A shared allowance is still refused
+    /// when the local window, which also holds fallback admissions Redis never
+    /// saw, is over the limit.
+    fn record_shared(
+        &self,
+        key: String,
+        window_secs: u64,
+        limit: u64,
+        shared: &RateLimitResult,
+        now: Instant,
+    ) -> Result<(), AdmissionError> {
+        let window = Duration::from_secs(window_secs.max(1));
+        let shared_age = window.saturating_sub(Duration::from_secs(shared.reset_in_secs));
+        let shared_start = now.checked_sub(shared_age).unwrap_or(now);
+        let entry = self.entry(key, now);
+        let mut guard = entry.lock().unwrap_or_else(PoisonError::into_inner);
+        if guard.1 == 0 || now.saturating_duration_since(guard.0) >= window {
+            *guard = (shared_start, shared.current);
+        } else {
+            guard.1 = guard.1.saturating_add(1).max(shared.current);
+        }
+        if !shared.allowed {
+            return Err(AdmissionError::Exceeded {
+                reset_in_secs: shared.reset_in_secs,
+            });
+        }
+        Self::verdict(*guard, window, limit, now)
+    }
+
+    /// Counts one admission in the local window when Redis cannot answer.
     fn check(
         &self,
         key: String,
@@ -54,18 +88,30 @@ impl LocalAdmissionFallback {
         now: Instant,
     ) -> Result<(), AdmissionError> {
         let window = Duration::from_secs(window_secs.max(1));
-        let entry = self
-            .windows
-            .get_with(key, || Arc::new(Mutex::new((now, 0))));
+        let entry = self.entry(key, now);
         let mut guard = entry.lock().unwrap_or_else(PoisonError::into_inner);
         if now.saturating_duration_since(guard.0) >= window {
             *guard = (now, 0);
         }
         guard.1 = guard.1.saturating_add(1);
-        if guard.1 <= limit {
+        Self::verdict(*guard, window, limit, now)
+    }
+
+    fn entry(&self, key: String, now: Instant) -> Arc<Mutex<(Instant, u64)>> {
+        self.windows
+            .get_with(key, || Arc::new(Mutex::new((now, 0))))
+    }
+
+    fn verdict(
+        (start, count): (Instant, u64),
+        window: Duration,
+        limit: u64,
+        now: Instant,
+    ) -> Result<(), AdmissionError> {
+        if count <= limit {
             return Ok(());
         }
-        let remaining = window.saturating_sub(now.saturating_duration_since(guard.0));
+        let remaining = window.saturating_sub(now.saturating_duration_since(start));
         Err(AdmissionError::Exceeded {
             reset_in_secs: remaining.as_secs().max(1),
         })
@@ -85,10 +131,16 @@ pub(crate) async fn check_principal<L: RateLimiter>(
         .check_and_increment(tenant, pubkey, limit_type.clone(), window_secs, limit)
         .await
     {
-        Ok(result) if result.allowed => Ok(()),
-        Ok(result) => Err(AdmissionError::Exceeded {
-            reset_in_secs: result.reset_in_secs,
-        }),
+        Ok(result) => match fallback {
+            Some(fallback) => {
+                let key = buzz_auth::rate_limit::rate_limit_key(tenant, pubkey, &limit_type);
+                fallback.record_shared(key, window_secs, limit, &result, Instant::now())
+            }
+            None if result.allowed => Ok(()),
+            None => Err(AdmissionError::Exceeded {
+                reset_in_secs: result.reset_in_secs,
+            }),
+        },
         Err(error) => match fallback {
             Some(fallback) => {
                 tracing::warn!(error = %error, "shared rate-limit admission unavailable; using local fallback");
@@ -303,5 +355,138 @@ mod tests {
             fallback.check(key(), 5, 1, start + Duration::from_secs(5)),
             Ok(())
         );
+    }
+
+    /// Answers each call with the next scripted outcome: `Some` is a shared
+    /// counter result, `None` is a Redis failure.
+    struct ScriptedLimiter {
+        outcomes: Mutex<std::collections::VecDeque<Option<RateLimitResult>>>,
+    }
+
+    impl ScriptedLimiter {
+        fn new(outcomes: Vec<Option<RateLimitResult>>) -> Self {
+            Self {
+                outcomes: Mutex::new(outcomes.into()),
+            }
+        }
+    }
+
+    impl RateLimiter for ScriptedLimiter {
+        async fn check_and_increment(
+            &self,
+            _ctx: &TenantContext,
+            _pubkey: &PublicKey,
+            _limit_type: LimitType,
+            _window_secs: u64,
+            _limit: u64,
+        ) -> Result<RateLimitResult, AuthError> {
+            let next = self
+                .outcomes
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .pop_front()
+                .expect("scripted outcome");
+            next.ok_or_else(|| AuthError::Internal("redis unavailable".to_owned()))
+        }
+
+        async fn check_ip_connection(
+            &self,
+            _ip: &IpAddr,
+            _window_secs: u64,
+            _limit: u64,
+        ) -> Result<RateLimitResult, AuthError> {
+            Err(AuthError::Internal("not used".to_owned()))
+        }
+    }
+
+    async fn run_script(outcomes: Vec<Option<RateLimitResult>>) -> Vec<Result<(), AdmissionError>> {
+        let calls = outcomes.len();
+        let limiter = ScriptedLimiter::new(outcomes);
+        let fallback = LocalAdmissionFallback::new();
+        let tenant = tenant();
+        let pubkey = Keys::generate().public_key();
+        let mut results = Vec::with_capacity(calls);
+        for _ in 0..calls {
+            results.push(
+                check_principal(
+                    &limiter,
+                    Some(&fallback),
+                    &tenant,
+                    &pubkey,
+                    LimitType::Messages,
+                    60,
+                    3,
+                )
+                .await,
+            );
+        }
+        results
+    }
+
+    fn shared_allowed(current: u64) -> Option<RateLimitResult> {
+        Some(RateLimitResult::allowed(current, 3, 55))
+    }
+
+    #[tokio::test]
+    async fn fallback_continues_from_the_shared_count_when_redis_fails() {
+        let results = run_script(vec![
+            shared_allowed(1),
+            shared_allowed(2),
+            shared_allowed(3),
+            None,
+            None,
+            None,
+        ])
+        .await;
+
+        assert_eq!(results[..3], [Ok(()), Ok(()), Ok(())]);
+        for result in &results[3..] {
+            assert!(
+                matches!(result, Err(AdmissionError::Exceeded { .. })),
+                "a Redis failure must not reopen a spent window: {results:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn fallback_admissions_still_count_after_redis_recovers() {
+        // Redis never saw the three fallback admissions, so it reports a low
+        // count after recovery; the local window must still refuse.
+        let results = run_script(vec![None, None, None, shared_allowed(1)]).await;
+
+        assert_eq!(results[..3], [Ok(()), Ok(()), Ok(())]);
+        assert!(
+            matches!(results[3], Err(AdmissionError::Exceeded { .. })),
+            "recovery must not grant a fourth admission: {results:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn shared_denial_stays_authoritative_with_a_fresh_local_window() {
+        let results = run_script(vec![Some(RateLimitResult::denied(4, 3, 9))]).await;
+
+        assert_eq!(
+            results,
+            [Err(AdmissionError::Exceeded { reset_in_secs: 9 })]
+        );
+    }
+
+    #[tokio::test]
+    async fn mixed_outcomes_admit_exactly_the_limit_in_one_window() {
+        let results = run_script(vec![
+            shared_allowed(1),
+            None,
+            shared_allowed(2),
+            None,
+            shared_allowed(3),
+        ])
+        .await;
+
+        let admitted = results.iter().filter(|result| result.is_ok()).count();
+        assert_eq!(
+            admitted, 3,
+            "one window admits the limit, no more: {results:?}"
+        );
+        assert!(matches!(results[4], Err(AdmissionError::Exceeded { .. })));
     }
 }

@@ -85,6 +85,57 @@ void main() {
     expect(destination.link, same(next));
   });
 
+  testWidgets('notification opens in front of a root Settings page', (
+    tester,
+  ) async {
+    final pending = _DeliverablePendingDeepLinkNotifier();
+    final rootNavigator = GlobalKey<NavigatorState>();
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          pendingDeepLinkProvider.overrideWith(() => pending),
+          channelsProvider.overrideWith(
+            () => _FakeChannelsNotifier(Future.value([_channel])),
+          ),
+        ],
+        child: MaterialApp(
+          navigatorKey: rootNavigator,
+          home: AdaptiveWorkspace(
+            child: DeepLinkDispatcher(
+              destinationBuilder: (channel, link) =>
+                  _CapturedDestination(channel: channel, link: link),
+              child: const Scaffold(body: Text('Workspace')),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    unawaited(
+      rootNavigator.currentState!.push(
+        MaterialPageRoute<void>(
+          builder: (_) => const Scaffold(body: Text('Settings page')),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('Settings page'), findsOneWidget);
+
+    pending.deliver(
+      const MessageDeepLink(
+        channelId: 'channel-1',
+        messageId: 'message-2',
+        communityId: 'same-community',
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(pending.consumeCalls, 1);
+    expect(find.text('Settings page'), findsNothing);
+    expect(find.byType(_CapturedDestination), findsOneWidget);
+  });
+
   testWidgets('deep link opens in adaptive pane and survives folding', (
     tester,
   ) async {
@@ -856,6 +907,27 @@ class _RecordingPendingDeepLinkNotifier extends PendingDeepLinkNotifier {
   void consume() {
     consumeCalls++;
     super.consume();
+  }
+}
+
+/// Starts empty; [deliver] parks a link as if a notification was tapped.
+class _DeliverablePendingDeepLinkNotifier extends PendingDeepLinkNotifier {
+  int consumeCalls = 0;
+
+  @override
+  BuzzDeepLink? build() => null;
+
+  void deliver(BuzzDeepLink link) => state = link;
+
+  @override
+  Future<DeepLinkCommunityPreparation> prepareCommunity(
+    BuzzDeepLink link,
+  ) async => DeepLinkCommunityPreparation.ready;
+
+  @override
+  void consume() {
+    consumeCalls++;
+    state = null;
   }
 }
 

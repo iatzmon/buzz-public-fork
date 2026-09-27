@@ -144,6 +144,12 @@ class _DeepLinkDispatcherState extends ConsumerState<DeepLinkDispatcher> {
   }
 
   void _pushChannel(Channel channel, BuzzDeepLink link) {
+    // A root utility page, such as Settings, can cover the workspace. Close
+    // it, so the destination opens in front and not behind it.
+    final rootRoute = AdaptiveWorkspace.rootRouteOf(context);
+    if (rootRoute != null && !rootRoute.isCurrent) {
+      rootRoute.navigator?.popUntil((route) => route == rootRoute);
+    }
     AdaptiveWorkspace.open(
       context,
       MaterialPageRoute<void>(

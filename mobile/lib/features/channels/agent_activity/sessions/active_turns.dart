@@ -87,112 +87,184 @@ class ActiveTurn {
   );
 }
 
+/// Most turns kept per agent. Matches the harness's upper bound for parallel
+/// agent processes (`BUZZ_ACP_AGENTS` accepts 1..=32), so it only guards
+/// against unbounded growth. A turn dropped for this limit is counted in
+/// [ActiveTurnLedger.droppedTurnCount] so the page can say the list is
+/// incomplete.
+const maxActiveTurnsPerAgent = 32;
+
+/// Most ended turn IDs remembered per agent, so a late frame cannot revive a
+/// turn that already ended.
+const _maxEndedTurnsPerAgent = 256;
+
 /// Every running turn across agents, oldest first, derived from each agent's
 /// time-ordered observer frames. Sibling turns in one channel stay separate.
 /// Quiet turns ([ActiveTurn.isQuietAt]) are kept: only an ending frame
 /// removes a turn.
+List<ActiveTurn> deriveActiveTurns(
+  Map<String, List<ObserverFrame>> framesByAgent,
+) {
+  final ledgers = <ActiveTurnLedger>[
+    for (final entry in framesByAgent.entries)
+      ActiveTurnLedger(entry.key)..applyAll(entry.value),
+  ];
+  return sortActiveTurns([for (final ledger in ledgers) ...ledger.turns]);
+}
+
+/// [turns] oldest first, ties broken by turn ID.
+List<ActiveTurn> sortActiveTurns(Iterable<ActiveTurn> turns) =>
+    List.unmodifiable(
+      turns.toList()..sort((a, b) {
+        final byStart = a.startedAt.compareTo(b.startedAt);
+        return byStart != 0 ? byStart : a.turnId.compareTo(b.turnId);
+      }),
+    );
+
+/// One agent's turn lifecycle, updated frame by frame as frames arrive.
+///
+/// It is kept apart from the observer's transcript buffer, which drops old
+/// frames. So a busy sibling turn cannot push a quiet turn, or a turn's
+/// request IDs, out of the list: only an ending frame removes a turn.
 ///
 /// Mirrors desktop `activeAgentTurnsStore.ts`: `turn_started` opens a turn,
 /// `turn_completed` / `turn_error` / `agent_panic` end it, and
 /// `turn_liveness` refreshes it or recreates one whose start frame was not
 /// seen (for example, the app opened mid-turn). A turn that ended is never
-/// recreated by an older or same-time frame.
-List<ActiveTurn> deriveActiveTurns(
-  Map<String, List<ObserverFrame>> framesByAgent,
-) {
-  final result = <ActiveTurn>[
-    for (final entry in framesByAgent.entries)
-      ..._foldAgentFrames(entry.key, entry.value),
-  ];
-  result.sort((a, b) {
-    final byStart = a.startedAt.compareTo(b.startedAt);
-    return byStart != 0 ? byStart : a.turnId.compareTo(b.turnId);
-  });
-  return result;
-}
+/// recreated by an older or same-time frame. Frames may arrive out of order,
+/// so times only move forward and a late `turn_started` fills in what
+/// liveness could not carry.
+class ActiveTurnLedger {
+  ActiveTurnLedger(this.agentPubkey);
 
-Iterable<ActiveTurn> _foldAgentFrames(
-  String agentPubkey,
-  List<ObserverFrame> frames,
-) {
-  final turns = <String, ActiveTurn>{};
-  final endedAt = <String, DateTime>{};
+  final String agentPubkey;
+  final Map<String, ActiveTurn> _turns = {};
+  final Map<String, DateTime> _endedAt = {};
+  int _dropped = 0;
 
-  for (final frame in frames) {
+  /// This agent's turns that started and have not reported an end.
+  Iterable<ActiveTurn> get turns => _turns.values;
+
+  /// Turns removed only because of [maxActiveTurnsPerAgent], not by an
+  /// ending frame.
+  int get droppedTurnCount => _dropped;
+
+  void applyAll(Iterable<ObserverFrame> frames) {
+    for (final frame in frames) {
+      apply(frame);
+    }
+  }
+
+  /// Applies one frame. Returns whether the turn list changed.
+  bool apply(ObserverFrame frame) {
     final at = DateTime.tryParse(frame.timestamp);
-    if (at == null) continue;
+    if (at == null) return false;
     final turnId = frame.turnId;
 
     switch (frame.kind) {
       case 'turn_started':
         final channelId = frame.channelId;
-        if (channelId == null) break;
+        if (channelId == null) return false;
         final id = turnId ?? 'seq-${frame.seq}';
-        endedAt.remove(id);
-        turns[id] = ActiveTurn(
-          agentPubkey: agentPubkey,
-          turnId: id,
-          channelId: channelId,
-          sessionId: frame.sessionId,
-          startedAt: at,
-          lastSeenAt: at,
-          cancelByTurnId: _cancelByTurnId(frame),
-          triggeringEventIds: _triggeringEventIds(frame),
+        if (_endedAfterOrAt(id, at)) return false;
+        _endedAt.remove(id);
+        final existing = _turns[id];
+        _put(
+          ActiveTurn(
+            agentPubkey: agentPubkey,
+            turnId: id,
+            channelId: channelId,
+            sessionId: existing?.sessionId ?? frame.sessionId,
+            startedAt: existing == null || at.isBefore(existing.startedAt)
+                ? at
+                : existing.startedAt,
+            lastSeenAt: _later(existing?.lastSeenAt, at),
+            cancelByTurnId:
+                (existing?.cancelByTurnId ?? false) || _cancelByTurnId(frame),
+            triggeringEventIds: _triggeringEventIds(frame),
+          ),
         );
+        return true;
       case 'turn_completed' || 'turn_error' || 'agent_panic':
+        final String? id;
         if (turnId != null) {
-          turns.remove(turnId);
-          endedAt[turnId] = at;
+          id = turnId;
         } else if (frame.channelId != null) {
-          final match = turns.values
-              .where((turn) => turn.channelId == frame.channelId)
-              .firstOrNull;
-          if (match != null) {
-            turns.remove(match.turnId);
-            endedAt[match.turnId] = at;
-          }
+          id = _turns.values
+              .where(
+                (turn) =>
+                    turn.channelId == frame.channelId &&
+                    !turn.startedAt.isAfter(at),
+              )
+              .firstOrNull
+              ?.turnId;
+        } else {
+          id = null;
         }
+        if (id == null) return false;
+        _endedAt[id] = _later(_endedAt.remove(id), at);
+        if (_endedAt.length > _maxEndedTurnsPerAgent) {
+          _endedAt.remove(_endedAt.keys.first);
+        }
+        return _turns.remove(id) != null;
       case 'turn_liveness':
-        if (turnId == null) break;
-        final existing = turns[turnId];
+        if (turnId == null) return false;
+        final existing = _turns[turnId];
         if (existing != null) {
-          turns[turnId] = existing.copyWith(
+          _turns[turnId] = existing.copyWith(
             sessionId: frame.sessionId,
-            lastSeenAt: at,
+            lastSeenAt: _later(existing.lastSeenAt, at),
             cancelByTurnId: _cancelByTurnId(frame),
           );
-          break;
+          return true;
         }
         final channelId = frame.channelId;
-        final ended = endedAt[turnId];
-        if (channelId == null || (ended != null && !at.isAfter(ended))) {
-          break;
-        }
+        if (channelId == null || _endedAfterOrAt(turnId, at)) return false;
         final claimedStart = DateTime.tryParse(frame.startedAt ?? '');
-        turns[turnId] = ActiveTurn(
-          agentPubkey: agentPubkey,
-          turnId: turnId,
-          channelId: channelId,
-          sessionId: frame.sessionId,
-          startedAt: claimedStart != null && !claimedStart.isAfter(at)
-              ? claimedStart
-              : at,
-          lastSeenAt: at,
-          cancelByTurnId: _cancelByTurnId(frame),
+        _put(
+          ActiveTurn(
+            agentPubkey: agentPubkey,
+            turnId: turnId,
+            channelId: channelId,
+            sessionId: frame.sessionId,
+            startedAt: claimedStart != null && !claimedStart.isAfter(at)
+                ? claimedStart
+                : at,
+            lastSeenAt: at,
+            cancelByTurnId: _cancelByTurnId(frame),
+          ),
         );
+        return true;
       default:
         // Stream activity keeps a quiet turn alive and may carry its session.
-        final existing = turnId == null ? null : turns[turnId];
-        if (existing != null) {
-          turns[turnId!] = existing.copyWith(
-            sessionId: frame.sessionId,
-            lastSeenAt: at,
-          );
-        }
+        final existing = turnId == null ? null : _turns[turnId];
+        if (existing == null) return false;
+        _turns[turnId!] = existing.copyWith(
+          sessionId: frame.sessionId,
+          lastSeenAt: _later(existing.lastSeenAt, at),
+        );
+        return true;
     }
   }
-  return turns.values;
+
+  bool _endedAfterOrAt(String turnId, DateTime at) {
+    final ended = _endedAt[turnId];
+    return ended != null && !at.isAfter(ended);
+  }
+
+  void _put(ActiveTurn turn) {
+    _turns[turn.turnId] = turn;
+    while (_turns.length > maxActiveTurnsPerAgent) {
+      final oldest = _turns.values.reduce(
+        (a, b) => b.lastSeenAt.isBefore(a.lastSeenAt) ? b : a,
+      );
+      _turns.remove(oldest.turnId);
+      _dropped += 1;
+    }
+  }
 }
+
+DateTime _later(DateTime? a, DateTime b) => a == null || b.isAfter(a) ? b : a;
 
 List<String> _triggeringEventIds(ObserverFrame frame) {
   final payload = frame.payload;

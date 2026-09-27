@@ -74,6 +74,7 @@ Future<List<ActiveTurn>> _pump(
   SessionsStatus status = (
     discovery: SessionsDiscovery.listening,
     errorMessage: null,
+    droppedTurnCount: 0,
   ),
   Map<String, String> activity = const {},
   Map<String, NostrEvent> messages = const {},
@@ -144,12 +145,34 @@ void main() {
       await _pump(
         tester,
         turns: const [],
-        status: (discovery: discovery, errorMessage: 'offline'),
+        status: (
+          discovery: discovery,
+          errorMessage: 'offline',
+          droppedTurnCount: 0,
+        ),
       );
       expect(find.byKey(const Key('sessions-empty')), findsNothing);
       expect(find.textContaining(text), findsOneWidget);
     });
   }
+
+  testWidgets('says when turns were dropped for the per-agent limit', (
+    tester,
+  ) async {
+    await _pump(
+      tester,
+      turns: [_turn(_agentA, 't1')],
+      status: (
+        discovery: SessionsDiscovery.listening,
+        errorMessage: null,
+        droppedTurnCount: 2,
+      ),
+    );
+    expect(
+      find.textContaining('2 older turns were dropped from this list'),
+      findsOneWidget,
+    );
+  });
 
   testWidgets('keeps a quiet turn listed apart, not as ended', (tester) async {
     await _pump(

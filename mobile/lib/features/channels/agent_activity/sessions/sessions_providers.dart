@@ -38,12 +38,10 @@ const sessionsDiscoveryWindow = Duration(seconds: 15);
 
 /// Every turn across the owner's agents that started and has not reported
 /// an end, oldest first. Includes quiet turns ([ActiveTurn.isQuietAt]).
-final activeTurnsProvider = Provider.autoDispose<List<ActiveTurn>>((ref) {
-  final frames = ref.watch(
-    observerRelayProvider.select((state) => state.framesByAgent),
-  );
-  return deriveActiveTurns(frames);
-});
+final activeTurnsProvider = Provider.autoDispose<List<ActiveTurn>>(
+  (ref) =>
+      ref.watch(observerRelayProvider.select((state) => state.activeTurns)),
+);
 
 /// How much the Sessions page can know about running turns right now.
 enum SessionsDiscovery {
@@ -63,8 +61,13 @@ enum SessionsDiscovery {
   listening,
 }
 
-/// The activity subscription's state, with any error text.
-typedef SessionsStatus = ({SessionsDiscovery discovery, String? errorMessage});
+/// The activity subscription's state, with any error text and the number of
+/// turns dropped for the per-agent limit.
+typedef SessionsStatus = ({
+  SessionsDiscovery discovery,
+  String? errorMessage,
+  int droppedTurnCount,
+});
 
 final sessionsStatusProvider = Provider.autoDispose<SessionsStatus>((ref) {
   final relay = ref.watch(observerRelayProvider);
@@ -72,6 +75,7 @@ final sessionsStatusProvider = Provider.autoDispose<SessionsStatus>((ref) {
   return (
     discovery: sessionsDiscoveryFor(relay, now),
     errorMessage: relay.errorMessage,
+    droppedTurnCount: relay.droppedTurnCount,
   );
 });
 

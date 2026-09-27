@@ -1,7 +1,8 @@
 part of '../sessions_page.dart';
 
 /// What the page can know about running turns, when that is less than
-/// everything. Shows nothing while the activity subscription is listening.
+/// everything. Shows nothing while the activity subscription is listening
+/// and no turn was dropped.
 class _SessionsStatusBanner extends StatelessWidget {
   const _SessionsStatusBanner({required this.status});
 
@@ -22,7 +23,14 @@ class _SessionsStatusBanner extends StatelessWidget {
             '10 seconds.',
       SessionsDiscovery.listening => null,
     };
-    if (text == null) return const SizedBox.shrink();
+    final dropped = status.droppedTurnCount;
+    final droppedText = dropped == 0
+        ? null
+        : '$dropped older ${dropped == 1 ? 'turn was' : 'turns were'} '
+              'dropped from this list because an agent reported more than '
+              '$maxActiveTurnsPerAgent turns. They may still be running.';
+    final shown = [?text, ?droppedText];
+    if (shown.isEmpty) return const SizedBox.shrink();
     return Padding(
       key: const Key('sessions-status'),
       padding: const EdgeInsets.only(bottom: Grid.xs),
@@ -33,7 +41,7 @@ class _SessionsStatusBanner extends StatelessWidget {
         ),
         child: Padding(
           padding: const EdgeInsets.all(Grid.twelve),
-          child: Text(text, style: context.textTheme.bodySmall),
+          child: Text(shown.join('\n\n'), style: context.textTheme.bodySmall),
         ),
       ),
     );

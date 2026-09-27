@@ -7,6 +7,7 @@ import 'package:nostr/nostr.dart' as nostr;
 import '../../../shared/crypto/nip44.dart';
 import '../../../shared/relay/relay.dart';
 import 'observer_models.dart';
+import 'sessions/active_turns.dart';
 import 'transcript_builder.dart';
 
 /// Maximum observer events to keep per agent.
@@ -46,24 +47,37 @@ class ObserverRelayState {
   /// learned from its next liveness frame after this time.
   final DateTime? openSince;
 
+  /// Every turn across agents that started and has not reported an end,
+  /// oldest first. Tracked as frames arrive, apart from [framesByAgent],
+  /// so dropping old transcript frames never drops a turn.
+  final List<ActiveTurn> activeTurns;
+
+  /// Turns dropped only because an agent passed [maxActiveTurnsPerAgent].
+  final int droppedTurnCount;
+
   const ObserverRelayState({
     required this.connection,
     required this.framesByAgent,
     this.errorMessage,
     this.openSince,
+    this.activeTurns = const [],
+    this.droppedTurnCount = 0,
   });
 
   const ObserverRelayState.initial()
     : connection = ObserverConnectionState.idle,
       framesByAgent = const {},
       errorMessage = null,
-      openSince = null;
+      openSince = null,
+      activeTurns = const [],
+      droppedTurnCount = 0;
 }
 
 class ObserverRelayNotifier extends Notifier<ObserverRelayState> {
   final Map<String, List<ObserverFrame>> _framesByAgent = {};
   final Map<String, Set<String>> _dedupeKeysByAgent = {};
   final Map<String, Uint8List> _conversationKeysByAgent = {};
+  final Map<String, ActiveTurnLedger> _turnLedgersByAgent = {};
 
   void Function()? _unsubscribe;
   Future<void>? _startFuture;
@@ -228,6 +242,9 @@ class ObserverRelayNotifier extends Notifier<ObserverRelayState> {
     );
     frames.add(frame);
     frames.sort(_compareObserverFrames);
+    _turnLedgersByAgent
+        .putIfAbsent(normalizedAgent, () => ActiveTurnLedger(normalizedAgent))
+        .apply(frame);
 
     if (frames.length > _maxObserverEvents) {
       final removeCount = frames.length - _maxObserverEvents;
@@ -291,6 +308,13 @@ class ObserverRelayNotifier extends Notifier<ObserverRelayState> {
       framesByAgent: _snapshotFrames(),
       errorMessage: _errorMessage,
       openSince: _openSince,
+      activeTurns: sortActiveTurns([
+        for (final ledger in _turnLedgersByAgent.values) ...ledger.turns,
+      ]),
+      droppedTurnCount: _turnLedgersByAgent.values.fold(
+        0,
+        (sum, ledger) => sum + ledger.droppedTurnCount,
+      ),
     );
   }
 
@@ -313,6 +337,7 @@ class ObserverRelayNotifier extends Notifier<ObserverRelayState> {
     _framesByAgent.clear();
     _dedupeKeysByAgent.clear();
     _conversationKeysByAgent.clear();
+    _turnLedgersByAgent.clear();
   }
 
   static String _decodePrivkey(String nsec) {

@@ -171,4 +171,64 @@ void main() {
       isFalse,
     );
   });
+
+  test(
+    'a late start frame fills in the request of a turn seen by liveness',
+    () {
+      final ledger = ActiveTurnLedger(_agent)
+        ..apply(
+          _frame(
+            2,
+            'turn_liveness',
+            turnId: 't1',
+            at: const Duration(seconds: 10),
+          ),
+        )
+        ..apply(
+          _frame(
+            1,
+            'turn_started',
+            turnId: 't1',
+            payload: {
+              'triggeringEventIds': ['e1'],
+            },
+          ),
+        );
+      final turn = ledger.turns.single;
+      expect(turn.triggeringEventIds, ['e1']);
+      expect(turn.startedAt, _t0);
+      expect(turn.lastSeenAt, _t0.add(const Duration(seconds: 10)));
+    },
+  );
+
+  test('a late start frame does not revive a turn that ended after it', () {
+    final ledger = ActiveTurnLedger(_agent)
+      ..apply(
+        _frame(
+          2,
+          'turn_completed',
+          turnId: 't1',
+          at: const Duration(seconds: 5),
+        ),
+      )
+      ..apply(_frame(1, 'turn_started', turnId: 't1'));
+    expect(ledger.turns, isEmpty);
+  });
+
+  test('counts turns dropped for the per-agent limit', () {
+    final ledger = ActiveTurnLedger(_agent);
+    for (var i = 0; i <= maxActiveTurnsPerAgent; i++) {
+      ledger.apply(
+        _frame(
+          i,
+          'turn_started',
+          turnId: 't$i',
+          at: Duration(seconds: i),
+        ),
+      );
+    }
+    expect(ledger.turns, hasLength(maxActiveTurnsPerAgent));
+    expect(ledger.turns.map((t) => t.turnId), isNot(contains('t0')));
+    expect(ledger.droppedTurnCount, 1);
+  });
 }

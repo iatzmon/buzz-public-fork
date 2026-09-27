@@ -595,6 +595,33 @@ pub(super) fn load_rows_at_exact_keys(
     Ok(out)
 }
 
+/// Load every VALID row for one `(agent, session)` pair, with no time window.
+/// Serves the Sessions view's "tokens so far in this session" total, served by
+/// `idx_agent_metric_session`.
+pub(super) fn load_session_valid_rows(
+    conn: &Connection,
+    identity_pubkey: &str,
+    relay_url: &str,
+    agent_pubkey: &str,
+    session_id: &str,
+) -> Result<Vec<AgentMetricIndexRow>, String> {
+    let sql = format!(
+        "SELECT {ROW_COLUMNS} FROM agent_metric_index
+         WHERE identity_pubkey = ?1 AND relay_url = ?2 AND parse_status = 'valid'
+           AND agent_pubkey = ?3 AND session_id = ?4
+         ORDER BY turn_seq ASC, id ASC"
+    );
+    let mut stmt = stmt_prepare(conn, &sql)?;
+    let rows = stmt
+        .query_map(
+            params![identity_pubkey, relay_url, agent_pubkey, session_id],
+            row_from_sql,
+        )
+        .map_err(|e| format!("query load_session_valid_rows: {e}"))?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("read load_session_valid_rows row: {e}"))
+}
+
 /// `hasArchivedEvidence` (A13): does at least one surviving `agent_metric_index`
 /// row (either `parse_status`) exist for this author under the active
 /// identity+relay, with NO bucket-boundary restriction? Computed after

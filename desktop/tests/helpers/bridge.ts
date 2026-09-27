@@ -320,6 +320,16 @@ type MockBridgeOptions = {
     requestId?: string;
     modelId?: string;
   }>;
+  /** Make `get_agent_session_usage` fail with this message. */
+  sessionUsageError?: string;
+  /** Session usage returned by `get_agent_session_usage`. */
+  sessionUsage?: Array<{
+    agentPubkey: string;
+    sessionId: string;
+    totalTokens: string;
+    costUsd: number | null;
+    reportCount: number;
+  }>;
   /** Reject successive managed-agent starts, then resume. */
   startManagedAgentErrors?: string[];
   /** Delay (ms) after snapshotting a thread-replies page so E2E tests can

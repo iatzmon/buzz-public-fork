@@ -1,4 +1,4 @@
-import { Activity, Bot, Folders, Inbox, Zap } from "lucide-react";
+import { Activity, Bot, Folders, Inbox, Timer, Zap } from "lucide-react";
 
 import { TopbarSearch } from "@/features/search/ui/TopbarSearch";
 import { SidebarProjectsSection } from "@/features/sidebar/ui/SidebarProjectsSection";
@@ -19,6 +19,7 @@ type SidebarSelectedView =
   | "channel"
   | "messages"
   | "agents"
+  | "sessions"
   | "workflows"
   | "pulse"
   | "projects";
@@ -45,6 +46,7 @@ type AppSidebarPrimaryMenuProps = {
   onSelectHome: () => void;
   onSelectProjects: () => void;
   onSelectPulse: () => void;
+  onSelectSessions: () => void;
   onSelectWorkflows: () => void;
   projectsOverviewActive: boolean;
   selectedView: SidebarSelectedView;
@@ -95,6 +97,7 @@ export function AppSidebarPrimaryMenu({
   onSelectHome,
   onSelectProjects,
   onSelectPulse,
+  onSelectSessions,
   onSelectWorkflows,
   projectsOverviewActive,
   selectedView,
@@ -166,6 +169,19 @@ export function AppSidebarPrimaryMenu({
             >
               <Bot className="h-4 w-4" />
               <SidebarMenuLabel>Agents</SidebarMenuLabel>
+            </SidebarMenuButton>
+          </SidebarMenuItem>
+          <SidebarMenuItem>
+            <SidebarMenuButton
+              className="data-[active=true]:font-normal"
+              data-testid="open-sessions-view"
+              isActive={selectedView === "sessions"}
+              onClick={onSelectSessions}
+              tooltip="Sessions"
+              type="button"
+            >
+              <Timer className="h-4 w-4" />
+              <SidebarMenuLabel>Sessions</SidebarMenuLabel>
             </SidebarMenuButton>
           </SidebarMenuItem>
           <ProtectedBestieSidebarEntry />

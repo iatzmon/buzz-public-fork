@@ -22,6 +22,7 @@ mod archive_db;
 mod metric_store;
 mod pipeline;
 pub mod retention;
+mod session_usage;
 pub mod store;
 mod store_migrations;
 pub mod sync;
@@ -823,6 +824,24 @@ pub async fn get_agent_usage_series(
     state
         .archive_db
         .with_conn(move |conn| agent_usage_series(conn, &identity_pk, &relay_url, &request))
+        .await
+}
+
+/// Tokens and cost reported so far by the completed turns of the given agent
+/// sessions, for the active identity + relay. Sessions with no usage report
+/// are omitted.
+#[tauri::command]
+pub async fn get_agent_session_usage(
+    state: State<'_, AppState>,
+    request: session_usage::AgentSessionUsageRequest,
+) -> Result<Vec<session_usage::SessionUsage>, String> {
+    let identity_pk = identity_pubkey(&state)?;
+    let relay_url = relay_ws_url_with_override(&state);
+    state
+        .archive_db
+        .with_conn(move |conn| {
+            session_usage::agent_session_usage(conn, &identity_pk, &relay_url, &request)
+        })
         .await
 }
 

@@ -409,6 +409,16 @@ type E2eConfig = {
       requestId?: string;
       modelId?: string;
     }>;
+    /** Make `get_agent_session_usage` fail with this message. */
+    sessionUsageError?: string;
+    /** Session usage returned by `get_agent_session_usage`. */
+    sessionUsage?: Array<{
+      agentPubkey: string;
+      sessionId: string;
+      totalTokens: string;
+      costUsd: number | null;
+      reportCount: number;
+    }>;
     /** Reject successive managed-agent starts, then resume. */
     startManagedAgentErrors?: string[];
     /** Delay (ms) after snapshotting a thread-replies page so E2E tests can
@@ -1495,7 +1505,9 @@ declare global {
       agentPubkey: string;
       channelId: string;
       turnId: string;
-      kind?: "turn_started" | "turn_completed";
+      kind?: "turn_started" | "turn_completed" | "turn_liveness";
+      sessionId?: string | null;
+      payload?: unknown;
     }) => void;
     __BUZZ_E2E_SEED_OBSERVER_EVENTS__?: (input: {
       agentPubkey: string;
@@ -11917,6 +11929,8 @@ export function maybeInstallE2eTauriMocks() {
     channelId,
     turnId,
     kind = "turn_started",
+    sessionId = null,
+    payload = null,
   }) => {
     seedTurnSeq += 1;
     const event = {
@@ -11925,9 +11939,9 @@ export function maybeInstallE2eTauriMocks() {
       kind,
       agentIndex: 0,
       channelId,
-      sessionId: null,
+      sessionId,
       turnId,
-      payload: null,
+      payload,
     };
     syncAgentTurnsFromEvents(agentPubkey, [event]);
     syncAgentObserverEvents(agentPubkey, [event]);
@@ -15281,6 +15295,37 @@ export function maybeInstallE2eTauriMocks() {
           }
         }
         return null;
+      }
+      case "get_agent_session_usage": {
+        const usageError = getConfig()?.mock?.sessionUsageError;
+        if (usageError) {
+          throw new Error(usageError);
+        }
+        const request = (
+          payload as {
+            request: { agentPubkey: string; sessionIds: string[] };
+          }
+        ).request;
+        const field = (value: string | null) => ({ value, incomplete: false });
+        return (getConfig()?.mock?.sessionUsage ?? [])
+          .filter(
+            (entry) =>
+              entry.agentPubkey === request.agentPubkey &&
+              request.sessionIds.includes(entry.sessionId),
+          )
+          .map((entry) => ({
+            sessionId: entry.sessionId,
+            reportCount: entry.reportCount,
+            usage: {
+              inputTokens: field(null),
+              outputTokens: field(null),
+              totalTokens: field(entry.totalTokens),
+              estimatedCostUsd: { value: entry.costUsd, incomplete: false },
+              cacheReadTokens: field(null),
+              cacheWriteTokens: field(null),
+              freshInputTokens: field(null),
+            },
+          }));
       }
       default:
         throw new Error(`Unsupported mocked Tauri command: ${command}`);

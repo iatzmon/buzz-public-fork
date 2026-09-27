@@ -1,15 +1,22 @@
 import { sendAgentObserverControl } from "@/shared/api/observerRelay";
 
-/** Send a stop request; the harness acknowledges it via control_result. */
+/**
+ * Send a stop request; the harness acknowledges it via control_result.
+ *
+ * Pass `turnId` only for a turn whose telemetry advertised
+ * `cancelByTurnId`: an older runtime ignores the field and cancels by channel.
+ */
 export async function cancelManagedAgentTurn(
   pubkey: string,
   channelId: string,
   requestId: string,
+  turnId?: string,
 ): Promise<void> {
   await sendAgentObserverControl(pubkey, {
     type: "cancel_turn",
     channelId,
     requestId,
+    ...(turnId ? { turnId } : {}),
   });
 }
 

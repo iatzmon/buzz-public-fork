@@ -6,6 +6,7 @@ import {
   syncActiveAgentTurnsFromObserver,
   getActiveTurnsForAgent,
   getActiveTurnsByChannel,
+  getActiveTurnDetails,
   resetActiveAgentTurnsStore,
   subscribeActiveAgentTurns,
   saveActiveAgentTurnsForCommunity,
@@ -1821,6 +1822,87 @@ describe("observer → active-turns bridge sync", () => {
       0,
       "inactive agents must not populate the active-turns store",
     );
+  });
+});
+
+describe("getActiveTurnDetails", () => {
+  beforeEach(() => {
+    resetActiveAgentTurnsStore();
+  });
+
+  it("keeps sibling turns in one channel as separate rows", () => {
+    syncAgentTurnsFromEvents(AGENT, [
+      makeEvent({ seq: 1, turnId: "t1", channelId: "c1", sessionId: "s1" }),
+      makeEvent({ seq: 2, turnId: "t2", channelId: "c1", sessionId: "s2" }),
+    ]);
+    const details = getActiveTurnDetails();
+    assert.deepEqual(
+      details.map((turn) => [turn.turnId, turn.channelId, turn.sessionId]),
+      [
+        ["t1", "c1", "s1"],
+        ["t2", "c1", "s2"],
+      ],
+    );
+    assert.equal(getActiveTurnsByChannel().length, 1);
+  });
+
+  it("reads Stop support and a single trigger from turn_started", () => {
+    syncAgentTurnsFromEvents(AGENT, [
+      makeEvent({
+        seq: 1,
+        turnId: "t1",
+        payload: { cancelByTurnId: true, triggeringEventIds: ["evt-1"] },
+      }),
+      makeEvent({
+        seq: 2,
+        turnId: "t2",
+        payload: { triggeringEventIds: ["evt-2", "evt-3"] },
+      }),
+    ]);
+    const [first, second] = getActiveTurnDetails();
+    assert.equal(first.cancelByTurnId, true);
+    assert.equal(first.triggeringEventId, "evt-1");
+    assert.equal(second.cancelByTurnId, false, "missing flag means no support");
+    assert.equal(second.triggeringEventId, null, "batched triggers stay unset");
+  });
+
+  it("learns session and Stop support from liveness and notifies", () => {
+    syncAgentTurnsFromEvents(AGENT, [
+      makeEvent({ seq: 1, turnId: "t1", sessionId: null }),
+    ]);
+    const before = getActiveTurnDetails();
+    assert.equal(before[0].sessionId, null);
+    assert.equal(before[0].cancelByTurnId, false);
+
+    let notified = 0;
+    const unsubscribe = subscribeActiveAgentTurns(() => {
+      notified += 1;
+    });
+    syncAgentTurnsFromEvents(AGENT, [
+      makeEvent({
+        seq: 2,
+        kind: "turn_liveness",
+        turnId: "t1",
+        sessionId: "s1",
+        payload: { cancelByTurnId: true },
+      }),
+    ]);
+    unsubscribe();
+
+    const after = getActiveTurnDetails();
+    assert.notEqual(after, before, "a changed fact rebuilds the cached array");
+    assert.equal(after[0].sessionId, "s1");
+    assert.equal(after[0].cancelByTurnId, true);
+    assert.ok(notified > 0);
+  });
+
+  it("returns a stable array until the turn map changes", () => {
+    syncAgentTurnsFromEvents(AGENT, [makeEvent({ seq: 1, turnId: "t1" })]);
+    assert.equal(getActiveTurnDetails(), getActiveTurnDetails());
+    syncAgentTurnsFromEvents(AGENT, [
+      makeEvent({ seq: 2, kind: "turn_completed", turnId: "t1" }),
+    ]);
+    assert.deepEqual(getActiveTurnDetails(), []);
   });
 });
 

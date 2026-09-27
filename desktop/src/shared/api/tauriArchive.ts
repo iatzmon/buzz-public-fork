@@ -514,6 +514,25 @@ export async function getAgentUsageSeries(
   return invokeTauri<AgentUsageSeries>("get_agent_usage_series", { request });
 }
 
+/** Usage reported so far by the completed turns of one agent session. */
+export type SessionUsage = {
+  sessionId: string;
+  usage: ReportedUsage;
+  reportCount: number;
+};
+
+/**
+ * Read usage for the given sessions of one agent from the local NIP-AM
+ * archive. Sessions without a usage report are omitted. Mirrors
+ * `desktop/src-tauri/src/archive/session_usage.rs`.
+ */
+export async function getAgentSessionUsage(request: {
+  agentPubkey: string;
+  sessionIds: string[];
+}): Promise<SessionUsage[]> {
+  return invokeTauri<SessionUsage[]>("get_agent_session_usage", { request });
+}
+
 /**
  * Read a paginated page of archived raw events for a scope.
  *

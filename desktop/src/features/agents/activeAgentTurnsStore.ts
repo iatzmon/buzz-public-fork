@@ -56,6 +56,23 @@ type ActiveTurn = {
   channelId: string;
   startedAt: number;
   lastActivityAt: number;
+  /** ACP session id; known once the harness resolves the session. */
+  sessionId: string | null;
+  /** The runtime honors `cancel_turn` with this exact `turnId`. */
+  cancelByTurnId: boolean;
+  /** The one message that started the turn, when exactly one did. */
+  triggeringEventId: string | null;
+};
+
+/** One running turn surfaced to the Sessions view, anchored to the desktop clock. */
+export type ActiveTurnDetail = {
+  agentPubkey: string;
+  turnId: string;
+  channelId: string;
+  sessionId: string | null;
+  anchorAt: number;
+  cancelByTurnId: boolean;
+  triggeringEventId: string | null;
 };
 
 /** One working channel surfaced to the UI, anchored to the desktop clock. */
@@ -98,6 +115,7 @@ const clockOffsetByAgent = new Map<string, number>();
 // Only regenerated when the underlying turn map for an agent actually changes.
 const cachedTurnSummaries = new Map<string, ActiveTurnSummary[]>();
 let cachedChannelTurnSummaries: ActiveChannelTurnSummary[] | null = null;
+let cachedTurnDetails: ActiveTurnDetail[] | null = null;
 
 // Composite watermark per (agent, channel): the newest observer event
 // processed for that channel, by (timestamp, seq) ordering. An event is
@@ -144,6 +162,7 @@ let unsubscribePruneVisibility: (() => void) | null = null;
 function invalidateCache(agentKey: string) {
   cachedTurnSummaries.delete(agentKey);
   cachedChannelTurnSummaries = null;
+  cachedTurnDetails = null;
 }
 
 function notifyListeners() {
@@ -174,11 +193,36 @@ function parseTimestamp(timestamp: string): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+function payloadRecord(event: ObserverEvent): Record<string, unknown> | null {
+  return event.payload && typeof event.payload === "object"
+    ? (event.payload as Record<string, unknown>)
+    : null;
+}
+
+/** Turn facts a frame may carry: the resolved session and Stop support. */
+function turnFactsFromEvent(event: ObserverEvent): {
+  sessionId: string | null;
+  cancelByTurnId: boolean;
+} {
+  return {
+    sessionId: event.sessionId ?? null,
+    cancelByTurnId: payloadRecord(event)?.cancelByTurnId === true,
+  };
+}
+
+function singleTriggeringEventId(event: ObserverEvent): string | null {
+  const ids = payloadRecord(event)?.triggeringEventIds;
+  return Array.isArray(ids) && ids.length === 1 && typeof ids[0] === "string"
+    ? ids[0]
+    : null;
+}
+
 function startTurn(
   agentPubkey: string,
   channelId: string,
   turnId: string,
   timestamp: string,
+  event?: ObserverEvent,
 ) {
   const key = normalizePubkey(agentPubkey);
   let agentTurns = activeTurnsByAgent.get(key);
@@ -203,26 +247,53 @@ function startTurn(
   }
 
   const startedAt = parseTimestamp(timestamp) ?? Date.now();
+  const facts = event
+    ? turnFactsFromEvent(event)
+    : { sessionId: null, cancelByTurnId: false };
   agentTurns.set(turnId, {
     turnId,
     channelId,
     startedAt,
     lastActivityAt: Date.now(),
+    ...facts,
+    triggeringEventId:
+      event?.kind === "turn_started" ? singleTriggeringEventId(event) : null,
   });
   invalidateCache(key);
 }
 
-function recordActivity(agentPubkey: string, turnId: string | null): boolean {
-  if (!turnId) return false;
+/**
+ * Refresh a live turn's activity clock and learn any newly reported facts
+ * (session id, Stop support). Returns whether the turn exists and whether a
+ * surfaced fact changed.
+ */
+function recordActivity(
+  agentPubkey: string,
+  event: ObserverEvent,
+): { refreshed: boolean; factsChanged: boolean } {
+  const turnId = event.turnId ?? null;
+  if (!turnId) return { refreshed: false, factsChanged: false };
   const key = normalizePubkey(agentPubkey);
   const agentTurns = activeTurnsByAgent.get(key);
-  if (!agentTurns) return false;
-  const turn = agentTurns.get(turnId);
-  if (turn) {
-    turn.lastActivityAt = Date.now();
-    return true;
+  const turn = agentTurns?.get(turnId);
+  if (!turn) return { refreshed: false, factsChanged: false };
+  turn.lastActivityAt = Date.now();
+  const facts = turnFactsFromEvent(event);
+  let factsChanged = false;
+  if (facts.sessionId && facts.sessionId !== turn.sessionId) {
+    turn.sessionId = facts.sessionId;
+    factsChanged = true;
   }
-  return false;
+  // Only liveness frames advertise support; other frames say nothing about it.
+  if (
+    event.kind === "turn_liveness" &&
+    facts.cancelByTurnId !== turn.cancelByTurnId
+  ) {
+    turn.cancelByTurnId = facts.cancelByTurnId;
+    factsChanged = true;
+  }
+  if (factsChanged) invalidateCache(key);
+  return { refreshed: true, factsChanged };
 }
 
 /**
@@ -254,7 +325,7 @@ function resurrectTurn(agentPubkey: string, event: ObserverEvent): boolean {
     frameAt !== null && startedAtMs !== null && startedAtMs <= frameAt
       ? startedAt
       : event.timestamp;
-  startTurn(agentPubkey, event.channelId, event.turnId, safeStartedAt);
+  startTurn(agentPubkey, event.channelId, event.turnId, safeStartedAt, event);
   return true;
 }
 
@@ -408,6 +479,7 @@ function processEvent(agentPubkey: string, event: ObserverEvent) {
           event.channelId,
           event.turnId ?? `seq-${event.seq}`,
           event.timestamp,
+          event,
         );
         notifyListeners();
         return;
@@ -432,8 +504,8 @@ function processEvent(agentPubkey: string, event: ObserverEvent) {
     // turn was pruned out from under a still-running host (a transient drop
     // raced the pause, or the lone-crash residual self-healed), resurrect it.
     case "turn_liveness": {
-      const refreshed = recordActivity(agentPubkey, event.turnId ?? null);
-      if (!refreshed && resurrectTurn(agentPubkey, event)) {
+      const { refreshed, factsChanged } = recordActivity(agentPubkey, event);
+      if (factsChanged || (!refreshed && resurrectTurn(agentPubkey, event))) {
         notifyListeners();
         return;
       }
@@ -577,6 +649,47 @@ export function getActiveTurnsByChannel(): ActiveChannelTurnSummary[] {
 }
 
 /**
+ * Returns every running turn across all tracked agents, oldest first. Unlike
+ * the channel summaries above, sibling turns in one channel stay separate rows.
+ * The array reference is cached until the turn map mutates.
+ */
+export function getActiveTurnDetails(): ActiveTurnDetail[] {
+  if (cachedTurnDetails) return cachedTurnDetails;
+  if (activeTurnsByAgent.size === 0) return EMPTY_TURN_DETAILS;
+
+  const result: ActiveTurnDetail[] = [];
+  for (const [agentKey, agentTurns] of activeTurnsByAgent) {
+    const offset = clockOffsetByAgent.get(agentKey) ?? 0;
+    for (const turn of agentTurns.values()) {
+      result.push({
+        agentPubkey: agentKey,
+        turnId: turn.turnId,
+        channelId: turn.channelId,
+        sessionId: turn.sessionId,
+        anchorAt: turn.startedAt + offset,
+        cancelByTurnId: turn.cancelByTurnId,
+        triggeringEventId: turn.triggeringEventId,
+      });
+    }
+  }
+  result.sort(
+    (a, b) => a.anchorAt - b.anchorAt || a.turnId.localeCompare(b.turnId),
+  );
+  cachedTurnDetails = result;
+  return result;
+}
+
+const EMPTY_TURN_DETAILS: ActiveTurnDetail[] = [];
+
+/** Hook: every running turn across agents; re-renders on turn changes only. */
+export function useActiveTurnDetails(): ActiveTurnDetail[] {
+  return React.useSyncExternalStore(
+    subscribeActiveAgentTurns,
+    getActiveTurnDetails,
+  );
+}
+
+/**
  * Synchronize the active-turns store with the latest observer events for a
  * given agent.
  */
@@ -710,6 +823,7 @@ export function resetActiveAgentTurnsStore() {
   clockOffsetByAgent.clear();
   cachedTurnSummaries.clear();
   cachedChannelTurnSummaries = null;
+  cachedTurnDetails = null;
   terminalAtByAgent.clear();
   notifyListeners();
 }
@@ -826,6 +940,7 @@ export function restoreActiveAgentTurnsForCommunity(communityId: string): void {
 
   cachedTurnSummaries.clear();
   cachedChannelTurnSummaries = null;
+  cachedTurnDetails = null;
   notifyListeners();
 }
 

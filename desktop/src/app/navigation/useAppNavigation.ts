@@ -93,6 +93,17 @@ export function useAppNavigation() {
     [commitNavigation],
   );
 
+  const goSessions = React.useCallback(
+    (behavior?: NavigationBehavior) =>
+      commitNavigation(
+        {
+          to: "/sessions",
+        },
+        behavior,
+      ),
+    [commitNavigation],
+  );
+
   const goPulse = React.useCallback(
     (behavior?: NavigationBehavior) =>
       commitNavigation(
@@ -471,6 +482,7 @@ export function useAppNavigation() {
     goProjects,
     goPulse,
     goProfile,
+    goSessions,
     goSettings,
     goWorkflow,
     goWorkflows,

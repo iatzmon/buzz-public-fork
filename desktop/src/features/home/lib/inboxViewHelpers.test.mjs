@@ -8,6 +8,7 @@ import {
   getContextMessageDepth,
   getReactionTargetId,
   hasInboxThreadContext,
+  hidesReadInboxItem,
   isInboxThreadContextEvent,
   matchesInboxAllView,
   matchesInboxFilter,
@@ -506,4 +507,16 @@ test("inbox mappings: unknown signer never enables the card", () => {
     getConfigNudgeAuthorPubkey(message, () => false),
     undefined,
   );
+});
+
+test("hidesReadInboxItem clears read agent requests from Needs action only", () => {
+  const request = { groupItems: [{ kind: 9 }] };
+  const approval = { groupItems: [{ kind: 9 }, { kind: 46010 }] };
+
+  assert.equal(hidesReadInboxItem(request, "needs_action", false), true);
+  assert.equal(hidesReadInboxItem(approval, "needs_action", false), false);
+  assert.equal(hidesReadInboxItem(request, "all", false), false);
+  assert.equal(hidesReadInboxItem(request, "mention", false), false);
+  assert.equal(hidesReadInboxItem(approval, "needs_action", true), true);
+  assert.equal(hidesReadInboxItem(request, "all", true), true);
 });

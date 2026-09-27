@@ -137,7 +137,8 @@ class ActivityPage extends HookConsumerWidget {
     final visibleItems = [
       for (final item in allItems)
         if (matchesInboxFilter(item, filter.value) &&
-            (!unreadOnly.value || !isDone(item)))
+            (!hidesReadInboxItem(item, filter.value, unreadOnly.value) ||
+                !isDone(item)))
           item,
     ];
 

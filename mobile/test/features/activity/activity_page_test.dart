@@ -811,6 +811,70 @@ void main() {
     expect(find.textContaining('Job completed successfully'), findsNothing);
   });
 
+  testWidgets('Needs Action hides read agent requests but keeps approvals', (
+    tester,
+  ) async {
+    final readRequest = FeedItem(
+      id: 'na1',
+      kind: 9,
+      pubkey: 'agent_pk',
+      content: 'Please approve the deploy',
+      createdAt: now - 300,
+      channelId: 'ch1',
+      channelName: 'general',
+      tags: const [],
+      category: 'needs_action',
+    );
+    final unreadRequest = FeedItem(
+      id: 'na2',
+      kind: 9,
+      pubkey: 'agent_pk',
+      content: 'Please pick a name',
+      createdAt: now - 30,
+      channelId: 'ch2',
+      channelName: 'engineering',
+      tags: const [],
+      category: 'needs_action',
+    );
+    final readApproval = FeedItem(
+      id: 'wf1',
+      kind: 46010,
+      pubkey: 'agent_pk',
+      content: 'Workflow waiting',
+      createdAt: now - 600,
+      channelId: 'ch3',
+      channelName: 'ops',
+      tags: const [
+        ['h', 'ch3'],
+      ],
+      category: 'needs_action',
+    );
+    await tester.pumpWidget(
+      await buildTestable(
+        feed: HomeFeedResponse(
+          mentions: const [],
+          needsAction: [readRequest, unreadRequest, readApproval],
+          activity: const [],
+          agentActivity: const [],
+        ),
+        readContexts: {'ch1': now, 'ch3': now},
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    // All still lists the read request, so Mark unread stays reachable.
+    expect(find.textContaining('Please approve the deploy'), findsOneWidget);
+
+    await tester.tap(find.byKey(const ValueKey('activity-filter-menu')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Needs Action'));
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('Please approve the deploy'), findsNothing);
+    expect(find.textContaining('Please pick a name'), findsOneWidget);
+    expect(find.textContaining('Workflow waiting'), findsOneWidget);
+  });
+
   testWidgets('long-press mark unread reopens a read row', (tester) async {
     await tester.pumpWidget(
       await buildTestable(

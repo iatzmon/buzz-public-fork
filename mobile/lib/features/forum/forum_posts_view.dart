@@ -87,6 +87,14 @@ class ForumPostsView extends HookConsumerWidget {
         ? const <String>[]
         : channelWorkingKey.split(',');
     final headerCount = channelWorkingPubkeys.isEmpty ? 0 : 1;
+    final channelWorking = channelWorkingPubkeys.isEmpty
+        ? null
+        : ForumWorkingIndicator(
+            key: const ValueKey('forum-channel-working'),
+            channelId: channel.id,
+            pubkeys: channelWorkingPubkeys,
+            scope: ForumWorkingScope.forum,
+          );
 
     return Column(
       children: [
@@ -127,9 +135,24 @@ class ForumPostsView extends HookConsumerWidget {
               data: (response) {
                 final posts = response.posts;
                 if (posts.isEmpty) {
-                  return _EmptyState(
+                  final empty = _EmptyState(
                     isMember: channel.isMember,
                     isArchived: channel.isArchived,
+                  );
+                  // Someone may be writing the first post.
+                  if (channelWorking == null) return empty;
+                  return Column(
+                    children: [
+                      Padding(
+                        padding: EdgeInsets.only(
+                          top: frostedAppBarHeight(context),
+                          left: Grid.gutter,
+                          right: Grid.gutter,
+                        ),
+                        child: channelWorking,
+                      ),
+                      Expanded(child: empty),
+                    ],
                   );
                 }
                 return BeeRefreshIndicator(
@@ -148,13 +171,8 @@ class ForumPostsView extends HookConsumerWidget {
                     separatorBuilder: (_, _) =>
                         const SizedBox(height: Grid.xxs),
                     itemBuilder: (context, index) {
-                      if (index < headerCount) {
-                        return ForumWorkingIndicator(
-                          key: const ValueKey('forum-channel-working'),
-                          channelId: channel.id,
-                          pubkeys: channelWorkingPubkeys,
-                          scope: ForumWorkingScope.forum,
-                        );
+                      if (channelWorking != null && index < headerCount) {
+                        return channelWorking;
                       }
                       final post = posts[index - headerCount];
                       return ForumPostCard(

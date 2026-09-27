@@ -46,8 +46,9 @@ bool forumPostHasNewReplies({
 /// `last_reply_at` with its own clock when the reply is stored, which can
 /// land a second or more after the reply's signed `created_at`; marking
 /// only at `created_at` would leave the card's new-reply dot lit after the
-/// thread was read. [listedSummary] (the post list's summary for this post)
-/// is therefore adopted too, but only when every direct reply it counts is
+/// thread was read. The summary fetched with the thread
+/// (`post.threadSummary`) and the post list's summary ([listedSummary]) are
+/// therefore adopted too, each only when every direct reply it counts is
 /// already loaded here — a newer summary must not mark an unseen reply read.
 int forumThreadReadAt({
   required ForumPost post,
@@ -60,11 +61,13 @@ int forumThreadReadAt({
     if (reply.createdAt > readAt) readAt = reply.createdAt;
     if (reply.parentEventId == post.eventId) directReplies++;
   }
-  final lastReplyAt = listedSummary?.lastReplyAt;
-  if (lastReplyAt != null &&
-      listedSummary!.replyCount <= directReplies &&
-      lastReplyAt > readAt) {
-    readAt = lastReplyAt;
+  for (final summary in [post.threadSummary, listedSummary]) {
+    final lastReplyAt = summary?.lastReplyAt;
+    if (lastReplyAt != null &&
+        summary!.replyCount <= directReplies &&
+        lastReplyAt > readAt) {
+      readAt = lastReplyAt;
+    }
   }
   return readAt;
 }

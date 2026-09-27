@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 
 import '../../shared/relay/relay.dart';
@@ -23,6 +24,9 @@ final forumPostsProvider = FutureProvider.family<ForumPostsResponse, String>((
 });
 
 /// Fetches a forum thread (root post + replies) from the relay.
+///
+/// A forum post also gets the relay's reply summary (see
+/// [fetchForumPostSummary]) so opening it can mark every counted reply read.
 final forumThreadProvider =
     FutureProvider.family<
       ForumThreadResponse,
@@ -50,11 +54,48 @@ final forumThreadProvider =
       if (rootEvents.isEmpty) {
         throw Exception('Forum thread not found: ${args.eventId}');
       }
+      final root = rootEvents.first;
+      final postSummary = root.kind == EventKind.forumPost
+          ? await fetchForumPostSummary(
+              session,
+              channelId: args.channelId,
+              post: root,
+            )
+          : null;
       return ForumThreadResponse.fromEvents(
-        root: rootEvents.first,
+        root: root,
         replies: replyEvents,
+        postSummary: postSummary,
       );
     });
+
+/// The relay's reply summary for one forum post, read from the channel window
+/// anchored at the post, or `null` when the post has none or the query fails.
+///
+/// The summary's `last_reply_at` is the relay's store time, which can trail a
+/// reply's signed `created_at`; the thread page needs it to mark the thread
+/// read past that gap. Failure is not fatal to opening the thread — it only
+/// leaves a post-list dot lit — and the thread's periodic refresh retries.
+Future<ForumThreadSummary?> fetchForumPostSummary(
+  RelaySessionNotifier session, {
+  required String channelId,
+  required NostrEvent post,
+}) async {
+  try {
+    final events = await session.queryRelay([
+      NostrFilters.forumPostSummaryWindow(
+        channelId,
+        postCreatedAt: post.createdAt,
+      ),
+    ]);
+    for (final listed in ForumPostsResponse.fromEvents(events).posts) {
+      if (listed.eventId == post.id) return listed.threadSummary;
+    }
+  } on Object catch (error) {
+    debugPrint('[forum] post summary fetch failed for ${post.id}: $error');
+  }
+  return null;
+}
 
 /// A forum event delivery bound to the community where composition began.
 ///

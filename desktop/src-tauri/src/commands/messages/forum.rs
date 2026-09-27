@@ -97,6 +97,44 @@ pub(super) fn split_forum_posts_response(
     (posts, summaries)
 }
 
+/// Channel-window filter whose first page starts at a forum post, so the relay
+/// returns that post with its thread summary.
+///
+/// The window orders rows `created_at DESC, id ASC`, and a `(until, before_id)`
+/// cursor selects `created_at < until OR (created_at = until AND id > before_id)`.
+/// An all-zero `before_id` therefore keeps every post from the post's own
+/// second, the post included. The small page absorbs other posts from that
+/// same second.
+pub(super) fn forum_post_summary_filter(
+    channel_id: &str,
+    post_created_at: i64,
+) -> serde_json::Value {
+    serde_json::json!({
+        "kinds": [45001],
+        "#h": [channel_id],
+        "limit": 10,
+        "until": post_created_at,
+        "before_id": "0".repeat(64),
+        "top_level": true,
+        "include_summaries": true,
+    })
+}
+
+/// Replace a forum post's placeholder summary with the relay's summary for it
+/// from a [`forum_post_summary_filter`] response. Leaves the post unchanged when
+/// the response has no summary for it (no replies, or not in the page).
+///
+/// The open post needs the relay's `last_reply_at`: the relay stamps it with its
+/// own clock when it stores a reply, so it can be later than the reply's
+/// `created_at`. Marking the post read only at `created_at` would leave the
+/// list's new-reply marker lit after the post was read.
+pub(super) fn attach_post_summary(post: &mut ForumMessageInfo, window_events: Vec<nostr::Event>) {
+    let (_, mut summaries) = split_forum_posts_response(window_events);
+    if let Some(summary) = summaries.remove(&post.event_id) {
+        post.thread_summary = Some(summary);
+    }
+}
+
 pub(super) fn forum_reply_from_event(
     event: &nostr::Event,
     channel_id: &str,
@@ -300,7 +338,19 @@ pub async fn get_forum_thread(
     }
     let total_replies = replies.len() as u32;
 
-    let root = root.ok_or_else(|| "forum thread root event not found".to_string())?;
+    let mut root = root.ok_or_else(|| "forum thread root event not found".to_string())?;
+    if root.kind == 45001 {
+        // Without the relay summary the post keeps its placeholder summary; the
+        // only cost is a new-reply marker that can stay lit, so a failed
+        // summary read must not fail opening the post.
+        let window = query_relay(
+            &state,
+            &[forum_post_summary_filter(&channel_id, root.created_at)],
+        )
+        .await
+        .unwrap_or_default();
+        attach_post_summary(&mut root, window);
+    }
     Ok(ForumThreadResponse {
         root,
         replies,
@@ -365,6 +415,70 @@ mod tests {
         assert_eq!(summary.last_reply_at, Some(1_790_000_000));
         assert_eq!(summary.participants, vec![bob]);
         assert!(!summaries.contains_key(&quiet.id.to_hex()));
+    }
+
+    #[test]
+    fn forum_post_summary_filter_starts_the_window_at_the_post() {
+        let filter = forum_post_summary_filter("chan", 1_790_000_123);
+        assert_eq!(filter["kinds"], serde_json::json!([45001]));
+        assert_eq!(filter["#h"], serde_json::json!(["chan"]));
+        assert_eq!(filter["until"], serde_json::json!(1_790_000_123));
+        assert_eq!(filter["before_id"], serde_json::json!("0".repeat(64)));
+        assert_eq!(filter["top_level"], serde_json::json!(true));
+        assert_eq!(filter["include_summaries"], serde_json::json!(true));
+    }
+
+    fn summary_event(relay: &Keys, root_id: &str, last_reply_at: i64) -> nostr::Event {
+        EventBuilder::new(
+            Kind::Custom(39005),
+            serde_json::json!({
+                "reply_count": 1,
+                "descendant_count": 1,
+                "last_reply_at": last_reply_at,
+                "participants": [],
+            })
+            .to_string(),
+        )
+        .tags([
+            nostr::Tag::parse(["e", root_id]).expect("e tag"),
+            nostr::Tag::parse(["d", root_id]).expect("d tag"),
+        ])
+        .sign_with_keys(relay)
+        .expect("summary signs")
+    }
+
+    #[test]
+    fn attach_post_summary_takes_the_relay_summary_for_that_post_only() {
+        let author = Keys::generate();
+        let relay = Keys::generate();
+        let post = signed_event(&author, 45001, Vec::new());
+        let neighbour = signed_event(&author, 45001, vec![vec!["t".into(), "other".into()]]);
+        let mut info = forum_message_from_event(&post, "chan");
+        let window = vec![
+            neighbour.clone(),
+            summary_event(&relay, &neighbour.id.to_hex(), 1_600),
+            post.clone(),
+            summary_event(&relay, &post.id.to_hex(), 1_501),
+        ];
+
+        attach_post_summary(&mut info, window);
+
+        let summary = info.thread_summary.expect("summary attached");
+        assert_eq!(summary.reply_count, 1);
+        assert_eq!(summary.last_reply_at, Some(1_501));
+    }
+
+    #[test]
+    fn attach_post_summary_keeps_the_placeholder_without_a_summary() {
+        let author = Keys::generate();
+        let post = signed_event(&author, 45001, Vec::new());
+        let mut info = forum_message_from_event(&post, "chan");
+
+        attach_post_summary(&mut info, vec![post.clone()]);
+
+        let summary = info.thread_summary.expect("placeholder kept");
+        assert_eq!(summary.reply_count, 0);
+        assert_eq!(summary.last_reply_at, None);
     }
 
     #[test]

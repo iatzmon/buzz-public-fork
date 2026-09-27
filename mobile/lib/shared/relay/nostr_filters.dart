@@ -137,6 +137,32 @@ abstract final class NostrFilters {
         extensions: const {'top_level': true, 'include_summaries': true},
       );
 
+  /// The forum channel window anchored at one post, for its reply summary.
+  ///
+  /// The relay orders the window `created_at DESC, id ASC` and a cursor
+  /// `(until, before_id)` keeps rows with `created_at < until`, or
+  /// `created_at == until` and `id > before_id`. An all-zero `before_id`
+  /// therefore keeps every post from the anchor's second, the anchor
+  /// included, so the anchor lands on the first page unless more than
+  /// [limit] posts share that second.
+  static NostrFilter forumPostSummaryWindow(
+    String channelId, {
+    required int postCreatedAt,
+    int limit = 10,
+  }) => NostrFilter(
+    kinds: [45001],
+    tags: {
+      '#h': [channelId],
+    },
+    limit: limit,
+    until: postCreatedAt,
+    extensions: {
+      'top_level': true,
+      'include_summaries': true,
+      'before_id': '0' * 64,
+    },
+  );
+
   /// Replies in a forum thread (root event id + channel scope).
   static NostrFilter forumThread(String rootId, String channelId) =>
       NostrFilter(

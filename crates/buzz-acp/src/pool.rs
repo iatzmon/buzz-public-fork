@@ -10960,6 +10960,80 @@ done"#
         );
         server.abort();
     }
+
+    /// Dispatch one queued event through the real `dispatch_pending` and return
+    /// the thread tags it hands back for the typing indicator.
+    async fn dispatched_typing_tags(event: nostr::Event) -> crate::queue::ThreadTags {
+        let channel_id = Uuid::new_v4();
+        let scope = crate::scope::SessionScope::Conversation { channel_id };
+        let agent = OwnedAgent {
+            index: 0,
+            acp: AcpClient::spawn("cat", &[], &[], false)
+                .await
+                .expect("spawn cat as inert agent"),
+            state: SessionState::default(),
+            model_capabilities: None,
+            desired_model: None,
+            model_overridden: false,
+            desired_model_request_id: None,
+            desired_model_pending_ack: false,
+            startup_effort: None,
+            agent_name: "typing-scope-test-agent".into(),
+            goose_system_prompt_supported: None,
+            protocol_version: 1,
+        };
+        let mut pool = AgentPool::from_slots(vec![Some(agent)]);
+        let mut queue = crate::queue::EventQueue::new(DedupMode::Queue);
+        assert!(queue.push(crate::queue::QueuedEvent {
+            channel_id,
+            scope: scope.clone(),
+            event,
+            received_at: std::time::Instant::now(),
+            prompt_tag: "test".into(),
+        }));
+        let ctx = Arc::new(make_prompt_context_no_owner());
+        let mut last_activity = tokio::time::Instant::now();
+
+        let mut dispatched =
+            crate::dispatch_pending(&mut pool, &mut queue, &ctx, &mut last_activity, None);
+        pool.join_set.abort_all();
+
+        assert_eq!(dispatched.len(), 1, "the queued event must dispatch");
+        let (dispatched_scope, tags) = dispatched.remove(0);
+        assert_eq!(dispatched_scope, scope);
+        tags
+    }
+
+    #[tokio::test]
+    async fn dispatch_anchors_typing_for_a_top_level_forum_post_to_the_post() {
+        let post = EventBuilder::new(
+            Kind::Custom(buzz_core::kind::KIND_FORUM_POST as u16),
+            "@agent please look",
+        )
+        .sign_with_keys(&Keys::generate())
+        .expect("sign forum post");
+        let post_id = post.id.to_hex();
+
+        let tags = dispatched_typing_tags(post).await;
+
+        assert_eq!(tags.root_event_id.as_deref(), Some(post_id.as_str()));
+        assert_eq!(tags.parent_event_id.as_deref(), Some(post_id.as_str()));
+    }
+
+    #[tokio::test]
+    async fn dispatch_keeps_channel_level_typing_for_a_top_level_stream_message() {
+        let message = EventBuilder::new(
+            Kind::Custom(buzz_core::kind::KIND_STREAM_MESSAGE as u16),
+            "@agent hello",
+        )
+        .sign_with_keys(&Keys::generate())
+        .expect("sign stream message");
+
+        let tags = dispatched_typing_tags(message).await;
+
+        assert!(tags.root_event_id.is_none());
+        assert!(tags.parent_event_id.is_none());
+    }
 }
 
 #[cfg(test)]

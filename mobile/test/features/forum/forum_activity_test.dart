@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
@@ -235,6 +237,105 @@ void main() {
         1500,
       );
     });
+    test('adopts the fetched post summary when every reply is loaded', () {
+      expect(
+        forumThreadReadAt(
+          post: _post(summary: _summary(replyCount: 1, lastReplyAt: 1501)),
+          replies: [_reply('a', 1500)],
+        ),
+        1501,
+      );
+    });
+    test('ignores a fetched post summary counting unloaded replies', () {
+      expect(
+        forumThreadReadAt(
+          post: _post(summary: _summary(replyCount: 2, lastReplyAt: 1900)),
+          replies: [_reply('a', 1500)],
+        ),
+        1500,
+      );
+    });
+  });
+
+  group('forumThreadProvider post summary', () {
+    final root = _event('post1', EventKind.forumPost, 1000);
+    final reply = _event(
+      'a',
+      EventKind.forumComment,
+      1500,
+      tags: const [
+        ['h', _channelId],
+        ['e', 'post1', '', 'reply'],
+      ],
+    );
+
+    test('attaches the summary from the window anchored at the post', () async {
+      final session = _FakeRelaySession(
+        root: root,
+        replies: [reply],
+        window: [
+          _event('newer-same-second', EventKind.forumPost, 1000),
+          root,
+          _summaryEvent('newer-same-second', lastReplyAt: 3000),
+          _summaryEvent('post1', lastReplyAt: 1501),
+        ],
+      );
+
+      final thread = await _readThread(session);
+
+      expect(thread.post.threadSummary?.lastReplyAt, 1501);
+      expect(thread.replies.single.eventId, 'a');
+      final filter = session.queried.single.toJson();
+      expect(filter['kinds'], [EventKind.forumPost]);
+      expect(filter['#h'], [_channelId]);
+      expect(filter['limit'], 10);
+      expect(filter['until'], 1000);
+      expect(filter['top_level'], isTrue);
+      expect(filter['include_summaries'], isTrue);
+      expect(filter['before_id'], '0' * 64);
+    });
+
+    test(
+      'opens without a summary when the post is not in the window',
+      () async {
+        final session = _FakeRelaySession(
+          root: root,
+          window: [
+            _event('other', EventKind.forumPost, 1000),
+            _summaryEvent('other', lastReplyAt: 3000),
+          ],
+        );
+
+        final thread = await _readThread(session);
+
+        expect(thread.post.eventId, 'post1');
+        expect(thread.post.threadSummary, isNull);
+      },
+    );
+
+    test('opens without a summary when the query fails', () async {
+      final session = _FakeRelaySession(
+        root: root,
+        replies: [reply],
+        failQuery: true,
+      );
+
+      final thread = await _readThread(session);
+
+      expect(thread.post.threadSummary, isNull);
+      expect(thread.replies, hasLength(1));
+    });
+
+    test('skips the summary query for a non-forum root', () async {
+      final session = _FakeRelaySession(
+        root: _event('post1', EventKind.streamMessage, 1000),
+      );
+
+      final thread = await _readThread(session);
+
+      expect(thread.post.threadSummary, isNull);
+      expect(session.queried, isEmpty);
+    });
   });
 
   group('ForumPostCard new replies', () {
@@ -461,6 +562,27 @@ void main() {
       expect(find.byKey(const ValueKey('forum-channel-working')), findsNothing);
       expect(_cardWorking, findsOneWidget);
     });
+
+    testWidgets('shows the channel-level line in an empty forum', (
+      tester,
+    ) async {
+      await tester.pumpWidget(
+        view(
+          readState: _RecordingReadStateNotifier({}),
+          posts: const [],
+          typing: [_typing(_agent, null)],
+        ),
+      );
+      await tester.pump();
+      await tester.pump();
+
+      expect(find.text('No posts yet'), findsOneWidget);
+      expect(
+        find.byKey(const ValueKey('forum-channel-working')),
+        findsOneWidget,
+      );
+      expect(find.text('Scout is working…'), findsOneWidget);
+    });
   });
 
   group('ForumThreadPage', () {
@@ -583,6 +705,91 @@ void main() {
       await tester.pump();
     });
 
+    testWidgets('direct entry adopts the fetched summary so the card clears', (
+      tester,
+    ) async {
+      // Opened from search: no post list, so no listed summary. The relay
+      // stored the reply signed at 1500 at 1501.
+      final readState = _RecordingReadStateNotifier({});
+      final container = ProviderContainer(
+        overrides: [
+          ..._commonOverrides(readState: readState),
+          savedPrefsProvider.overrideWithValue(prefs),
+          forumThreadProvider((
+            channelId: _channelId,
+            eventId: 'post1',
+          )).overrideWith(
+            (ref) async => ForumThreadResponse(
+              post: _post(summary: _summary(replyCount: 1, lastReplyAt: 1501)),
+              replies: [_reply('a', 1500)],
+              totalReplies: 1,
+            ),
+          ),
+        ],
+      );
+      expect(container.exists(forumPostsProvider(_channelId)), isFalse);
+      await tester.pumpWidget(
+        UncontrolledProviderScope(
+          container: container,
+          child: _app(
+            const ForumThreadPage(
+              channelId: _channelId,
+              postEventId: 'post1',
+              currentPubkey: _self,
+              isMember: true,
+              isArchived: false,
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(readState.marked[threadContextKey('post1')], [1501]);
+
+      // Later, the post list shows the same summary.
+      await tester.pumpWidget(
+        UncontrolledProviderScope(
+          container: container,
+          child: _app(
+            Scaffold(
+              body: ForumPostCard(
+                post: _post(
+                  summary: _summary(replyCount: 1, lastReplyAt: 1501),
+                ),
+                currentPubkey: _self,
+                onTap: () {},
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      final dots = _dot.evaluate().length;
+
+      await tester.pumpWidget(const SizedBox());
+      container.dispose();
+      await tester.pump();
+      expect(dots, 0);
+    });
+
+    testWidgets('direct entry does not adopt a summary with unloaded replies', (
+      tester,
+    ) async {
+      final readState = _RecordingReadStateNotifier({});
+      await tester.pumpWidget(
+        page(
+          readState: readState,
+          loadThread: () async => ForumThreadResponse(
+            post: _post(summary: _summary(replyCount: 2, lastReplyAt: 1900)),
+            replies: [_reply('a', 1500)],
+            totalReplies: 1,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(readState.marked[threadContextKey('post1')], [1500]);
+    });
+
     testWidgets('shows who is working on this post only', (tester) async {
       final handle = tester.ensureSemantics();
       await tester.pumpWidget(
@@ -610,6 +817,83 @@ void main() {
       handle.dispose();
     });
   });
+}
+
+class _FakeRelaySession extends RelaySessionNotifier {
+  final NostrEvent root;
+  final List<NostrEvent> replies;
+  final List<NostrEvent> window;
+  final bool failQuery;
+  final queried = <NostrFilter>[];
+
+  _FakeRelaySession({
+    required this.root,
+    this.replies = const [],
+    this.window = const [],
+    this.failQuery = false,
+  });
+
+  @override
+  SessionState build() => const SessionState(status: SessionStatus.connected);
+
+  @override
+  Future<List<NostrEvent>> fetchHistory(
+    NostrFilter filter, {
+    Duration timeout = const Duration(seconds: 8),
+  }) async => filter.ids != null ? [root] : replies;
+
+  @override
+  Future<List<NostrEvent>> queryRelay(
+    List<NostrFilter> filters, {
+    Duration timeout = const Duration(seconds: 8),
+  }) async {
+    queried.addAll(filters);
+    if (failQuery) throw StateError('relay down');
+    return window;
+  }
+}
+
+NostrEvent _event(
+  String id,
+  int kind,
+  int createdAt, {
+  List<List<String>> tags = const [
+    ['h', _channelId],
+  ],
+  String content = '',
+}) => NostrEvent(
+  id: id,
+  pubkey: 'alice',
+  createdAt: createdAt,
+  kind: kind,
+  tags: tags,
+  content: content,
+  sig: '',
+);
+
+NostrEvent _summaryEvent(String postId, {required int lastReplyAt}) => _event(
+  'summary-$postId',
+  EventKind.channelThreadSummary,
+  lastReplyAt,
+  tags: [
+    ['e', postId],
+  ],
+  content: jsonEncode({
+    'reply_count': 1,
+    'descendant_count': 1,
+    'last_reply_at': lastReplyAt,
+    'participants': const <String>[],
+  }),
+);
+
+Future<ForumThreadResponse> _readThread(_FakeRelaySession session) async {
+  final container = ProviderContainer(
+    overrides: [relaySessionProvider.overrideWith(() => session)],
+  );
+  addTearDown(container.dispose);
+  return container.read(
+    forumThreadProvider((channelId: _channelId, eventId: 'post1')).future,
+  );
 }
 
 class _RecordingReadStateNotifier extends ReadStateNotifier {

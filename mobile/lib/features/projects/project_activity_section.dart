@@ -15,9 +15,7 @@ import '../channels/date_formatters.dart';
 import 'project_activity.dart';
 import 'project_task_detail_page.dart';
 import 'project_task_visuals.dart';
-
-/// Items shown per page of the Activity feed.
-const projectActivityPageSize = 40;
+import 'project_tasks_view.dart';
 
 /// A project's recent task changes and channel messages, newest first. It is
 /// not scrollable itself: place it in a list.
@@ -44,7 +42,7 @@ class ProjectActivitySection extends HookConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final limit = useState(projectActivityPageSize);
+    final pages = useState(1);
     final config = ref.watch(relayConfigProvider);
     final viewer = ref.watch(myPubkeyProvider);
     final opened = useMemoized(() => (config.baseUrl, viewer));
@@ -60,24 +58,67 @@ class ProjectActivitySection extends HookConsumerWidget {
       for (final address in repositories.keys)
         address: ref.watch(projectTaskStoreProvider(address)),
     };
-    final messageKey = projectChannelActivityKey(
-      channelNames.keys,
-      limit.value,
-    );
-    final messagesAsync = ref.watch(projectChannelActivityProvider(messageKey));
-    final messageEvents = messagesAsync.value ?? const <NostrEvent>[];
 
-    final all = [
-      for (final entry in taskStates.entries)
-        ...projectTaskActivity(entry.key, entry.value, communityOwners: owners),
-      ...projectMessageActivity(
-        messageEvents,
-      ).where((item) => channelNames.containsKey(item.channelId)),
-    ]..sort((a, b) => b.createdAt.compareTo(a.createdAt));
-    final shown = all.take(limit.value).toList();
-    // More history may exist when either source filled its window.
+    // Read message pages newest first. Each page starts at the oldest
+    // timestamp of the page before it. Items older than the last full page
+    // wait for the next page, so no unread message can hide between them.
+    final messages = <String, NostrEvent>{};
+    final changes = <NostrEvent>[];
+    var pagesError = false;
+    var pagePending = false;
+    var firstPagePending = false;
+    var moreMessages = false;
+    int? boundary;
+    int? until;
+    for (var i = 0; i < pages.value; i++) {
+      final async = ref.watch(
+        projectMessagePageProvider(
+          projectMessagePageKey(channelNames.keys, until: until),
+        ),
+      );
+      final page = async.value;
+      if (page == null) {
+        pagesError = async.hasError;
+        pagePending = !async.hasError;
+        firstPagePending = i == 0 && pagePending;
+        break;
+      }
+      for (final message in page.messages) {
+        messages[message.id] = message;
+      }
+      changes.addAll(page.changes);
+      if (!page.full || page.oldest == null) {
+        boundary = null;
+        break;
+      }
+      final oldest = page.oldest!;
+      boundary = oldest;
+      moreMessages = i == pages.value - 1;
+      // Keep the oldest second in the next page, unless the whole page shares
+      // one second: then step past it so reading always moves back in time.
+      until = until != null && oldest >= until ? oldest - 1 : oldest;
+    }
+
+    final eligible =
+        [
+              for (final entry in taskStates.entries)
+                ...projectTaskActivity(
+                  entry.key,
+                  entry.value,
+                  communityOwners: owners,
+                ),
+              ...projectMessageActivity([
+                ...messages.values,
+                ...changes,
+              ]).where((item) => channelNames.containsKey(item.channelId)),
+            ]
+            .where((item) => boundary == null || item.createdAt >= boundary)
+            .toList()
+          ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+    final shown = eligible.take(pages.value * projectActivityPageSize).toList();
     final canLoadMore =
-        all.length > shown.length || messageEvents.length >= limit.value;
+        !pagePending && (eligible.length > shown.length || moreMessages);
+    final taskErrors = [for (final state in taskStates.values) ?state.error];
 
     final people = {
       for (final item in shown) ...[item.actor, ...item.targets],
@@ -95,19 +136,24 @@ class ProjectActivitySection extends HookConsumerWidget {
         taskStates.values.any((s) => s.loading) &&
         taskStates.values.every((s) => s.tasks.isEmpty);
     final Widget body;
-    if (shown.isEmpty && (messagesAsync.isLoading || tasksLoading)) {
+    if (shown.isEmpty && (firstPagePending || tasksLoading)) {
       body = const Padding(
         padding: EdgeInsets.all(Grid.lg),
         child: Center(
           child: BuzzLoadingIndicator(semanticLabel: 'Loading activity'),
         ),
       );
-    } else if (shown.isEmpty) {
+    } else if (shown.isEmpty &&
+        !canLoadMore &&
+        taskErrors.isEmpty &&
+        !pagesError) {
       body = const ProjectEmptyState(
         icon: LucideIcons.activity,
         message: 'No activity yet.',
         detail: 'Task changes and channel messages show here.',
       );
+    } else if (shown.isEmpty) {
+      body = const SizedBox.shrink();
     } else {
       body = AppListCard(
         verticalPadding: Grid.half,
@@ -148,25 +194,31 @@ class ProjectActivitySection extends HookConsumerWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        if (messagesAsync.hasError && !messagesAsync.isLoading)
+        if (taskErrors.isNotEmpty)
+          ProjectNotice(
+            icon: LucideIcons.cloudAlert,
+            isError: true,
+            text: 'Some task changes could not be loaded.',
+            actionLabel: 'Retry',
+            onAction: () =>
+                unawaited(refreshProjectTasks(ref, repositories.keys)),
+          ),
+        if (pagesError)
           ProjectNotice(
             icon: LucideIcons.cloudAlert,
             isError: true,
             text: 'Channel messages could not be loaded.',
             actionLabel: 'Retry',
-            onAction: () =>
-                ref.invalidate(projectChannelActivityProvider(messageKey)),
+            onAction: () => ref.invalidate(projectMessagePageProvider),
           ),
         body,
-        if (shown.isNotEmpty && canLoadMore)
+        if (canLoadMore)
           Padding(
             padding: const EdgeInsets.symmetric(vertical: Grid.xxs),
             child: Center(
               child: TextButton(
                 key: const ValueKey('project-activity-more'),
-                onPressed: messagesAsync.isLoading
-                    ? null
-                    : () => limit.value += projectActivityPageSize,
+                onPressed: () => pages.value += 1,
                 child: const Text('Load more'),
               ),
             ),

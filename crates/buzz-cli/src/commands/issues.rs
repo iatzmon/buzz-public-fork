@@ -157,27 +157,24 @@ fn community_owners_from_snapshot(tags: &[Vec<String>]) -> HashSet<String> {
 
 /// Load the community-owner set from the relay membership snapshot.
 ///
-/// An open relay publishes no snapshot, and an unreadable snapshot carries no
-/// authority, so both yield the empty set — exactly the pre-community-owner
-/// trust rules (issue author and repo owner only).
-async fn fetch_community_owners(client: &BuzzClient) -> HashSet<String> {
+/// An open relay publishes no snapshot, which yields the empty set: exactly
+/// the pre-community-owner trust rules (issue author and repo owner only). A
+/// failed or unreadable lookup is an error, not an empty set, so the command
+/// never publishes on a guess about the signer's authority.
+async fn fetch_community_owners(client: &BuzzClient) -> Result<HashSet<String>, CliError> {
     let filter = serde_json::json!({
         "kinds": [KIND_RELAY_MEMBERSHIP_LIST],
         "limit": 1
     });
-    let Ok(response) = client.query(&filter).await else {
-        return HashSet::new();
-    };
-    serde_json::from_str::<Vec<MembershipSnapshotEvent>>(&response)
-        .ok()
-        .and_then(|events| {
-            events
-                .into_iter()
-                .filter(|event| event.kind == KIND_RELAY_MEMBERSHIP_LIST)
-                .max_by_key(|event| event.created_at)
-        })
+    let response = client.query(&filter).await?;
+    let events = serde_json::from_str::<Vec<MembershipSnapshotEvent>>(&response)
+        .map_err(|error| CliError::Other(format!("parse community members: {error}")))?;
+    Ok(events
+        .into_iter()
+        .filter(|event| event.kind == KIND_RELAY_MEMBERSHIP_LIST)
+        .max_by_key(|event| event.created_at)
         .map(|event| community_owners_from_snapshot(&event.tags))
-        .unwrap_or_default()
+        .unwrap_or_default())
 }
 
 fn apply_assignment_operation(state: &mut AssignmentState, operation: ParsedAssignmentOperation) {
@@ -431,7 +428,7 @@ async fn publish_issue_assignment_operation(
         id: repo_id.to_string(),
     };
     let signer = client.keys().public_key().to_hex();
-    let community_owners = fetch_community_owners(client).await;
+    let community_owners = fetch_community_owners(client).await?;
     // Community owners are authorities, so like the repo owner they never
     // need a causal `prior`, even when naming themselves.
     let is_self_service = assignees.len() == 1

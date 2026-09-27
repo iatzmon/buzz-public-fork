@@ -1,3 +1,4 @@
+import 'package:buzz/features/projects/project_activity.dart';
 import 'package:buzz/features/projects/project_activity_section.dart';
 import 'package:buzz/features/projects/project_tasks_page.dart';
 import 'package:buzz/shared/profile/user_cache_provider.dart';
@@ -65,6 +66,7 @@ void main() {
     Map<String, String>? repositories,
     bool accountSwitch = false,
     List<NostrEvent> history = const [],
+    bool failTasks = false,
     String? viewer,
     Widget? home,
   }) async {
@@ -87,13 +89,31 @@ void main() {
         projectTaskTransportProvider.overrideWithValue(
           ProjectTaskTransport(
             query: (filter) async {
+              if (failTasks && !filter.tags.containsKey('#h')) {
+                throw StateError('Offline');
+              }
               if (filter.kinds.contains(1621)) {
                 return [_event('1')];
               }
-              // Channel reads return the newest events, like the relay.
-              if (filter.tags.containsKey('#h')) {
-                return ([...history]
-                      ..sort((a, b) => b.createdAt.compareTo(a.createdAt)))
+              // Channel reads match kinds, tags, and until, and return the
+              // newest events first, like the relay.
+              if (filter.tags['#h'] case final channels?) {
+                final ids = filter.tags['#e'];
+                return ([
+                      for (final e in history)
+                        if (filter.kinds.contains(e.kind) &&
+                            channels.contains(e.getTagValue('h')) &&
+                            (ids == null ||
+                                e.tags.any(
+                                  (t) =>
+                                      t.length > 1 &&
+                                      t[0] == 'e' &&
+                                      ids.contains(t[1]),
+                                )) &&
+                            (filter.until == null ||
+                                e.createdAt <= filter.until!))
+                          e,
+                    ]..sort((a, b) => b.createdAt.compareTo(a.createdAt)))
                     .take(filter.limit)
                     .toList();
               }
@@ -582,6 +602,7 @@ void main() {
           kind: 5,
           signer: _carol,
           tags: [
+            ['h', 'channel'],
             ['e', removed.id],
           ],
         ),
@@ -652,5 +673,76 @@ void main() {
       find.textContaining('created a task', skipOffstage: false),
       findsOneWidget,
     );
+  });
+
+  NostrEvent message(int i) => NostrEvent(
+    id: 'm$i'.padLeft(64, '0'),
+    pubkey: _carol,
+    createdAt: 1000 + i,
+    kind: 9,
+    tags: const [
+      ['h', 'channel'],
+    ],
+    content: 'Message $i',
+    sig: '0' * 128,
+  );
+
+  Widget activity() => Scaffold(
+    body: ListView(
+      children: [
+        ProjectActivitySection(
+          repositories: {_repo: 'App'},
+          channelNames: const {'channel': 'general'},
+          onOpenChannel: (_) {},
+        ),
+      ],
+    ),
+  );
+
+  testWidgets('deleted newest messages do not hide older messages', (
+    tester,
+  ) async {
+    final messages = [
+      for (var i = 0; i < projectActivityPageSize + 5; i++) message(i),
+    ];
+    await pump(
+      tester,
+      published: [],
+      history: [
+        ...messages,
+        // Every message on the first page is deleted.
+        for (final m in messages.skip(5))
+          NostrEvent(
+            id: 'd${m.id.substring(1)}',
+            pubkey: _carol,
+            createdAt: m.createdAt + 100,
+            kind: 5,
+            tags: [
+              ['h', 'channel'],
+              ['e', m.id],
+            ],
+            content: '',
+            sig: '0' * 128,
+          ),
+      ],
+      home: activity(),
+    );
+    expect(find.textContaining('Message ', skipOffstage: false), findsNothing);
+    expect(find.text('No activity yet.'), findsNothing);
+    final more = find.byKey(const ValueKey('project-activity-more'));
+    await tester.ensureVisible(more);
+    await tester.pumpAndSettle();
+    await tester.tap(more);
+    await tester.pumpAndSettle();
+    expect(find.text('Message 0', skipOffstage: false), findsOneWidget);
+    expect(find.text('Message 4', skipOffstage: false), findsOneWidget);
+    expect(find.text('Message 5', skipOffstage: false), findsNothing);
+  });
+
+  testWidgets('a failed task load shows an error and Retry', (tester) async {
+    await pump(tester, published: [], failTasks: true, home: activity());
+    expect(find.text('No activity yet.'), findsNothing);
+    expect(find.text('Some task changes could not be loaded.'), findsOneWidget);
+    expect(find.text('Retry'), findsOneWidget);
   });
 }

@@ -128,6 +128,7 @@ Future<SharedPreferences> _pumpChannels(
   List<Channel>? channels,
   Map<String, Object> prefs = const {},
   _Refreshes? refreshes,
+  Future<List<NostrEvent>> Function(NostrFilter filter)? query,
 }) async {
   final initial = state ?? AsyncData(snapshot!);
   _projectsState = NotifierProvider(() => _ProjectsState(initial));
@@ -151,7 +152,7 @@ Future<SharedPreferences> _pumpChannels(
         ),
         projectTaskTransportProvider.overrideWithValue(
           ProjectTaskTransport(
-            query: (_) async => const [],
+            query: query ?? (_) async => const [],
             publish: (_) async {},
             sign: (_, _, _, _) => throw UnimplementedError(),
           ),
@@ -330,6 +331,59 @@ void main() {
       expect(find.byType(ProjectTasksSection), findsOneWidget);
     },
   );
+
+  testWidgets('pull to refresh reloads the Activity channel messages', (
+    tester,
+  ) async {
+    var text = 'Original message';
+    var reads = 0;
+    final store = const ProjectSidebarMembershipStore().withSelection(
+      platform,
+      selected: true,
+      updatedAt: 1,
+    );
+    await _pumpChannels(
+      tester,
+      snapshot: _snapshot(CommunityFixture()),
+      channels: [_channel(streamHomeChannel, 'home', 'stream')],
+      prefs: {_membershipKey: store.encode()},
+      query: (filter) async {
+        if (!filter.kinds.contains(EventKind.streamMessage)) return const [];
+        reads++;
+        return [
+          NostrEvent(
+            id: '$reads'.padLeft(64, 'a'),
+            pubkey: alice,
+            createdAt: 100 + reads,
+            kind: EventKind.streamMessage,
+            tags: const [
+              ['h', streamHomeChannel],
+            ],
+            content: text,
+            sig: '0' * 128,
+          ),
+        ];
+      },
+    );
+    await tester.tap(_projectRow(platform));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('project-tab-activity')));
+    await tester.pumpAndSettle();
+    expect(find.text('Original message'), findsOneWidget);
+    expect(reads, 1);
+
+    text = 'New message';
+    final indicator = tester.widget<RefreshIndicator>(
+      find.descendant(
+        of: find.byType(ProjectPage),
+        matching: find.byType(RefreshIndicator),
+      ),
+    );
+    await indicator.onRefresh();
+    await tester.pumpAndSettle();
+    expect(reads, 2);
+    expect(find.text('New message'), findsOneWidget);
+  });
 
   testWidgets(
     'falls back to the project page when the home channel is not loaded',

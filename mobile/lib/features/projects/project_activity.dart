@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 
 import '../../shared/projects/project_task.dart';
@@ -146,9 +148,12 @@ List<ProjectActivityItem> projectTaskActivity(
   return items;
 }
 
-/// Event kinds read for channel messages in the Activity feed.
-const projectMessageKinds = [
-  ...EventKind.channelMessageEventKinds,
+/// Items shown per page of the Activity feed, and channel messages read per
+/// page.
+const projectActivityPageSize = 40;
+
+/// Event kinds that change or remove a channel message.
+const projectMessageChangeKinds = [
   EventKind.deletion,
   EventKind.nip29DeleteEvent,
   EventKind.streamMessageEdit,
@@ -204,27 +209,83 @@ List<ProjectActivityItem> projectMessageActivity(List<NostrEvent> events) {
   ];
 }
 
-/// Recent events in the project's channels, verified before use. The key is
-/// the sorted channel ids joined by commas, then `|` and the event limit.
-final projectChannelActivityProvider = FutureProvider.autoDispose
-    .family<List<NostrEvent>, String>((ref, key) async {
+/// One page of channel messages for the Activity feed.
+class ProjectMessagePage {
+  const ProjectMessagePage({
+    this.messages = const [],
+    this.changes = const [],
+    this.full = false,
+    this.oldest,
+  });
+
+  /// Channel messages in this page.
+  final List<NostrEvent> messages;
+
+  /// Edits and deletions that name [messages].
+  final List<NostrEvent> changes;
+
+  /// The relay returned a whole page, so older messages may exist.
+  final bool full;
+
+  /// Oldest timestamp the relay returned for this page.
+  final int? oldest;
+}
+
+/// The page key: [channels] are the sorted channel ids joined by commas.
+/// `until` is the newest timestamp to read (inclusive); null reads the newest.
+typedef ProjectMessagePageKey = ({String channels, int? until});
+
+/// The page key for [channelIds], starting at [until].
+ProjectMessagePageKey projectMessagePageKey(
+  Iterable<String> channelIds, {
+  int? until,
+}) => (channels: (channelIds.toList()..sort()).join(','), until: until);
+
+/// One page of messages in the project's channels, with the edits and
+/// deletions that name them. Pages read only message kinds, so edits and
+/// deletions never fill a page and hide older messages.
+final projectMessagePageProvider = FutureProvider.autoDispose
+    .family<ProjectMessagePage, ProjectMessagePageKey>((ref, key) async {
       ref.watch(relayConfigProvider);
       final transport = ref.watch(projectTaskTransportProvider);
-      final parts = key.split('|');
-      final channels = parts.first
+      final channels = key.channels
           .split(',')
           .where((id) => id.isNotEmpty)
           .toList();
-      if (channels.isEmpty) return const [];
-      return transport.query(
+      if (channels.isEmpty) return const ProjectMessagePage();
+      final returned = await transport.query(
         NostrFilter(
-          kinds: projectMessageKinds,
+          kinds: EventKind.channelMessageEventKinds,
           tags: {'#h': channels},
-          limit: int.parse(parts.last),
+          limit: projectActivityPageSize,
+          until: key.until,
         ),
       );
+      final messages = [
+        for (final event in returned)
+          if (EventKind.channelMessageEventKinds.contains(event.kind)) event,
+      ];
+      final changes = messages.isEmpty
+          ? const <NostrEvent>[]
+          : [
+              for (final event in await transport.query(
+                NostrFilter(
+                  kinds: projectMessageChangeKinds,
+                  tags: {
+                    '#h': channels,
+                    '#e': [for (final m in messages) m.id],
+                  },
+                  limit: 500,
+                ),
+              ))
+                if (projectMessageChangeKinds.contains(event.kind)) event,
+            ];
+      return ProjectMessagePage(
+        messages: messages,
+        changes: changes,
+        full: returned.length >= projectActivityPageSize,
+        oldest: returned.isEmpty
+            ? null
+            : returned.map((e) => e.createdAt).reduce(math.min),
+      );
     });
-
-/// The provider key for [channelIds] and [limit].
-String projectChannelActivityKey(Iterable<String> channelIds, int limit) =>
-    '${(channelIds.toList()..sort()).join(',')}|$limit';

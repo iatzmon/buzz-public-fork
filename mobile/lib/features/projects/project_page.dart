@@ -18,6 +18,7 @@ import '../../shared/widgets/frosted_scaffold.dart';
 import '../channels/channel.dart';
 import '../channels/channel_detail_page.dart';
 import '../channels/channels_provider.dart';
+import 'project_activity.dart';
 import 'project_activity_section.dart';
 import 'project_task_visuals.dart';
 import 'project_tasks_page.dart';
@@ -118,8 +119,13 @@ class ProjectPage extends HookConsumerWidget {
         project.repositories.length +
         project.unavailableRepositoryAddresses.length;
 
-    Future<void> refresh() =>
-        Future.wait([retry(), refreshProjectTasks(ref, repositories.keys)]);
+    Future<void> refresh() {
+      ref.invalidate(projectMessagePageProvider);
+      return Future.wait([
+        retry(),
+        refreshProjectTasks(ref, repositories.keys),
+      ]);
+    }
 
     final Widget content = switch (tab.value) {
       _ProjectTab.tasks =>

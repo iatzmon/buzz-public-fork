@@ -16,6 +16,9 @@ class ObserverFrame {
   final String? channelId;
   final String? sessionId;
   final String? turnId;
+
+  /// RFC 3339 start of the frame's turn, when the harness knows it.
+  final String? startedAt;
   final dynamic payload;
 
   const ObserverFrame({
@@ -26,6 +29,7 @@ class ObserverFrame {
     this.channelId,
     this.sessionId,
     this.turnId,
+    this.startedAt,
     this.payload,
   });
 
@@ -37,6 +41,7 @@ class ObserverFrame {
     channelId: json['channelId'] as String?,
     sessionId: json['sessionId'] as String?,
     turnId: json['turnId'] as String?,
+    startedAt: json['startedAt'] as String?,
     payload: json['payload'],
   );
 }

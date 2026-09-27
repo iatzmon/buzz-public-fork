@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -12,6 +13,7 @@ import 'package:buzz/features/forum/forum_post_card.dart';
 import 'package:buzz/features/forum/forum_posts_view.dart';
 import 'package:buzz/features/forum/forum_provider.dart';
 import 'package:buzz/features/forum/forum_thread_page.dart';
+import 'package:buzz/features/forum/forum_thread_history.dart';
 import 'package:buzz/features/profile/profile_provider.dart';
 import 'package:buzz/shared/mentions/agent_identity_provider.dart';
 import 'package:buzz/shared/profile/user_cache_provider.dart';
@@ -620,6 +622,164 @@ void main() {
           totalReplies: replies.length,
         );
 
+    testWidgets('reopening thread shows latest reply within one second', (
+      tester,
+    ) async {
+      var replies = [_reply('old', 1500)];
+      final container = ProviderContainer(
+        overrides: [
+          ..._commonOverrides(readState: _RecordingReadStateNotifier({})),
+          savedPrefsProvider.overrideWithValue(prefs),
+          forumThreadProvider((
+            channelId: _channelId,
+            eventId: 'post1',
+          )).overrideWith((ref) async {
+            ref.keepAlive();
+            return thread(List.of(replies));
+          }),
+        ],
+      );
+      Widget mount(bool open) => UncontrolledProviderScope(
+        container: container,
+        child: _app(
+          open
+              ? const ForumThreadPage(
+                  channelId: _channelId,
+                  postEventId: 'post1',
+                  currentPubkey: _self,
+                  isMember: true,
+                  isArchived: false,
+                )
+              : const SizedBox.shrink(),
+        ),
+      );
+      await tester.pumpWidget(mount(true));
+      await tester.pumpAndSettle();
+      expect(find.text('reply old'), findsOneWidget);
+      await tester.pumpWidget(mount(false));
+      await tester.pumpAndSettle();
+      replies = [...replies, _reply('latest', 1800)];
+      await tester.pumpWidget(mount(true));
+      await tester.pumpAndSettle();
+      await tester.pump(const Duration(seconds: 1));
+      await tester.pumpAndSettle();
+      final freshWithinOneSecond = find
+          .text('reply latest')
+          .evaluate()
+          .isNotEmpty;
+      await tester.pump(const Duration(seconds: 9));
+      await tester.pumpAndSettle();
+      final freshAtTenSeconds = find.text('reply latest').evaluate().isNotEmpty;
+      await tester.pumpWidget(const SizedBox.shrink());
+      container.dispose();
+      expect(freshAtTenSeconds, isTrue);
+      expect(
+        freshWithinOneSecond,
+        isTrue,
+        reason:
+            'An immediately available new reply should appear promptly when reopening a cached thread',
+      );
+    });
+
+    testWidgets('hides cached thread after a confirmed missing root', (
+      tester,
+    ) async {
+      var unavailable = false;
+      await tester.pumpWidget(
+        page(
+          readState: _RecordingReadStateNotifier({}),
+          loadThread: () async {
+            if (unavailable) throw ForumThreadUnavailable();
+            return thread([_reply('old', 1500)]);
+          },
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('reply old'), findsOneWidget);
+      unavailable = true;
+      await tester.pump(const Duration(seconds: 10));
+      await tester.pumpAndSettle();
+      expect(find.text('reply old'), findsNothing);
+      expect(find.text('Failed to load thread'), findsOneWidget);
+      expect(find.text('Retry'), findsOneWidget);
+    });
+
+    testWidgets('shows thread data before summary metadata arrives', (
+      tester,
+    ) async {
+      final summary = Completer<List<NostrEvent>>();
+      final session = _DelayedSummarySession(
+        root: _event('post1', 45001, 1000, content: 'root'),
+        summary: summary,
+      );
+      final container = ProviderContainer(
+        overrides: [relaySessionProvider.overrideWith(() => session)],
+      );
+      addTearDown(container.dispose);
+      final provider = forumThreadProvider((
+        channelId: _channelId,
+        eventId: 'post1',
+      ));
+      final summarySubscription = container.listen(
+        forumThreadSummaryProvider((channelId: _channelId, eventId: 'post1')),
+        (_, _) {},
+      );
+      addTearDown(summarySubscription.close);
+      final subscription = container.listen(provider, (_, _) {});
+      addTearDown(subscription.close);
+      await tester.pump();
+      await tester.pump(const Duration(seconds: 3));
+      final availableWhileSummaryPending = container.read(provider).hasValue;
+
+      summary.complete([]);
+      await tester.pump();
+      await tester.pump();
+      expect(container.read(provider).requireValue.replies, hasLength(1));
+      expect(
+        availableWhileSummaryPending,
+        isTrue,
+        reason:
+            'Received replies should not wait behind ancillary summary metadata',
+      );
+    });
+
+    testWidgets(
+      'resume refreshes immediately while cached replies remain visible',
+      (tester) async {
+        var replies = [_reply('old', 1500)];
+        Completer<ForumThreadResponse>? pending;
+        await tester.pumpWidget(
+          page(
+            readState: _RecordingReadStateNotifier({}),
+            loadThread: () => pending?.future ?? Future.value(thread(replies)),
+          ),
+        );
+        await tester.pumpAndSettle();
+        tester.binding.handleAppLifecycleStateChanged(
+          AppLifecycleState.inactive,
+        );
+        tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
+        tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+        await tester.pump();
+        replies = [...replies, _reply('latest', 1800)];
+        pending = Completer<ForumThreadResponse>();
+        tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
+        tester.binding.handleAppLifecycleStateChanged(
+          AppLifecycleState.inactive,
+        );
+        tester.binding.handleAppLifecycleStateChanged(
+          AppLifecycleState.resumed,
+        );
+        await tester.pump();
+        await tester.pump();
+        expect(find.text('reply old'), findsOneWidget);
+        expect(find.text('reply latest'), findsNothing);
+        pending.complete(thread(replies));
+        await tester.pumpAndSettle();
+        expect(find.text('reply latest'), findsOneWidget);
+      },
+    );
+
     testWidgets('marks the thread read at the post time without replies', (
       tester,
     ) async {
@@ -847,6 +1007,10 @@ class _FakeRelaySession extends RelaySessionNotifier {
     List<NostrFilter> filters, {
     Duration timeout = const Duration(seconds: 8),
   }) async {
+    final filter = filters.single;
+    if (filter.ids != null) return [root];
+    if (filter.kinds.contains(EventKind.forumComment)) return replies;
+    if (filter.kinds.contains(EventKind.deletion)) return [];
     queried.addAll(filters);
     if (failQuery) throw StateError('relay down');
     return window;
@@ -891,8 +1055,13 @@ Future<ForumThreadResponse> _readThread(_FakeRelaySession session) async {
     overrides: [relaySessionProvider.overrideWith(() => session)],
   );
   addTearDown(container.dispose);
-  return container.read(
-    forumThreadProvider((channelId: _channelId, eventId: 'post1')).future,
+  const args = (channelId: _channelId, eventId: 'post1');
+  await container.read(forumThreadProvider(args).future);
+  final summary = await container.read(forumThreadSummaryProvider(args).future);
+  return ForumThreadResponse.fromEvents(
+    root: session.root,
+    replies: session.replies,
+    postSummary: summary,
   );
 }
 
@@ -938,10 +1107,29 @@ class _FakeUserCacheNotifier extends UserCacheNotifier {
 
   @override
   UserProfile? get(String pubkey) => _users[pubkey.toLowerCase()];
+
+  @override
+  Future<bool> preload(List<String> pubkeys) async => true;
 }
 
 class _FakeProfileNotifier extends ProfileNotifier {
   @override
   Future<UserProfile?> build() async =>
       const UserProfile(pubkey: _self, displayName: 'Self');
+}
+
+class _DelayedSummarySession extends _FakeRelaySession {
+  final Completer<List<NostrEvent>> summary;
+  _DelayedSummarySession({required super.root, required this.summary})
+    : super(replies: [_event('reply1', 45003, 1500)]);
+  @override
+  Future<List<NostrEvent>> queryRelay(
+    List<NostrFilter> filters, {
+    Duration timeout = const Duration(seconds: 8),
+  }) {
+    if (filters.single.extensions['include_summaries'] == true) {
+      return summary.future;
+    }
+    return super.queryRelay(filters, timeout: timeout);
+  }
 }

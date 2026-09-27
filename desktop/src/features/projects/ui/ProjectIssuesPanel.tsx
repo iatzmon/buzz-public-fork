@@ -13,6 +13,7 @@ import * as React from "react";
 import { toast } from "sonner";
 
 import { useIsManagedAgent } from "@/features/agent-memory/hooks";
+import { useCommunityOwnerPubkeys } from "@/features/community-members/hooks";
 import { ForumComposer } from "@/features/forum/ui/ForumComposer";
 import {
   type ProjectIssue,
@@ -316,8 +317,11 @@ export function ProjectIssueDetail({
   const isAuthor = viewer === normalizePubkey(issue.author);
   const isOwner = viewer === normalizePubkey(project.owner);
   const isManagedAgentOwner = useIsManagedAgent(project.owner) === true;
+  const communityOwners = useCommunityOwnerPubkeys();
+  const isCommunityOwner = viewer !== null && communityOwners.includes(viewer);
   const canAssignOthers =
-    Boolean(viewer) && (isAuthor || isOwner || isManagedAgentOwner);
+    Boolean(viewer) &&
+    (isAuthor || isOwner || isCommunityOwner || isManagedAgentOwner);
 
   return (
     <div
@@ -368,7 +372,9 @@ export function ProjectIssueDetail({
               issue={issue}
               profiles={profiles}
               project={project}
-              signAsManagedOwner={isManagedAgentOwner && !isOwner}
+              signAsManagedOwner={
+                isManagedAgentOwner && !isOwner && !isCommunityOwner
+              }
               viewerPubkey={viewer}
             />
           </ProjectDetailMetaRow>

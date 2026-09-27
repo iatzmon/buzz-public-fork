@@ -14,6 +14,7 @@ import 'package:buzz/shared/profile/user_profile.dart';
 import 'package:buzz/shared/projects/project_read_models.dart';
 import 'package:buzz/shared/projects/project_task_store.dart';
 import 'package:buzz/shared/projects/projects.dart';
+import 'package:buzz/shared/community/community_membership_provider.dart';
 import 'package:buzz/shared/relay/relay.dart';
 import 'package:buzz/shared/theme/theme.dart';
 import 'package:buzz/shared/widgets/app_list.dart';
@@ -136,6 +137,9 @@ Future<SharedPreferences> _pumpChannels(
     ProviderScope(
       overrides: [
         savedPrefsProvider.overrideWithValue(saved),
+        communityMembershipProvider.overrideWith(
+          (ref) async => communityOwnersSnapshot,
+        ),
         relayConfigProvider.overrideWith(_RelayConfig.new),
         myPubkeyProvider.overrideWithValue(alice),
         profileProvider.overrideWith(_Profile.new),
@@ -177,6 +181,10 @@ Finder _projectRow(String address) =>
 
 const _membershipKey =
     'buzz.sidebar.projects.membership.v1:$relayOrigin:$alice';
+
+/// Community member list served to the screens; tests may replace it.
+CommunityMembershipSnapshot communityOwnersSnapshot =
+    const CommunityMembershipSnapshot(snapshotFound: false, members: []);
 
 void main() {
   final platform = projectAddress(alice, 'platform');
@@ -284,7 +292,7 @@ void main() {
   });
 
   testWidgets(
-    'opens a forum home, and its project button opens Tasks in one tap',
+    'a project opens on Tasks, and its Channels tab opens the forum home',
     (tester) async {
       final store = const ProjectSidebarMembershipStore().withSelection(
         docs,
@@ -299,23 +307,27 @@ void main() {
 
       await tester.tap(_projectRow(docs));
       await tester.pumpAndSettle();
-      expect(find.byType(ForumPostsView), findsOneWidget);
-
-      await tester.tap(find.byKey(const ValueKey('channel-project-details')));
-      await tester.pumpAndSettle();
-
+      // The project page opens on Tasks, not on the home channel.
+      expect(find.byType(ForumPostsView), findsNothing);
       expect(find.byType(ProjectPage), findsOneWidget);
-      // The project page opens on Tasks.
       expect(find.byType(ProjectTasksSection), findsOneWidget);
+
+      await tester.tap(find.byKey(const ValueKey('project-tab-repositories')));
+      await tester.pumpAndSettle();
+      expect(find.text('Forum Docs'), findsOneWidget);
 
       await tester.tap(find.byKey(const ValueKey('project-tab-channels')));
       await tester.pumpAndSettle();
       expect(find.byType(ProjectTasksSection), findsNothing);
       expect(find.text('Project home · Forum'), findsOneWidget);
-
-      await tester.tap(find.byKey(const ValueKey('project-tab-repositories')));
+      await tester.tap(find.text('docs-home'));
       await tester.pumpAndSettle();
-      expect(find.text('Forum Docs'), findsOneWidget);
+      expect(find.byType(ForumPostsView), findsOneWidget);
+
+      // The home channel's project button opens the project page again.
+      await tester.tap(find.byKey(const ValueKey('channel-project-details')));
+      await tester.pumpAndSettle();
+      expect(find.byType(ProjectTasksSection), findsOneWidget);
     },
   );
 
@@ -338,6 +350,15 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.byType(ProjectPage), findsOneWidget);
+      // The header is one line until tapped.
+      expect(find.text('Relay, desktop, and mobile'), findsNothing);
+      expect(
+        find.textContaining('Relay, desktop, and mobile ·'),
+        findsOneWidget,
+      );
+      await tester.tap(find.byKey(const ValueKey('project-summary')));
+      await tester.pumpAndSettle();
+      expect(find.text('Relay, desktop, and mobile'), findsOneWidget);
       await tester.tap(find.byKey(const ValueKey('project-tab-channels')));
       await tester.pumpAndSettle();
       // The stream home is not visible to this viewer.
@@ -427,7 +448,7 @@ void main() {
         find.text('Could not refresh. This may be out of date.'),
         findsOneWidget,
       );
-      expect(find.text('Repositories'), findsOneWidget);
+      expect(find.text('Repos'), findsOneWidget);
 
       await tester.tap(find.byKey(const ValueKey('project-page-retry')));
       expect(refreshes.count, 1);

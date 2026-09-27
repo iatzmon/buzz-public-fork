@@ -1,11 +1,13 @@
 import 'dart:async';
 
+import 'package:buzz/shared/community/community_membership_provider.dart';
 import 'package:buzz/shared/projects/project_task.dart';
 import 'package:buzz/shared/projects/project_task_store.dart';
 import 'package:buzz/shared/relay/relay.dart';
 import 'package:buzz/shared/theme/theme_provider.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
+import 'package:hooks_riverpod/legacy.dart';
 import 'package:nostr/nostr.dart' as nostr;
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -260,6 +262,91 @@ void main() {
     ]);
     expect(task.assignees, isEmpty);
     expect(task.assignmentHeads[member], '3'.padLeft(64, '0'));
+  });
+  test('a community owner is an authority for assignments and status', () {
+    final boss = 'e' * 64;
+    final assign = operation('7', boss, member, time: 2);
+    final done = event(
+      '8',
+      kind: 1631,
+      signer: boss,
+      time: 3,
+      tags: [
+        ['e', root().id, '', 'root'],
+      ],
+    );
+    final withOwner = ProjectTask.fromEvents(
+      root(),
+      [assign, done],
+      communityOwners: {boss},
+    );
+    expect(withOwner.assignees, {member});
+    expect(withOwner.status, 'Done');
+    expect(withOwner.canManage(boss), isTrue);
+    expect(
+      projectTaskAssignmentTags(
+        task: withOwner,
+        signer: boss,
+        assignee: stranger,
+        assign: true,
+      ),
+      contains(equals(['p', stranger])),
+    );
+    final without = ProjectTask.fromEvents(root(), [assign, done]);
+    expect(without.assignees, isEmpty);
+    expect(without.status, isNot('Done'));
+    expect(without.canManage(boss), isFalse);
+  });
+  test('community owners are empty until the member list loads', () async {
+    final pending = Completer<CommunityMembershipSnapshot>();
+    final c = ProviderContainer(
+      overrides: [
+        communityMembershipProvider.overrideWith((ref) => pending.future),
+      ],
+    );
+    addTearDown(c.dispose);
+    final sub = c.listen(projectTaskCommunityOwnersProvider, (_, _) {});
+    addTearDown(sub.close);
+    expect(c.read(projectTaskCommunityOwnersProvider), isEmpty);
+    pending.complete(
+      CommunityMembershipSnapshot(
+        snapshotFound: true,
+        members: [
+          CommunityMember(pubkey: 'E' * 64, role: CommunityMemberRole.owner),
+          CommunityMember(pubkey: member, role: CommunityMemberRole.admin),
+        ],
+      ),
+    );
+    await pending.future;
+    await Future<void>.delayed(Duration.zero);
+    expect(c.read(projectTaskCommunityOwnersProvider), {'e' * 64});
+  });
+  test('a reloading member list does not keep the old owners', () async {
+    final first = CommunityMembershipSnapshot(
+      snapshotFound: true,
+      members: [
+        CommunityMember(pubkey: 'e' * 64, role: CommunityMemberRole.owner),
+      ],
+    );
+    final second = Completer<CommunityMembershipSnapshot>();
+    final community = StateProvider<int>((ref) => 0);
+    final c = ProviderContainer(
+      overrides: [
+        communityMembershipProvider.overrideWith(
+          (ref) =>
+              ref.watch(community) == 0 ? Future.value(first) : second.future,
+        ),
+      ],
+    );
+    addTearDown(c.dispose);
+    final sub = c.listen(projectTaskCommunityOwnersProvider, (_, _) {});
+    addTearDown(sub.close);
+    await Future<void>.delayed(Duration.zero);
+    expect(c.read(projectTaskCommunityOwnersProvider), {'e' * 64});
+    // A community switch reloads the list; the old owners must not apply.
+    c.read(community.notifier).state = 1;
+    await Future<void>.delayed(Duration.zero);
+    expect(c.read(projectTaskCommunityOwnersProvider), isEmpty);
   });
   test('applied assignment ids list only operations the state used', () {
     final removal = operation('3', owner, member, assign: false, time: 2);

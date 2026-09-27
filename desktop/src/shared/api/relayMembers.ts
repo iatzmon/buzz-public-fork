@@ -79,6 +79,23 @@ export function relayMembersFromEvent(event: RelayEvent): RelayMember[] {
   return members;
 }
 
+/**
+ * Sorted, lowercase pubkeys holding the relay `owner` role. Absent or failed
+ * membership data yields no owners, so owner-only trust falls back cleanly.
+ */
+export function relayOwnerPubkeys(
+  members: readonly RelayMember[] | undefined,
+): string[] {
+  if (!members) return [];
+  return [
+    ...new Set(
+      members
+        .filter((member) => member.role === "owner")
+        .map((member) => normalizePubkey(member.pubkey)),
+    ),
+  ].sort();
+}
+
 export function relayMembershipLookupFromEvent(
   event: RelayEvent | null,
   pubkey: string,

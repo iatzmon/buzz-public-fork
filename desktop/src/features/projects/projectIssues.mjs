@@ -55,8 +55,24 @@ export function allowedActorsForRoot(rootEvent) {
   return allowed;
 }
 
-function latestStatusForIssue(issue, statusEvents) {
-  const allowedActors = allowedActorsForRoot(issue);
+const NO_COMMUNITY_OWNERS = new Set();
+
+/**
+ * Pubkeys trusted to change an issue's status or anyone's assignment: the
+ * root author, the repo owner, and every community owner (role `owner` in
+ * the relay membership snapshot). Community owners extend issue authority
+ * only — pull-request trust stays with {@link allowedActorsForRoot}.
+ */
+function issueAuthorityActors(issue, communityOwners = NO_COMMUNITY_OWNERS) {
+  const allowed = allowedActorsForRoot(issue);
+  for (const owner of communityOwners) {
+    if (typeof owner === "string") allowed.add(owner.toLowerCase());
+  }
+  return allowed;
+}
+
+function latestStatusForIssue(issue, statusEvents, communityOwners) {
+  const allowedActors = issueAuthorityActors(issue, communityOwners);
   return statusEvents
     .filter(
       (event) =>
@@ -89,16 +105,17 @@ function statusFromEvent(issue, statusEvent) {
  * adds each `p` tag and `t: unassignment` removes it. The issue root's `p`
  * tags are notification routing only.
  *
- * Trusted signers are the issue author and repo owner (who may change anyone),
- * plus any community member whose operation names only themselves. Uncaused
+ * Trusted signers are the issue author, repo owner, and community owners (who
+ * may change anyone), plus any community member whose operation names only
+ * themselves. Uncaused
  * self-service operations are applied first, authoritative operations second,
  * and self-service operations that causally reference the current per-assignee
  * operation head last. This prevents signer-controlled timestamps from
  * overriding authority while allowing a later observed owner/author decision
  * to be superseded by the affected assignee.
  */
-function assignmentStateForIssue(issue, issueCommentEvents) {
-  const allowedActors = allowedActorsForRoot(issue);
+function assignmentStateForIssue(issue, issueCommentEvents, communityOwners) {
+  const allowedActors = issueAuthorityActors(issue, communityOwners);
   const assignees = new Set();
   const operationHeads = new Map();
   const uncausedSelfServiceOperations = [];
@@ -182,15 +199,24 @@ export function eventToProjectIssue(
   issue,
   statusEvents = [],
   commentEvents = [],
+  communityOwners = NO_COMMUNITY_OWNERS,
 ) {
-  const latestStatus = latestStatusForIssue(issue, statusEvents);
+  const latestStatus = latestStatusForIssue(
+    issue,
+    statusEvents,
+    communityOwners,
+  );
   const issueCommentEvents = commentEvents.filter((event) =>
     event.tags.some(
       (tag) => (tag[0] === "e" || tag[0] === "E") && tag[1] === issue.id,
     ),
   );
   const comments = commentsForIssue(issueCommentEvents);
-  const assignmentState = assignmentStateForIssue(issue, issueCommentEvents);
+  const assignmentState = assignmentStateForIssue(
+    issue,
+    issueCommentEvents,
+    communityOwners,
+  );
   const labels = getAllTags(issue, "t");
   const title =
     getTag(issue, "subject") || issue.content.split("\n")[0] || "Untitled task";
@@ -226,9 +252,12 @@ export function projectIssueEventsToIssues(
   issueEvents,
   statusEvents = [],
   commentEvents = [],
+  communityOwners = NO_COMMUNITY_OWNERS,
 ) {
   return [...issueEvents]
-    .map((issue) => eventToProjectIssue(issue, statusEvents, commentEvents))
+    .map((issue) =>
+      eventToProjectIssue(issue, statusEvents, commentEvents, communityOwners),
+    )
     .sort((left, right) => right.updatedAt - left.updatedAt);
 }
 

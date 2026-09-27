@@ -122,13 +122,14 @@ class ProjectTasksSection extends HookConsumerWidget {
       );
     }
 
+    final owners = ref.watch(projectTaskCommunityOwnersProvider);
     final states = {
       for (final address in repositories.keys)
         address: ref.watch(projectTaskStoreProvider(address)),
     };
     final all = <_RepoTask>[
       for (final entry in states.entries)
-        for (final task in entry.value.tasks)
+        for (final task in entry.value.tasksWith(owners))
           (repoAddress: entry.key, task: task),
     ];
     bool isMine(_RepoTask t) => t.task.assignees.contains(viewer);

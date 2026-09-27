@@ -9,6 +9,7 @@ class ProjectTask {
     required this.assignmentHeads,
     required this.comments,
     this.appliedAssignmentIds = const {},
+    this.communityOwners = const {},
   });
 
   final NostrEvent root;
@@ -21,13 +22,17 @@ class ProjectTask {
   final Set<String> appliedAssignmentIds;
   final List<NostrEvent> comments;
 
+  /// Community owners (lowercase hex) who may manage every task.
+  final Set<String> communityOwners;
+
   String get id => root.id;
   String get repoAddress => root.getTagValue('a') ?? '';
   String get repoOwner => repoAddress.split(':').elementAtOrNull(1) ?? '';
   String get title =>
       root.getTagValue('subject') ??
       (root.content.isEmpty ? 'Untitled task' : root.content.split('\n').first);
-  bool canManage(String pubkey) => projectTaskCanManage(root, pubkey);
+  bool canManage(String pubkey) =>
+      projectTaskCanManage(root, pubkey, communityOwners: communityOwners);
 
   /// Match Desktop's deterministic ordering within a signed timestamp.
   static int compareEvents(NostrEvent a, NostrEvent b) {
@@ -36,7 +41,15 @@ class ProjectTask {
   }
 
   /// Notification recipients on the root never imply task assignment.
-  factory ProjectTask.fromEvents(NostrEvent root, List<NostrEvent> related) {
+  ///
+  /// [communityOwners] come from the relay's signed community member list.
+  factory ProjectTask.fromEvents(
+    NostrEvent root,
+    List<NostrEvent> related, {
+    Set<String> communityOwners = const {},
+  }) {
+    bool canManage(String pubkey) =>
+        projectTaskCanManage(root, pubkey, communityOwners: communityOwners);
     bool targets(NostrEvent e) => e.tags.any(
       (tag) =>
           tag.length > 1 && tag[0].toLowerCase() == 'e' && tag[1] == root.id,
@@ -49,7 +62,7 @@ class ProjectTask {
           ) &&
           e.kind >= 1630 &&
           e.kind <= 1633 &&
-          projectTaskCanManage(root, e.pubkey),
+          canManage(e.pubkey),
     );
     NostrEvent? latest;
     for (final event in statuses) {
@@ -96,7 +109,7 @@ class ProjectTask {
         continue;
       }
       final signer = event.pubkey.toLowerCase();
-      if (projectTaskCanManage(root, signer)) {
+      if (canManage(signer)) {
         authority.add(event);
       } else if (keys.length == 1 && keys.single == signer) {
         final priors = event.tags
@@ -136,6 +149,7 @@ class ProjectTask {
       assignees: Set.unmodifiable(assignees),
       assignmentHeads: Map.unmodifiable(heads),
       appliedAssignmentIds: Set.unmodifiable(applied),
+      communityOwners: communityOwners,
       comments: List.unmodifiable(comments),
     );
   }
@@ -197,11 +211,19 @@ List<List<String>> projectTaskAssignmentTags({
   ];
 }
 
-/// Shared authority rule for reads and writes; agent ownership alone is not signing authority.
-bool projectTaskCanManage(NostrEvent root, String pubkey) {
+/// Shared authority rule for reads and writes: the task author, the
+/// repository owner, or a community owner. Agent ownership alone is not
+/// signing authority.
+bool projectTaskCanManage(
+  NostrEvent root,
+  String pubkey, {
+  Set<String> communityOwners = const {},
+}) {
   final owner = (root.getTagValue('a') ?? '').split(':').elementAtOrNull(1);
   final signer = pubkey.toLowerCase();
-  return signer == root.pubkey.toLowerCase() || signer == owner?.toLowerCase();
+  return signer == root.pubkey.toLowerCase() ||
+      signer == owner?.toLowerCase() ||
+      communityOwners.contains(signer);
 }
 
 /// Assignee identity tags must contain a complete Nostr public key.

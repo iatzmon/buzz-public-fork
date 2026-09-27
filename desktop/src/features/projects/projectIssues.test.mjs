@@ -107,6 +107,124 @@ test("honors status events from the issue author and repo owner", () => {
   );
 });
 
+// ── Community owners (relay role `owner`) are issue authorities ────────────
+
+const COMMUNITY_OWNER = "9".repeat(64);
+const MEMBER = "8".repeat(64);
+const AGENT = "7".repeat(64);
+
+test("community owner status changes are trusted only with the owner set", () => {
+  const ownerClosed = statusEvent({
+    kind: 1632,
+    pubkey: COMMUNITY_OWNER,
+    createdAt: 300,
+  });
+
+  assert.equal(
+    eventToProjectIssue(
+      issueEvent(),
+      [ownerClosed],
+      [],
+      new Set([COMMUNITY_OWNER]),
+    ).status,
+    PROJECT_ISSUE_STATUS.CLOSED,
+  );
+  // Empty owner set (open relay / failed snapshot): unchanged behavior.
+  assert.equal(
+    eventToProjectIssue(issueEvent(), [ownerClosed]).status,
+    PROJECT_ISSUE_STATUS.BACKLOG,
+  );
+  assert.equal(
+    eventToProjectIssue(issueEvent(), [ownerClosed], [], new Set()).status,
+    PROJECT_ISSUE_STATUS.BACKLOG,
+  );
+});
+
+test("community owner may assign and unassign other people and agents", () => {
+  const issue = eventToProjectIssue(
+    issueEvent(),
+    [],
+    [
+      // Owner pubkey in the set may be uppercase; signer comparison is
+      // case-insensitive.
+      assignmentComment(
+        COMMUNITY_OWNER,
+        [MEMBER, AGENT],
+        "owner-assign",
+        undefined,
+        200,
+      ),
+      assignmentComment(
+        COMMUNITY_OWNER,
+        [AGENT],
+        "owner-unassign",
+        ISSUE_UNASSIGNMENT_LABEL,
+        201,
+      ),
+    ],
+    [COMMUNITY_OWNER.toUpperCase()],
+  );
+
+  assert.deepEqual(issue.assignees, [MEMBER]);
+  assert.equal(issue.assigneeOperationHeads[AGENT], "owner-unassign");
+});
+
+test("community owner assignment is ignored without the owner set", () => {
+  const issue = eventToProjectIssue(
+    issueEvent(),
+    [],
+    [assignmentComment(COMMUNITY_OWNER, [MEMBER], "owner-assign")],
+  );
+
+  assert.deepEqual(issue.assignees, []);
+});
+
+test("a non-owner member cannot assign others even when owners are known", () => {
+  const issue = eventToProjectIssue(
+    issueEvent(),
+    [],
+    [
+      assignmentComment(MEMBER, [AGENT], "member-assign"),
+      assignmentComment(
+        MEMBER,
+        [MEMBER, AGENT],
+        "member-assign-with-self",
+        undefined,
+        201,
+      ),
+    ],
+    new Set([COMMUNITY_OWNER]),
+  );
+
+  assert.deepEqual(issue.assignees, []);
+});
+
+test("community owner unassignment overrides a future-dated self-assignment", () => {
+  const issue = eventToProjectIssue(
+    issueEvent(),
+    [],
+    [
+      assignmentComment(
+        MEMBER,
+        [MEMBER],
+        "future-self-assign",
+        undefined,
+        1_000,
+      ),
+      assignmentComment(
+        COMMUNITY_OWNER,
+        [MEMBER],
+        "owner-unassign",
+        ISSUE_UNASSIGNMENT_LABEL,
+        200,
+      ),
+    ],
+    new Set([COMMUNITY_OWNER]),
+  );
+
+  assert.deepEqual(issue.assignees, []);
+});
+
 test("tag helpers drop malformed value-less tags", () => {
   const event = issueEvent({
     tags: [

@@ -1,7 +1,9 @@
+import 'package:buzz/features/projects/project_activity_section.dart';
 import 'package:buzz/features/projects/project_tasks_page.dart';
 import 'package:buzz/shared/profile/user_cache_provider.dart';
 import 'package:buzz/shared/profile/user_profile.dart';
 import 'package:buzz/shared/projects/project_task_store.dart';
+import 'package:buzz/shared/community/community_membership_provider.dart';
 import 'package:buzz/shared/relay/relay.dart';
 import 'package:buzz/shared/theme/theme.dart';
 import 'package:flutter/material.dart';
@@ -51,6 +53,10 @@ class _Profiles extends UserCacheNotifier {
   Future<bool> preload(List<String> pubkeys) async => true;
 }
 
+/// Community member list served to the screens; tests may replace it.
+CommunityMembershipSnapshot communityOwnersSnapshot =
+    const CommunityMembershipSnapshot(snapshotFound: false, members: []);
+
 void main() {
   Future<ProviderContainer> pump(
     WidgetTester tester, {
@@ -60,12 +66,16 @@ void main() {
     bool accountSwitch = false,
     List<NostrEvent> history = const [],
     String? viewer,
+    Widget? home,
   }) async {
     SharedPreferences.setMockInitialValues({});
     final prefs = await SharedPreferences.getInstance();
     final container = ProviderContainer(
       overrides: [
         savedPrefsProvider.overrideWithValue(prefs),
+        communityMembershipProvider.overrideWith(
+          (ref) async => communityOwnersSnapshot,
+        ),
         relayConfigProvider.overrideWith(_Config.new),
         myPubkeyProvider.overrideWith(
           (ref) =>
@@ -79,6 +89,13 @@ void main() {
             query: (filter) async {
               if (filter.kinds.contains(1621)) {
                 return [_event('1')];
+              }
+              // Channel reads return the newest events, like the relay.
+              if (filter.tags.containsKey('#h')) {
+                return ([...history]
+                      ..sort((a, b) => b.createdAt.compareTo(a.createdAt)))
+                    .take(filter.limit)
+                    .toList();
               }
               return history;
             },
@@ -103,10 +120,12 @@ void main() {
         container: container,
         child: MaterialApp(
           theme: AppTheme.light(),
-          home: ProjectTasksPage(
-            repositories: repositories ?? {_repo: 'App'},
-            channelId: 'channel',
-          ),
+          home:
+              home ??
+              ProjectTasksPage(
+                repositories: repositories ?? {_repo: 'App'},
+                channelId: 'channel',
+              ),
         ),
       ),
     );
@@ -427,5 +446,211 @@ void main() {
     await tester.tap(find.text('Website'));
     await tester.pumpAndSettle();
     expect(find.widgetWithText(TextField, 'Title'), findsNothing);
+  });
+  group('community owners', () {
+    final communityOwner = 'e' * 64;
+    setUp(() {
+      communityOwnersSnapshot = CommunityMembershipSnapshot(
+        snapshotFound: true,
+        members: [
+          CommunityMember(
+            pubkey: communityOwner,
+            role: CommunityMemberRole.owner,
+          ),
+          CommunityMember(pubkey: _carol, role: CommunityMemberRole.admin),
+        ],
+      );
+    });
+    tearDown(() {
+      communityOwnersSnapshot = const CommunityMembershipSnapshot(
+        snapshotFound: false,
+        members: [],
+      );
+    });
+
+    testWidgets('a community owner assigns a member on any task', (
+      tester,
+    ) async {
+      final published = <NostrEvent>[];
+      await pump(
+        tester,
+        published: published,
+        viewer: communityOwner,
+        history: [
+          _event(
+            '4',
+            kind: 39002,
+            tags: [
+              ['d', 'channel'],
+              ['p', _carol],
+            ],
+          ),
+        ],
+      );
+      await tester.tap(find.text('Mobile project task'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Assign a member'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Carol'));
+      await tester.pumpAndSettle();
+      expect(published.single.pubkey, _viewer);
+      expect(published.single.tags, contains(equals(['p', _carol])));
+    });
+
+    testWidgets('assignments by a community owner count; by an admin, not', (
+      tester,
+    ) async {
+      List<List<String>> assign(String who) => [
+        ['e', _event('1').id, '', 'root'],
+        ['a', _repo],
+        ['p', who],
+        ['t', 'assignment'],
+      ];
+      await pump(
+        tester,
+        published: [],
+        history: [
+          _event('8', kind: 1, signer: communityOwner, tags: assign(_viewer)),
+          _event('9', kind: 1, signer: _carol, tags: assign('f' * 64)),
+        ],
+      );
+      await tester.tap(find.text('Mobile project task'));
+      await tester.pumpAndSettle();
+      expect(
+        find.byKey(ValueKey('project-task-assignee-$_viewer')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(ValueKey('project-task-assignee-${'f' * 64}')),
+        findsNothing,
+      );
+    });
+  });
+
+  testWidgets('a member who is not a community owner cannot assign others', (
+    tester,
+  ) async {
+    await pump(tester, published: [], viewer: 'e' * 64);
+    await tester.tap(find.text('Mobile project task'));
+    await tester.pumpAndSettle();
+    expect(find.text('Assign a member'), findsNothing);
+    expect(find.text('Assign to me'), findsOneWidget);
+  });
+
+  testWidgets('Activity lists task changes and channel messages', (
+    tester,
+  ) async {
+    final opened = <String>[];
+    final message = _event(
+      'a1',
+      kind: 9,
+      signer: _carol,
+      tags: [
+        ['h', 'channel'],
+      ],
+      content: 'Shipping the build today',
+    );
+    final removed = _event(
+      'a2',
+      kind: 9,
+      signer: _carol,
+      tags: [
+        ['h', 'channel'],
+      ],
+      content: 'This was deleted',
+    );
+    await pump(
+      tester,
+      published: [],
+      history: [
+        message,
+        removed,
+        // A member cannot assign someone else: the feed must not show it.
+        _event(
+          'a4',
+          kind: 1,
+          signer: _carol,
+          tags: [
+            ['e', _event('1').id, '', 'root'],
+            ['a', _repo],
+            ['p', 'f' * 64],
+            ['t', 'assignment'],
+          ],
+        ),
+        _event(
+          'a3',
+          kind: 5,
+          signer: _carol,
+          tags: [
+            ['e', removed.id],
+          ],
+        ),
+      ],
+      home: Scaffold(
+        body: ListView(
+          children: [
+            ProjectActivitySection(
+              repositories: {_repo: 'App'},
+              channelNames: const {'channel': 'general'},
+              onOpenChannel: opened.add,
+            ),
+          ],
+        ),
+      ),
+    );
+    expect(find.textContaining('created a task'), findsOneWidget);
+    expect(find.text('Mobile project task'), findsOneWidget);
+    expect(find.textContaining('in #general'), findsOneWidget);
+    expect(find.text('Shipping the build today'), findsOneWidget);
+    expect(find.text('This was deleted'), findsNothing);
+    expect(find.textContaining('assigned'), findsNothing);
+    await tester.tap(find.text('Shipping the build today'));
+    await tester.pumpAndSettle();
+    expect(opened, ['channel']);
+  });
+
+  testWidgets('Load more shows older channel messages', (tester) async {
+    final messages = [
+      for (var i = 0; i < projectActivityPageSize + 5; i++)
+        NostrEvent(
+          id: 'm$i'.padLeft(64, '0'),
+          pubkey: _carol,
+          createdAt: 1000 + i,
+          kind: 9,
+          tags: const [
+            ['h', 'channel'],
+          ],
+          content: 'Message $i',
+          sig: '0' * 128,
+        ),
+    ];
+    await pump(
+      tester,
+      published: [],
+      history: messages,
+      home: Scaffold(
+        body: ListView(
+          children: [
+            ProjectActivitySection(
+              repositories: {_repo: 'App'},
+              channelNames: const {'channel': 'general'},
+              onOpenChannel: (_) {},
+            ),
+          ],
+        ),
+      ),
+    );
+    expect(find.text('Message 0', skipOffstage: false), findsNothing);
+    final more = find.byKey(const ValueKey('project-activity-more'));
+    await tester.ensureVisible(more);
+    await tester.pumpAndSettle();
+    await tester.tap(more);
+    await tester.pumpAndSettle();
+    expect(find.text('Message 0', skipOffstage: false), findsOneWidget);
+    // The oldest item is the task, created before every message.
+    expect(
+      find.textContaining('created a task', skipOffstage: false),
+      findsOneWidget,
+    );
   });
 }

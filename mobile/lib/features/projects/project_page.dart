@@ -18,6 +18,7 @@ import '../../shared/widgets/frosted_scaffold.dart';
 import '../channels/channel.dart';
 import '../channels/channel_detail_page.dart';
 import '../channels/channels_provider.dart';
+import 'project_activity_section.dart';
 import 'project_task_visuals.dart';
 import 'project_tasks_page.dart';
 import 'project_tasks_view.dart';
@@ -31,25 +32,22 @@ Channel? findLoadedChannel(WidgetRef ref, String channelId) {
   return null;
 }
 
-/// Opens [project]'s home channel. Falls back to [ProjectPage] when the home
-/// channel is not in the loaded channel list (for example, a private home
-/// the viewer cannot see).
+/// Opens [project]'s page. Its Channels tab opens the project's channels.
 Future<void> openProject(
   BuildContext context,
   WidgetRef ref,
   Project project,
-) async {
-  final homeId = project.projectChannelId;
-  final home = homeId == null ? null : findLoadedChannel(ref, homeId);
-  final route = MaterialPageRoute<void>(
-    builder: (_) => home == null
-        ? ProjectPage(projectAddress: project.projectAddress)
-        : ChannelDetailPage(channel: home),
-  );
-  await AdaptiveWorkspace.open(context, route);
-}
+) => AdaptiveWorkspace.open(
+  context,
+  MaterialPageRoute<void>(
+    builder: (_) => ProjectPage(projectAddress: project.projectAddress),
+  ),
+);
 
-enum _ProjectTab { tasks, channels, repositories }
+enum _ProjectTab { tasks, activity, channels, repositories }
+
+/// Height of the tab row under the project page's top bar.
+const _kProjectTabsHeight = 44.0;
 
 /// A project's tasks, channels, and repositories. Opens on Tasks.
 class ProjectPage extends HookConsumerWidget {
@@ -136,6 +134,29 @@ class ProjectPage extends HookConsumerWidget {
                 channelId: project.projectChannelId,
                 repositoryChannels: repositoryChannels,
               ),
+      _ProjectTab.activity => ProjectActivitySection(
+        key: const ValueKey('project-activity'),
+        repositories: repositories,
+        channelNames: {
+          for (final bound in boundChannels)
+            if (channelsById[bound.channelId] case final channel?)
+              channel.id: channel.name,
+        },
+        onOpenChannel: (id) {
+          final channel = channelsById[id];
+          if (channel == null) return;
+          unawaited(
+            AdaptiveWorkspace.open(
+              context,
+              MaterialPageRoute<void>(
+                builder: (_) => ChannelDetailPage(channel: channel),
+              ),
+            ),
+          );
+        },
+        channelId: project.projectChannelId,
+        repositoryChannels: repositoryChannels,
+      ),
       _ProjectTab.channels =>
         boundChannels.isEmpty
             ? const ProjectEmptyState(
@@ -210,6 +231,11 @@ class ProjectPage extends HookConsumerWidget {
             },
           ),
         ],
+        bottom: _ProjectTabs(
+          selected: tab.value,
+          onSelected: (value) => tab.value = value,
+        ),
+        bottomHeight: _kProjectTabsHeight,
       ),
       floatingActionButton:
           tab.value == _ProjectTab.tasks &&
@@ -226,12 +252,20 @@ class ProjectPage extends HookConsumerWidget {
             )
           : null,
       body: RefreshIndicator(
-        edgeOffset: frostedAppBarHeight(context),
+        edgeOffset: frostedAppBarHeight(
+          context,
+          bottomHeight: _kProjectTabsHeight,
+        ),
         onRefresh: refresh,
         child: ListView(
           physics: const AlwaysScrollableScrollPhysics(),
           padding: EdgeInsets.only(
-            top: frostedAppBarHeight(context) + Grid.half,
+            top:
+                frostedAppBarHeight(
+                  context,
+                  bottomHeight: _kProjectTabsHeight,
+                ) +
+                Grid.half,
             bottom: MediaQuery.viewPaddingOf(context).bottom + Grid.xxxl,
           ),
           children: [
@@ -248,14 +282,10 @@ class ProjectPage extends HookConsumerWidget {
                 icon: LucideIcons.cloudOff,
                 text: 'Saved copy. It may be out of date.',
               ),
-            _ProjectHero(
+            _ProjectSummary(
               project: project,
               channelCount: boundChannels.length,
               repositoryCount: repositoryCount,
-            ),
-            _ProjectTabs(
-              selected: tab.value,
-              onSelected: (value) => tab.value = value,
             ),
             content,
           ],
@@ -281,44 +311,37 @@ class _ProjectTabs extends StatelessWidget {
 
   static const _items = [
     (tab: _ProjectTab.tasks, label: 'Tasks', icon: LucideIcons.listTodo),
+    (tab: _ProjectTab.activity, label: 'Activity', icon: LucideIcons.activity),
     (tab: _ProjectTab.channels, label: 'Channels', icon: LucideIcons.hash),
     (
       tab: _ProjectTab.repositories,
-      label: 'Repositories',
+      label: 'Repos',
       icon: LucideIcons.folderGit2,
     ),
   ];
 
   @override
   Widget build(BuildContext context) => Padding(
-    padding: const EdgeInsets.fromLTRB(
-      Grid.gutter,
-      Grid.xxs,
-      Grid.gutter,
-      Grid.half,
-    ),
-    child: DecoratedBox(
-      decoration: BoxDecoration(
-        border: Border(
-          bottom: BorderSide(
-            color: context.colors.onSurface.withValues(alpha: 0.1),
-          ),
-        ),
-      ),
-      child: Row(
-        children: [
-          for (final item in _items)
-            Expanded(
-              child: _ProjectTabButton(
-                key: ValueKey('project-tab-${item.tab.name}'),
-                label: item.label,
-                icon: item.icon,
-                selected: item.tab == selected,
-                onTap: () => onSelected(item.tab),
+    padding: const EdgeInsets.symmetric(horizontal: Grid.xxs),
+    child: LayoutBuilder(
+      builder: (context, constraints) {
+        // Icons only when every tab has room for icon and label.
+        final showIcons = constraints.maxWidth / _items.length >= 104;
+        return Row(
+          children: [
+            for (final item in _items)
+              Expanded(
+                child: _ProjectTabButton(
+                  key: ValueKey('project-tab-${item.tab.name}'),
+                  label: item.label,
+                  icon: showIcons ? item.icon : null,
+                  selected: item.tab == selected,
+                  onTap: () => onSelected(item.tab),
+                ),
               ),
-            ),
-        ],
-      ),
+          ],
+        );
+      },
     ),
   );
 }
@@ -333,7 +356,7 @@ class _ProjectTabButton extends StatelessWidget {
   });
 
   final String label;
-  final IconData icon;
+  final IconData? icon;
   final bool selected;
   final VoidCallback onTap;
 
@@ -354,12 +377,14 @@ class _ProjectTabButton extends StatelessWidget {
         child: Column(
           children: [
             Padding(
-              padding: const EdgeInsets.symmetric(vertical: Grid.twelve),
+              padding: const EdgeInsets.symmetric(vertical: Grid.twelve - 1),
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  Icon(icon, size: 16, color: color),
-                  const SizedBox(width: Grid.half + Grid.quarter),
+                  if (icon case final icon?) ...[
+                    Icon(icon, size: 16, color: color),
+                    const SizedBox(width: Grid.half + Grid.quarter),
+                  ],
                   Flexible(
                     child: Text(
                       label,
@@ -392,8 +417,9 @@ class _ProjectTabButton extends StatelessWidget {
   }
 }
 
-class _ProjectHero extends StatelessWidget {
-  const _ProjectHero({
+/// One line of project description and counts. Tap to show all of it.
+class _ProjectSummary extends HookWidget {
+  const _ProjectSummary({
     required this.project,
     required this.channelCount,
     required this.repositoryCount,
@@ -405,69 +431,69 @@ class _ProjectHero extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final expanded = useState(false);
     final description = project.description.trim();
-    final summary = [
+    final counts = [
       channelCount == 1 ? '1 channel' : '$channelCount channels',
       repositoryCount == 1 ? '1 repository' : '$repositoryCount repositories',
     ].join(' · ');
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(
-        Grid.gutter,
-        Grid.xxs,
-        Grid.gutter,
-        Grid.xxs,
-      ),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Container(
-            width: 52,
-            height: 52,
-            decoration: BoxDecoration(
-              color: context.colors.surfaceContainerHighest,
-              borderRadius: BorderRadius.circular(Radii.lg + Grid.half),
-            ),
-            child: Icon(
-              LucideIcons.folderKanban,
-              size: 24,
-              color: context.colors.onSurface,
-            ),
+    final muted = context.textTheme.bodySmall?.copyWith(
+      color: context.colors.onSurfaceVariant,
+    );
+    final collapsedText = description.isEmpty
+        ? counts
+        : '$description · $counts';
+    return Semantics(
+      button: true,
+      expanded: expanded.value,
+      label: expanded.value ? null : 'Project details',
+      onTap: () => expanded.value = !expanded.value,
+      child: InkWell(
+        key: const ValueKey('project-summary'),
+        onTap: () => expanded.value = !expanded.value,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(
+            Grid.gutter,
+            Grid.half,
+            Grid.xs,
+            Grid.half,
           ),
-          const SizedBox(width: Grid.twelve),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  project.name,
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                  style: context.textTheme.titleLarge?.copyWith(
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-                if (description.isNotEmpty) ...[
-                  const SizedBox(height: Grid.quarter),
-                  Text(
-                    description,
-                    maxLines: 3,
-                    overflow: TextOverflow.ellipsis,
-                    style: context.textTheme.bodyMedium?.copyWith(
-                      color: context.colors.onSurfaceVariant,
-                    ),
-                  ),
-                ],
-                const SizedBox(height: Grid.half),
-                Text(
-                  summary,
-                  style: context.textTheme.labelSmall?.copyWith(
-                    color: context.colors.onSurfaceVariant,
-                  ),
-                ),
-              ],
-            ),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(
+                child: expanded.value
+                    ? Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          if (description.isNotEmpty) ...[
+                            Text(
+                              description,
+                              style: context.textTheme.bodyMedium,
+                            ),
+                            const SizedBox(height: Grid.half),
+                          ],
+                          Text(counts, style: muted),
+                        ],
+                      )
+                    : Text(
+                        collapsedText,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: muted,
+                      ),
+              ),
+              const SizedBox(width: Grid.half),
+              Icon(
+                expanded.value
+                    ? LucideIcons.chevronUp
+                    : LucideIcons.chevronDown,
+                size: 16,
+                color: context.colors.onSurfaceVariant,
+              ),
+            ],
           ),
-        ],
+        ),
       ),
     );
   }

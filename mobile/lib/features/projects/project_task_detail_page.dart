@@ -63,7 +63,11 @@ class ProjectTaskDetailPage extends HookConsumerWidget {
     final sameContext = config.baseUrl == scope && current == viewer;
     final state = ref.watch(projectTaskStoreProvider(repoAddress));
     final store = ref.read(projectTaskStoreProvider(repoAddress).notifier);
-    final task = state.tasks.where((t) => t.id == taskId).firstOrNull;
+    final owners = ref.watch(projectTaskCommunityOwnersProvider);
+    final task = state
+        .tasksWith(owners)
+        .where((t) => t.id == taskId)
+        .firstOrNull;
     final profiles = ref.watch(userCacheProvider);
     final memberState = channelId == null
         ? const AsyncData<List<String>>([])
@@ -247,8 +251,9 @@ class ProjectTaskDetailPage extends HookConsumerWidget {
                 Grid.xxs,
               ),
               child: Text(
-                'Only the task author or repository owner can assign other '
-                'people. You can change your own assignment.',
+                'Only the task author, the repository owner, or a community '
+                'owner can assign other people. You can change your own '
+                'assignment.',
                 style: context.textTheme.bodySmall?.copyWith(
                   color: context.colors.onSurfaceVariant,
                 ),

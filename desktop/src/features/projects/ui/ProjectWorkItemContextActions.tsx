@@ -1,4 +1,5 @@
 import { useIsManagedAgent } from "@/features/agent-memory/hooks";
+import { useCommunityOwnerPubkeys } from "@/features/community-members/hooks";
 import type {
   ProjectIssue,
   ProjectPullRequest,
@@ -26,12 +27,16 @@ export function ProjectWorkItemContextActions({
   const viewer = viewerPubkey ? normalizePubkey(viewerPubkey) : null;
   const isOwner = viewer === normalizePubkey(repository.owner);
   const isManagedAgentOwner = useIsManagedAgent(repository.owner) === true;
+  const communityOwners = useCommunityOwnerPubkeys();
 
   if (issue) {
     if (!viewer) return null;
     const isAuthor = viewer === normalizePubkey(issue.author);
+    // Community owners are issue authorities (not PR authorities) and sign
+    // as themselves rather than as a managed agent.
+    const isCommunityOwner = communityOwners.includes(viewer);
     const canAssignOthers =
-      viewer !== null && (isAuthor || isOwner || isManagedAgentOwner);
+      isAuthor || isOwner || isCommunityOwner || isManagedAgentOwner;
     return (
       <div data-testid="project-context-task-assignment">
         <IssueAssigneesRow
@@ -40,7 +45,9 @@ export function ProjectWorkItemContextActions({
           issue={issue}
           profiles={profiles}
           project={repository}
-          signAsManagedOwner={isManagedAgentOwner && !isOwner}
+          signAsManagedOwner={
+            isManagedAgentOwner && !isOwner && !isCommunityOwner
+          }
           showAssignees={false}
           showSelfAssignmentState
           testIdPrefix="project-context-issue"

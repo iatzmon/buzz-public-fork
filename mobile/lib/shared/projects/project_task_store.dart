@@ -6,6 +6,7 @@ import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:nostr/nostr.dart' as nostr;
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../community/community_membership_provider.dart';
 import '../relay/relay.dart';
 import '../theme/theme_provider.dart';
 import 'project_task.dart';
@@ -164,6 +165,19 @@ Future<List<NostrEvent>> loadProjectTaskHistory(
   return events.values.toList();
 }
 
+/// Community owners (lowercase hex) from the relay's member list. Empty while
+/// the list loads, so a previous community's owners are never trusted.
+final projectTaskCommunityOwnersProvider = Provider.autoDispose<Set<String>>((
+  ref,
+) {
+  final membership = ref.watch(communityMembershipProvider);
+  if (membership.isLoading || membership.hasError) return const {};
+  return {
+    for (final member in membership.value?.members ?? const <CommunityMember>[])
+      if (member.role == CommunityMemberRole.owner) member.pubkey.toLowerCase(),
+  };
+});
+
 /// Cached relay state, draft, and signed outbox are scoped to account/community.
 class ProjectTaskState {
   const ProjectTaskState({
@@ -184,9 +198,16 @@ class ProjectTaskState {
   final bool sending;
   final bool loaded;
   final String? error;
-  List<ProjectTask> get tasks => [
+
+  /// Tasks with the base trust rule only (author and repository owner).
+  /// Screens use [tasksWith] and the community owners.
+  List<ProjectTask> get tasks => tasksWith(const {});
+
+  /// Tasks where [communityOwners] may also assign and change status.
+  List<ProjectTask> tasksWith(Set<String> communityOwners) => [
     for (final event in events)
-      if (event.kind == 1621) ProjectTask.fromEvents(event, events),
+      if (event.kind == 1621)
+        ProjectTask.fromEvents(event, events, communityOwners: communityOwners),
   ]..sort((a, b) => ProjectTask.compareEvents(b.root, a.root));
   bool get hasPendingCreate => pending.any((e) => e.kind == 1621);
 

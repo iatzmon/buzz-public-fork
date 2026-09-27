@@ -1,12 +1,8 @@
 import { ChevronDown, FolderGit2 } from "lucide-react";
 
-import {
-  useProjectRepoSnapshotQuery,
-  useRepoStateQuery,
-  type Project,
-  type Repository,
-} from "@/features/projects/hooks";
-import { resolveProjectDefaultBranch } from "@/features/projects/lib/projectBranches";
+import type { Project, Repository } from "@/features/projects/hooks";
+import { useCommunities } from "@/features/communities/useCommunities";
+import { useProjectRepositorySnapshots } from "@/features/projects/useProjectRepositorySnapshots";
 import { Button } from "@/shared/ui/button";
 import {
   DropdownMenu,
@@ -41,26 +37,20 @@ export function ProjectHomeCodebasePanel({
   projects: Project[];
   repository: Repository | null;
 }) {
-  const repoStateQuery = useRepoStateQuery(repository);
-  const defaultBranch = repository
-    ? resolveProjectDefaultBranch(repository.defaultBranch, repoStateQuery.data)
-    : null;
-  const snapshotQuery = useProjectRepoSnapshotQuery(
-    repository,
-    defaultBranch,
-    null,
-    null,
-    Boolean(repository),
+  const { activeCommunity } = useCommunities();
+  const [result] = useProjectRepositorySnapshots(
+    repository ? [repository] : [],
   );
   const fileContentSource = useRepositoryFileContentSource({
-    activeBranch: defaultBranch,
+    activeBranch: result?.branch ?? null,
     activeTag: null,
     pullRequest: null,
     repository,
     selectedTag: null,
-    source: "remote",
+    reposDir: activeCommunity?.reposDir,
+    source: result?.source ?? "remote",
   });
-  const snapshot = snapshotQuery.data ?? null;
+  const snapshot = result?.snapshot ?? null;
   const files = snapshot?.files ?? [];
 
   if (!repository) {
@@ -116,16 +106,39 @@ export function ProjectHomeCodebasePanel({
           </DropdownMenu>
         </div>
       ) : null}
+      {result?.source === "local" ? (
+        <p
+          className="px-4 pb-2 text-sm text-muted-foreground"
+          data-testid="project-home-local-source"
+        >
+          {result.localPath
+            ? `Local working copy · ${result.localPath}. Includes uncommitted changes.`
+            : result.error
+              ? "Could not read the local checkout. Open the repository from Codebase to check it."
+              : result.isLoading
+                ? "Looking for a local checkout…"
+                : "No local checkout found. Open this repository from Codebase to set up a local copy."}
+        </p>
+      ) : null}
       <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-4">
         <RepositoryFilesPanel
-          error={snapshotQuery.error}
+          key={`${repository.id}:${result?.source}:${activeCommunity?.reposDir}`}
+          error={result?.error}
           fallbackAuthorPubkey={repository.owner}
           fileContentSource={fileContentSource}
           files={files}
-          isLoading={snapshotQuery.isPending}
+          isLoading={result?.isLoading}
           onContextChange={onFilesContextChange}
           onOpenCommit={onOpenCommit}
           snapshot={snapshot}
+          unavailableMessage={
+            result?.source === "local" &&
+            !result.isLoading &&
+            !result.error &&
+            !snapshot
+              ? "No local checkout found."
+              : undefined
+          }
         />
       </div>
     </div>

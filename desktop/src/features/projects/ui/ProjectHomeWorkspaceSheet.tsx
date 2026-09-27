@@ -4,13 +4,10 @@ import { useAppNavigation } from "@/app/navigation/useAppNavigation";
 import { useCommunities } from "@/features/communities/useCommunities";
 import {
   useProjectPullRequestsQuery,
-  useProjectRepoSnapshotQuery,
   useProjectsWorkItemsQuery,
-  useRepoStateQuery,
   type Project,
 } from "@/features/projects/hooks";
 import { gitContributorPubkeysFromCommits } from "@/features/projects/lib/projectContributorMatching";
-import { resolveProjectDefaultBranch } from "@/features/projects/lib/projectBranches";
 import type { ProjectHomeWorkspaceSheetTab } from "@/features/projects/lib/projectHomeWorkspaceSheet";
 import { useProjectCommitDiffQuery } from "@/features/projects/useProjectCommitDiff";
 import { useProjectRepositorySnapshots } from "@/features/projects/useProjectRepositorySnapshots";
@@ -114,23 +111,15 @@ export function ProjectHomeWorkspaceSheet({
     pullRequests,
     repository,
   });
-  const repoStateQuery = useRepoStateQuery(repository);
-  const defaultBranch = resolveProjectDefaultBranch(
-    repository.defaultBranch,
-    repoStateQuery.data,
-  );
-  const snapshotQuery = useProjectRepoSnapshotQuery(
-    repository,
-    defaultBranch,
-    null,
-    null,
-    true,
-  );
-  const snapshot = snapshotQuery.data ?? null;
+  const snapshotRepositories =
+    tab === "commits" ? project.repositories : [repository];
   const repositorySnapshots = useProjectRepositorySnapshots(
-    project.repositories,
-    tab === "commits",
+    snapshotRepositories,
+    tab === "commits" || tab === "contributors",
   );
+  const snapshot =
+    repositorySnapshots.find((result) => result.repository.id === repository.id)
+      ?.snapshot ?? null;
   const selectedCommitResult =
     repositorySnapshots.find(
       ({ repository: candidate }) =>
@@ -141,7 +130,7 @@ export function ProjectHomeWorkspaceSheet({
   const commitDiffQuery = useProjectCommitDiffQuery(
     selectedCommitRepository,
     selectedCommitHash,
-    "remote",
+    selectedCommitResult?.source ?? "remote",
     activeCommunity?.reposDir,
   );
   const contributorPubkeysByGitIdentity = React.useMemo(

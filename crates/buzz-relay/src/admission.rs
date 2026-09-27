@@ -1,3 +1,6 @@
+use std::sync::{Arc, Mutex, PoisonError};
+use std::time::{Duration, Instant};
+
 use buzz_auth::{LimitType, RateLimiter};
 use buzz_core::TenantContext;
 use nostr::PublicKey;
@@ -8,14 +11,70 @@ use nostr::PublicKey;
 // better long-term fit for smoother refill behavior.
 const WS_BURST_WINDOW_SECS: u64 = 5;
 
+/// Upper bound on principals tracked by the local fallback. Admission runs
+/// only for authenticated callers, so this is far above any single relay's
+/// active principal count.
+const LOCAL_FALLBACK_MAX_ENTRIES: u64 = 100_000;
+/// Idle time after which a local fallback window is dropped. Longer than every
+/// admission window, so an evicted entry would have reset anyway.
+const LOCAL_FALLBACK_IDLE: Duration = Duration::from_secs(10 * 60);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AdmissionError {
     Exceeded { reset_in_secs: u64 },
     Unavailable,
 }
 
+/// Process-local fixed-window counters used only when the shared Redis counter
+/// cannot answer.
+///
+/// Opt-in via `BUZZ_ADMISSION_LOCAL_FALLBACK` for single-instance relays. It
+/// enforces the same limits and windows as the shared counter, so a slow Redis
+/// no longer rejects well-behaved clients. With several relay instances each
+/// would count separately, which is why the default is to reject instead.
+pub(crate) struct LocalAdmissionFallback {
+    windows: moka::sync::Cache<String, Arc<Mutex<(Instant, u64)>>>,
+}
+
+impl LocalAdmissionFallback {
+    pub(crate) fn new() -> Self {
+        Self {
+            windows: moka::sync::Cache::builder()
+                .max_capacity(LOCAL_FALLBACK_MAX_ENTRIES)
+                .time_to_idle(LOCAL_FALLBACK_IDLE)
+                .build(),
+        }
+    }
+
+    fn check(
+        &self,
+        key: String,
+        window_secs: u64,
+        limit: u64,
+        now: Instant,
+    ) -> Result<(), AdmissionError> {
+        let window = Duration::from_secs(window_secs.max(1));
+        let entry = self
+            .windows
+            .get_with(key, || Arc::new(Mutex::new((now, 0))));
+        let mut guard = entry.lock().unwrap_or_else(PoisonError::into_inner);
+        if now.saturating_duration_since(guard.0) >= window {
+            *guard = (now, 0);
+        }
+        guard.1 = guard.1.saturating_add(1);
+        if guard.1 <= limit {
+            return Ok(());
+        }
+        let remaining = window.saturating_sub(now.saturating_duration_since(guard.0));
+        Err(AdmissionError::Exceeded {
+            reset_in_secs: remaining.as_secs().max(1),
+        })
+    }
+}
+
 pub(crate) async fn check_principal<L: RateLimiter>(
     limiter: &L,
+    fallback: Option<&LocalAdmissionFallback>,
     tenant: &TenantContext,
     pubkey: &PublicKey,
     limit_type: LimitType,
@@ -23,17 +82,25 @@ pub(crate) async fn check_principal<L: RateLimiter>(
     limit: u64,
 ) -> Result<(), AdmissionError> {
     match limiter
-        .check_and_increment(tenant, pubkey, limit_type, window_secs, limit)
+        .check_and_increment(tenant, pubkey, limit_type.clone(), window_secs, limit)
         .await
     {
         Ok(result) if result.allowed => Ok(()),
         Ok(result) => Err(AdmissionError::Exceeded {
             reset_in_secs: result.reset_in_secs,
         }),
-        Err(error) => {
-            tracing::warn!(error = %error, "shared rate-limit admission unavailable");
-            Err(AdmissionError::Unavailable)
-        }
+        Err(error) => match fallback {
+            Some(fallback) => {
+                tracing::warn!(error = %error, "shared rate-limit admission unavailable; using local fallback");
+                metrics::counter!("buzz_admission_local_fallback_total").increment(1);
+                let key = buzz_auth::rate_limit::rate_limit_key(tenant, pubkey, &limit_type);
+                fallback.check(key, window_secs, limit, Instant::now())
+            }
+            None => {
+                tracing::warn!(error = %error, "shared rate-limit admission unavailable");
+                Err(AdmissionError::Unavailable)
+            }
+        },
     }
 }
 
@@ -120,8 +187,11 @@ mod tests {
         };
         let keys = Keys::generate();
 
+        let fallback = LocalAdmissionFallback::new();
+
         let result = check_principal(
             &limiter,
+            Some(&fallback),
             &tenant(),
             &keys.public_key(),
             LimitType::WsEvents,
@@ -130,6 +200,8 @@ mod tests {
         )
         .await;
 
+        // A shared-counter denial is authoritative; the local fallback never
+        // overrides it.
         assert_eq!(result, Err(AdmissionError::Exceeded { reset_in_secs: 1 }));
         assert_eq!(limiter.calls.load(Ordering::Relaxed), 1);
     }
@@ -144,6 +216,7 @@ mod tests {
 
         let result = check_principal(
             &limiter,
+            None,
             &tenant(),
             &keys.public_key(),
             LimitType::ApiCalls,
@@ -154,5 +227,81 @@ mod tests {
 
         assert_eq!(result, Err(AdmissionError::Unavailable));
         assert_eq!(limiter.calls.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn shared_counter_failure_uses_local_fallback_with_same_limit() {
+        let limiter = StubLimiter {
+            outcome: StubOutcome::Failed,
+            calls: AtomicUsize::new(0),
+        };
+        let fallback = LocalAdmissionFallback::new();
+        let keys = Keys::generate();
+
+        let mut results = Vec::new();
+        for _ in 0..4 {
+            results.push(
+                check_principal(
+                    &limiter,
+                    Some(&fallback),
+                    &tenant(),
+                    &keys.public_key(),
+                    LimitType::Messages,
+                    60,
+                    3,
+                )
+                .await,
+            );
+        }
+
+        assert_eq!(results[..3], [Ok(()), Ok(()), Ok(())]);
+        assert!(
+            matches!(results[3], Err(AdmissionError::Exceeded { reset_in_secs }) if (1..=60).contains(&reset_in_secs)),
+            "the fourth call must exceed the limit of three: {:?}",
+            results[3]
+        );
+        assert_eq!(limiter.calls.load(Ordering::Relaxed), 4);
+    }
+
+    #[tokio::test]
+    async fn local_fallback_counts_principals_and_limit_types_separately() {
+        let limiter = StubLimiter {
+            outcome: StubOutcome::Failed,
+            calls: AtomicUsize::new(0),
+        };
+        let fallback = LocalAdmissionFallback::new();
+        let tenant = tenant();
+        let first = Keys::generate().public_key();
+        let second = Keys::generate().public_key();
+
+        let (limiter, fallback, tenant) = (&limiter, &fallback, &tenant);
+        let check = |pubkey: PublicKey, limit_type: LimitType| async move {
+            check_principal(limiter, Some(fallback), tenant, &pubkey, limit_type, 60, 1).await
+        };
+
+        assert_eq!(check(first, LimitType::Messages).await, Ok(()));
+        assert_eq!(check(second, LimitType::Messages).await, Ok(()));
+        assert_eq!(check(first, LimitType::ApiCalls).await, Ok(()));
+        assert!(matches!(
+            check(first, LimitType::Messages).await,
+            Err(AdmissionError::Exceeded { .. })
+        ));
+    }
+
+    #[test]
+    fn local_fallback_window_resets_after_it_expires() {
+        let fallback = LocalAdmissionFallback::new();
+        let start = Instant::now();
+        let key = || "buzz:test:ratelimit:principal:messages".to_owned();
+
+        assert_eq!(fallback.check(key(), 5, 1, start), Ok(()));
+        assert_eq!(
+            fallback.check(key(), 5, 1, start + Duration::from_secs(2)),
+            Err(AdmissionError::Exceeded { reset_in_secs: 3 })
+        );
+        assert_eq!(
+            fallback.check(key(), 5, 1, start + Duration::from_secs(5)),
+            Ok(())
+        );
     }
 }

@@ -149,6 +149,13 @@ pub struct Config {
     /// pod is only 4 — small enough that rate-limit checks, presence, and
     /// pub/sub publishes queue behind each other under load.
     pub redis_pool_size: usize,
+    /// When true, admission checks fall back to process-local counters with
+    /// the same limits if the shared Redis counter cannot answer. Defaults to
+    /// false, which rejects the request instead.
+    ///
+    /// Only safe for a single relay instance: with several pods, each pod
+    /// would count separately while Redis is down.
+    pub admission_local_fallback: bool,
     /// Maximum connections in the Postgres writer/reader pools. Defaults to 50.
     ///
     /// The `buzz-db` default of 20 was sized for a handful of pods against
@@ -602,6 +609,8 @@ impl Config {
             .and_then(|v| v.parse::<usize>().ok())
             .filter(|&v| v > 0)
             .unwrap_or(16);
+
+        let admission_local_fallback = parse_bool("BUZZ_ADMISSION_LOCAL_FALLBACK", false)?;
 
         let db_pool_size = std::env::var("BUZZ_DB_POOL_SIZE")
             .ok()
@@ -1241,6 +1250,7 @@ impl Config {
             drain_jitter_ms,
             redis_url,
             redis_pool_size,
+            admission_local_fallback,
             db_pool_size,
             db_read_pool_size,
             relay_url,
@@ -1858,6 +1868,31 @@ oBE9h8dbebpaODxTwKqyN+9kqx2S4QIhAImYbgITI4wV0jwoGhC0FVEG6w4Rnpft\n\
             Err(ConfigError::InvalidValue(ref message))
                 if message.contains("must be valid Unicode")
         ));
+    }
+
+    #[test]
+    fn admission_local_fallback_is_opt_in() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        let previous = std::env::var_os("BUZZ_ADMISSION_LOCAL_FALLBACK");
+
+        std::env::remove_var("BUZZ_ADMISSION_LOCAL_FALLBACK");
+        let default = Config::from_env().expect("config").admission_local_fallback;
+
+        std::env::set_var("BUZZ_ADMISSION_LOCAL_FALLBACK", "true");
+        let enabled = Config::from_env().expect("config").admission_local_fallback;
+
+        std::env::set_var("BUZZ_ADMISSION_LOCAL_FALLBACK", "maybe");
+        let invalid = Config::from_env();
+
+        if let Some(value) = previous {
+            std::env::set_var("BUZZ_ADMISSION_LOCAL_FALLBACK", value);
+        } else {
+            std::env::remove_var("BUZZ_ADMISSION_LOCAL_FALLBACK");
+        }
+
+        assert!(!default, "the fallback must stay off unless configured");
+        assert!(enabled);
+        assert!(invalid.is_err(), "an unparsable value must fail config");
     }
 
     #[test]

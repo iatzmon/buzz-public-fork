@@ -188,6 +188,7 @@ async fn enforce_search_admission(
     let limit = state.auth.config().rate_limits.gif_searches_per_min;
     match crate::admission::check_principal(
         state.admission_rate_limiter.as_ref(),
+        state.admission_local_fallback.as_deref(),
         tenant,
         pubkey,
         LimitType::GifSearches,

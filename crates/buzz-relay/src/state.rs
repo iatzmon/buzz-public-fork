@@ -735,6 +735,9 @@ pub struct AppState {
     pub gif_http_client: reqwest::Client,
     /// Shared Redis-backed admission limits for ordinary HTTP and WebSocket work.
     pub admission_rate_limiter: Arc<RedisRateLimiter>,
+    /// Process-local admission counters used when Redis cannot answer.
+    /// `None` unless `BUZZ_ADMISSION_LOCAL_FALLBACK` is enabled.
+    pub(crate) admission_local_fallback: Option<Arc<crate::admission::LocalAdmissionFallback>>,
 
     /// Per-agent sliding-window rate limiter for observer frames (kind 24200).
     /// Key: (community_id, agent pubkey bytes). Value: (count, window_start).
@@ -865,6 +868,9 @@ impl AppState {
             Arc::new(RedisNip98ReplayGuard::new(redis_pool.clone()));
         let gif_http_client = crate::api::gifs::build_gif_http_client();
         let admission_rate_limiter = Arc::new(RedisRateLimiter::new(redis_pool.clone()));
+        let admission_local_fallback = config
+            .admission_local_fallback
+            .then(|| Arc::new(crate::admission::LocalAdmissionFallback::new()));
         let audit_enabled = audit_arc.is_some();
         let state = Self {
             config: Arc::new(config),
@@ -928,6 +934,7 @@ impl AppState {
             nip98_replay,
             gif_http_client,
             admission_rate_limiter,
+            admission_local_fallback,
             observer_rate_limiter: Arc::new(DashMap::new()),
             media_upload_rate_limiter: Arc::new(DashMap::new()),
             invite_claim_rate_limiter: Arc::new(
@@ -1459,6 +1466,17 @@ pub(crate) mod tests {
         let mut config = crate::config::Config::from_env().expect("default config loads");
         config.require_relay_membership = false;
         config.redis_url = "redis://127.0.0.1:1".to_string();
+        let pool = sqlx::PgPool::connect_lazy(&config.database_url).expect("lazy pg pool");
+        build_test_state(config, pool).await
+    }
+
+    /// The unreachable-Redis test state with the opt-in local admission
+    /// fallback enabled. Shared with `crate::rejection`'s tests.
+    pub(crate) async fn test_state_with_local_admission_fallback() -> Arc<AppState> {
+        let mut config = crate::config::Config::from_env().expect("default config loads");
+        config.require_relay_membership = false;
+        config.redis_url = "redis://127.0.0.1:1".to_string();
+        config.admission_local_fallback = true;
         let pool = sqlx::PgPool::connect_lazy(&config.database_url).expect("lazy pg pool");
         build_test_state(config, pool).await
     }

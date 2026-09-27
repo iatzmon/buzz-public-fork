@@ -34,6 +34,7 @@ pub(crate) async fn enforce_http_admission(
     let limit = state.auth.config().rate_limits.human_api_calls_per_min;
     match crate::admission::check_principal(
         state.admission_rate_limiter.as_ref(),
+        state.admission_local_fallback.as_deref(),
         tenant,
         pubkey,
         LimitType::ApiCalls,

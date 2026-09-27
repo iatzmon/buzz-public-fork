@@ -68,6 +68,7 @@ pub(crate) async fn enforce_ws_admission(
         crate::admission::ws_admission_budget(limits.human_ws_events_per_sec);
     let ws_result = crate::admission::check_principal(
         state.admission_rate_limiter.as_ref(),
+        state.admission_local_fallback.as_deref(),
         &conn.tenant,
         &pubkey,
         LimitType::WsEvents,
@@ -88,6 +89,7 @@ pub(crate) async fn enforce_ws_admission(
         };
         let message_result = crate::admission::check_principal(
             state.admission_rate_limiter.as_ref(),
+            state.admission_local_fallback.as_deref(),
             &conn.tenant,
             &pubkey,
             LimitType::Messages,
@@ -341,6 +343,30 @@ mod tests {
 
         assert_eq!(frame[0], "CLOSED");
         assert_eq!(frame[1], "history-abc");
+    }
+
+    /// With the opt-in local fallback, an unreachable Redis no longer rejects
+    /// the frame: admission is decided by the in-process counter instead.
+    #[tokio::test]
+    async fn enforce_ws_admission_admits_an_event_through_the_local_fallback() {
+        let state = crate::state::tests::test_state_with_local_admission_fallback().await;
+        let (conn, mut rx) = test_conn_with_auth(authenticated_state());
+        let event = EventBuilder::new(Kind::TextNote, "hello")
+            .sign_with_keys(&Keys::generate())
+            .expect("sign event");
+        let raw = serde_json::json!(["EVENT", event]).to_string();
+        let msg = ClientMessage::parse(&raw).expect("parse client frame");
+
+        let admitted = enforce_ws_admission(&msg, &conn, &state).await;
+
+        assert!(
+            admitted,
+            "the local fallback must admit a within-quota frame"
+        );
+        assert!(
+            rx.try_recv().is_err(),
+            "an admitted frame must not produce a rejection"
+        );
     }
 }
 

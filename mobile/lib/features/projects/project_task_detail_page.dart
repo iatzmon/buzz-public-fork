@@ -23,8 +23,9 @@ final _taskMembersProvider = FutureProvider.autoDispose
         (e) => e.kind == 39002 && e.getTagValue('d') == channel,
       )) {
         for (final tag in event.tags) {
-          if (tag.length > 1 && tag[0] == 'p' && isProjectTaskPubkey(tag[1]))
+          if (tag.length > 1 && tag[0] == 'p' && isProjectTaskPubkey(tag[1])) {
             keys.add(tag[1].toLowerCase());
+          }
         }
       }
       return keys.toList();

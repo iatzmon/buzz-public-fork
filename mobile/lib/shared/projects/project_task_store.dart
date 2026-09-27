@@ -260,12 +260,13 @@ class ProjectTaskStore extends Notifier<ProjectTaskState> {
   bool _current(int generation) => ref.mounted && generation == _generation;
 
   Future<void> _persist() {
-    if (_unreadable)
+    if (_unreadable) {
       return Future.error(
         StateError(
           'Could not read saved task data. Original data is preserved; writes are blocked.',
         ),
       );
+    }
     final key = _key;
     final prefs = _prefs;
     final value = jsonEncode({

@@ -43,6 +43,7 @@ export type AppSidebarProps = {
     | "channel"
     | "messages"
     | "agents"
+    | "sessions"
     | "workflows"
     | "pulse"
     | "projects";
@@ -87,6 +88,7 @@ export type AppSidebarProps = {
   onSelectAgents: () => void;
   onSelectProjects: () => void;
   onSelectPulse: () => void;
+  onSelectSessions: () => void;
   onSelectWorkflows: () => void;
   onSelectHome: () => void;
   onSelectChannel: (channelId: string) => void;

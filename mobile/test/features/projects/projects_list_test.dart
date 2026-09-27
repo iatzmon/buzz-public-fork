@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:buzz/features/channels/channel.dart';
 import 'package:buzz/features/channels/channels_page.dart';
 import 'package:buzz/features/channels/channels_provider.dart';
@@ -6,9 +8,11 @@ import 'package:buzz/features/forum/forum_posts_view.dart';
 import 'package:buzz/features/forum/forum_provider.dart';
 import 'package:buzz/features/profile/profile_provider.dart';
 import 'package:buzz/features/projects/project_page.dart';
+import 'package:buzz/features/projects/project_tasks_page.dart';
 import 'package:buzz/shared/community/community_icon_provider.dart';
 import 'package:buzz/shared/profile/user_profile.dart';
 import 'package:buzz/shared/projects/project_read_models.dart';
+import 'package:buzz/shared/projects/project_task_store.dart';
 import 'package:buzz/shared/projects/projects.dart';
 import 'package:buzz/shared/relay/relay.dart';
 import 'package:buzz/shared/theme/theme.dart';
@@ -83,12 +87,48 @@ class _Presence extends PresenceNotifier {
   Future<String> build() async => 'online';
 }
 
+/// The projects state under test; tests change it to simulate reloads.
+class _ProjectsState extends Notifier<AsyncValue<ProjectsSnapshot>> {
+  _ProjectsState(this._initial);
+
+  final AsyncValue<ProjectsSnapshot> _initial;
+
+  @override
+  AsyncValue<ProjectsSnapshot> build() => _initial;
+
+  void set(AsyncValue<ProjectsSnapshot> value) => state = value;
+
+  /// A failed reload that keeps the previous snapshot, as Riverpod reports
+  /// it for a real provider.
+  void fail() {
+    const error = AsyncError<ProjectsSnapshot>('offline', StackTrace.empty);
+    // ignore: invalid_use_of_internal_member
+    state = error.copyWithPrevious(state);
+  }
+}
+
+late NotifierProvider<_ProjectsState, AsyncValue<ProjectsSnapshot>>
+_projectsState;
+
+class _Refreshes extends ProjectsNotifier {
+  _Refreshes() : super(_scope);
+
+  int count = 0;
+
+  @override
+  Future<void> refresh() async => count++;
+}
+
 Future<SharedPreferences> _pumpChannels(
   WidgetTester tester, {
-  required ProjectsSnapshot snapshot,
+  ProjectsSnapshot? snapshot,
+  AsyncValue<ProjectsSnapshot>? state,
   List<Channel>? channels,
   Map<String, Object> prefs = const {},
+  _Refreshes? refreshes,
 }) async {
+  final initial = state ?? AsyncData(snapshot!);
+  _projectsState = NotifierProvider(() => _ProjectsState(initial));
   SharedPreferences.setMockInitialValues(prefs);
   final saved = await SharedPreferences.getInstance();
   await tester.pumpWidget(
@@ -100,7 +140,17 @@ Future<SharedPreferences> _pumpChannels(
         profileProvider.overrideWith(_Profile.new),
         presenceProvider.overrideWith(_Presence.new),
         communityIconProvider.overrideWith((ref, relayUrl) async => null),
-        activeProjectsProvider.overrideWithValue(AsyncData(snapshot)),
+        activeProjectsProvider.overrideWith((ref) => ref.watch(_projectsState)),
+        activeProjectsNotifierProvider.overrideWithValue(
+          refreshes ?? _Refreshes(),
+        ),
+        projectTaskTransportProvider.overrideWithValue(
+          ProjectTaskTransport(
+            query: (_) async => const [],
+            publish: (_) async {},
+            sign: (_, _, _, _) => throw UnimplementedError(),
+          ),
+        ),
         channelsProvider.overrideWith(
           () => _Channels(channels ?? [_general, _docsForum]),
         ),
@@ -301,4 +351,129 @@ void main() {
       expect(find.textContaining('not available.'), findsNothing);
     },
   );
+
+  group('load failures and Tasks', () {
+    ProviderContainer containerOf(WidgetTester tester) =>
+        ProviderScope.containerOf(
+          tester.element(find.byType(ChannelsPage, skipOffstage: false)),
+        );
+
+    Future<void> openPlatformPage(WidgetTester tester) async {
+      final store = const ProjectSidebarMembershipStore().withSelection(
+        platform,
+        selected: true,
+        updatedAt: 1,
+      );
+      await tester.tap(_projectRow(platform));
+      await tester.pumpAndSettle();
+      expect(find.byType(ProjectPage), findsOneWidget);
+      expect(store.selectedAddresses, {platform});
+    }
+
+    Map<String, Object> platformAdded() => {
+      _membershipKey: const ProjectSidebarMembershipStore()
+          .withSelection(platform, selected: true, updatedAt: 1)
+          .encode(),
+    };
+
+    testWidgets('Browse survives the snapshot going away', (tester) async {
+      await _pumpChannels(tester, snapshot: _snapshot(CommunityFixture()));
+      await tester.tap(
+        find.byKey(const ValueKey('channels-projects-browse-empty')),
+      );
+      await tester.pumpAndSettle();
+
+      // An account or community change drops the snapshot.
+      containerOf(
+        tester,
+      ).read(_projectsState.notifier).set(const AsyncLoading());
+      await tester.pump();
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('a failed refresh keeps the project and offers Retry', (
+      tester,
+    ) async {
+      final refreshes = _Refreshes();
+      await _pumpChannels(
+        tester,
+        snapshot: _snapshot(CommunityFixture()),
+        prefs: platformAdded(),
+        refreshes: refreshes,
+      );
+      await openPlatformPage(tester);
+
+      containerOf(tester).read(_projectsState.notifier).fail();
+      await tester.pumpAndSettle();
+      expect(
+        find.text('Could not refresh. This may be out of date.'),
+        findsOneWidget,
+      );
+      expect(find.text('Repositories'), findsOneWidget);
+
+      await tester.tap(find.byKey(const ValueKey('project-page-retry')));
+      expect(refreshes.count, 1);
+    });
+
+    testWidgets('a cold-load failure shows Retry, not a deleted project', (
+      tester,
+    ) async {
+      final refreshes = _Refreshes();
+      await _pumpChannels(
+        tester,
+        state: AsyncError<ProjectsSnapshot>(
+          StateError('offline'),
+          StackTrace.empty,
+        ),
+        refreshes: refreshes,
+      );
+      expect(
+        find.byKey(const ValueKey('channels-projects-section')),
+        findsOneWidget,
+      );
+      expect(find.text('Projects could not be loaded.'), findsOneWidget);
+      await tester.tap(find.byKey(const ValueKey('channels-projects-retry')));
+      expect(refreshes.count, 1);
+
+      unawaited(
+        Navigator.of(tester.element(find.byType(ChannelsPage))).push(
+          MaterialPageRoute<void>(
+            builder: (_) => ProjectPage(projectAddress: platform),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('Projects could not be loaded.'), findsOneWidget);
+      expect(find.textContaining('not available'), findsNothing);
+      await tester.tap(find.byKey(const ValueKey('project-page-retry')));
+      expect(refreshes.count, 2);
+    });
+
+    testWidgets('Tasks opens the project tasks with its repositories', (
+      tester,
+    ) async {
+      await _pumpChannels(
+        tester,
+        snapshot: _snapshot(CommunityFixture()),
+        prefs: platformAdded(),
+      );
+      await openPlatformPage(tester);
+
+      await tester.tap(find.byKey(const ValueKey('project-tasks')));
+      await tester.pumpAndSettle();
+      final page = tester.widget<ProjectTasksPage>(
+        find.byType(ProjectTasksPage),
+      );
+      expect(page.repositories, {
+        repoAddress(bob, 'private-notes'): 'Private Notes',
+        repoAddress(alice, 'buzz'): 'buzz',
+        repoAddress(alice, 'buzz-infra'): 'buzz-infra',
+      });
+      expect(page.channelId, streamHomeChannel);
+      expect(page.repositoryChannels, {
+        repoAddress(alice, 'buzz'): streamHomeChannel,
+        repoAddress(alice, 'buzz-infra'): streamHomeChannel,
+      });
+    });
+  });
 }

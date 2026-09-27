@@ -11,6 +11,7 @@ import '../../shared/widgets/adaptive_workspace.dart';
 import '../channels/channel.dart';
 import '../channels/channel_detail_page.dart';
 import '../channels/channels_provider.dart';
+import 'project_tasks_page.dart';
 
 /// The channel with [channelId] from the loaded channel list, or null.
 Channel? findLoadedChannel(WidgetRef ref, String channelId) {
@@ -56,20 +57,43 @@ class ProjectPage extends ConsumerWidget {
         .selectedAddresses
         .contains(projectAddress);
 
+    Future<void> retry() async =>
+        ref.read(activeProjectsNotifierProvider)?.refresh();
+
     if (project == null) {
+      final Widget body;
+      if (snapshotAsync.hasError && !snapshotAsync.isLoading) {
+        body = Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text(
+              'Projects could not be loaded.',
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: Grid.xs),
+            FilledButton(
+              key: const ValueKey('project-page-retry'),
+              onPressed: retry,
+              child: const Text('Retry'),
+            ),
+          ],
+        );
+      } else if (snapshot == null || snapshotAsync.isLoading) {
+        body = const CircularProgressIndicator();
+      } else {
+        body = const Text(
+          'This project is not available. It may have been '
+          'deleted, or it belongs to another community.',
+          textAlign: TextAlign.center,
+        );
+      }
       return Scaffold(
         appBar: AppBar(title: const Text('Project')),
         body: Center(
-          child: snapshot == null && snapshotAsync.isLoading
-              ? const CircularProgressIndicator()
-              : const Padding(
-                  padding: EdgeInsets.all(Grid.gutter),
-                  child: Text(
-                    'This project is not available. It may have been '
-                    'deleted, or it belongs to another community.',
-                    textAlign: TextAlign.center,
-                  ),
-                ),
+          child: Padding(
+            padding: const EdgeInsets.all(Grid.gutter),
+            child: body,
+          ),
         ),
       );
     }
@@ -101,12 +125,17 @@ class ProjectPage extends ConsumerWidget {
         ],
       ),
       body: RefreshIndicator(
-        onRefresh: () async =>
-            ref.read(activeProjectsNotifierProvider)?.refresh(),
+        onRefresh: retry,
         child: ListView(
           padding: const EdgeInsets.only(bottom: Grid.lg),
           children: [
-            if (snapshot?.fromCache ?? false)
+            if (snapshotAsync.hasError && !snapshotAsync.isLoading)
+              _Notice(
+                icon: LucideIcons.cloudAlert,
+                text: 'Could not refresh. This may be out of date.',
+                onRetry: retry,
+              )
+            else if (snapshot?.fromCache ?? false)
               _Notice(
                 icon: LucideIcons.cloudOff,
                 text: 'Saved copy. It may be out of date.',
@@ -124,6 +153,7 @@ class ProjectPage extends ConsumerWidget {
                   style: context.textTheme.bodyMedium,
                 ),
               ),
+            _TasksRow(project: project),
             const _SectionTitle('Channels'),
             if (boundChannels.isEmpty)
               const _EmptyRow('This project has no channels.')
@@ -214,10 +244,11 @@ class _EmptyRow extends StatelessWidget {
 }
 
 class _Notice extends StatelessWidget {
-  const _Notice({required this.icon, required this.text});
+  const _Notice({required this.icon, required this.text, this.onRetry});
 
   final IconData icon;
   final String text;
+  final VoidCallback? onRetry;
 
   @override
   Widget build(BuildContext context) => Padding(
@@ -227,16 +258,64 @@ class _Notice extends StatelessWidget {
         Icon(icon, size: 16, color: context.colors.onSurfaceVariant),
         const SizedBox(width: Grid.xxs),
         Expanded(
-          child: Text(
-            text,
-            style: context.textTheme.bodySmall?.copyWith(
-              color: context.colors.onSurfaceVariant,
+          child: Semantics(
+            liveRegion: onRetry != null,
+            child: Text(
+              text,
+              style: context.textTheme.bodySmall?.copyWith(
+                color: context.colors.onSurfaceVariant,
+              ),
             ),
           ),
         ),
+        if (onRetry case final onRetry?)
+          TextButton(
+            key: const ValueKey('project-page-retry'),
+            onPressed: onRetry,
+            child: const Text('Retry'),
+          ),
       ],
     ),
   );
+}
+
+class _TasksRow extends StatelessWidget {
+  const _TasksRow({required this.project});
+
+  final Project project;
+
+  @override
+  Widget build(BuildContext context) {
+    final repositories = project.repositories;
+    return ListTile(
+      key: const ValueKey('project-tasks'),
+      enabled: repositories.isNotEmpty,
+      leading: const Icon(LucideIcons.listTodo, size: 20),
+      title: const Text('Tasks'),
+      subtitle: repositories.isEmpty
+          ? const Text('Tasks need a repository in this project.')
+          : null,
+      trailing: const Icon(LucideIcons.chevronRight, size: 18),
+      onTap: repositories.isEmpty
+          ? null
+          : () => AdaptiveWorkspace.open(
+              context,
+              MaterialPageRoute<void>(
+                builder: (_) => ProjectTasksPage(
+                  repositories: {
+                    for (final repository in repositories)
+                      repository.repoAddress: repository.name,
+                  },
+                  channelId: project.projectChannelId,
+                  repositoryChannels: {
+                    for (final repository in repositories)
+                      repository.repoAddress: ?repository.channelId,
+                  },
+                ),
+              ),
+            ),
+    );
+  }
 }
 
 class _ChannelRow extends ConsumerWidget {

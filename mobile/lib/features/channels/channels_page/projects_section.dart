@@ -7,12 +7,55 @@ const _kProjectsSortCreatedValue = 'projects_sort_created';
 const _kProjectsBrowseValue = 'projects_browse';
 
 /// Whether the Projects section shows: once projects load, and only when the
-/// community has a project or the viewer's list is not empty.
+/// community has a project or the viewer's list is not empty. A failed load
+/// also shows it, so the failure and its Retry action stay visible.
 bool _projectsSectionVisible(WidgetRef ref) {
-  final snapshot = ref.watch(activeProjectsProvider).value;
+  final projectsAsync = ref.watch(activeProjectsProvider);
+  if (_projectsLoadFailed(projectsAsync)) return true;
+  final snapshot = projectsAsync.value;
   final projects = ref.watch(sidebarProjectsProvider);
   if (snapshot == null || projects == null) return false;
   return projects.isNotEmpty || snapshot.projects.any((p) => p.isExplicit);
+}
+
+/// A settled load error. Loading and cached values stay available through
+/// `AsyncValue.value`.
+bool _projectsLoadFailed(AsyncValue<ProjectsSnapshot> projectsAsync) =>
+    projectsAsync.hasError && !projectsAsync.isLoading;
+
+/// A load-failure line with a Retry action, for the section and the sheet.
+class _ProjectsLoadError extends ConsumerWidget {
+  final String text;
+
+  const _ProjectsLoadError({required this.text});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) => Padding(
+    padding: const EdgeInsets.only(
+      left: _kChannelLabelInset - Grid.xxs,
+      right: _kChannelSectionInset,
+    ),
+    child: Row(
+      children: [
+        Expanded(
+          child: Semantics(
+            liveRegion: true,
+            child: Text(
+              text,
+              style: context.textTheme.bodySmall?.copyWith(
+                color: context.colors.onSurfaceVariant,
+              ),
+            ),
+          ),
+        ),
+        TextButton(
+          key: const ValueKey('channels-projects-retry'),
+          onPressed: () => ref.read(activeProjectsNotifierProvider)?.refresh(),
+          child: const Text('Retry'),
+        ),
+      ],
+    ),
+  );
 }
 
 /// The channel list's Projects section: the projects the viewer added (or
@@ -27,10 +70,9 @@ class _ProjectsSection extends HookConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final expanded = useState(true);
     final view = ref.watch(projectSidebarViewProvider);
+    final loadFailed = _projectsLoadFailed(ref.watch(activeProjectsProvider));
     final projects = ref.watch(sidebarProjectsProvider);
-    if (projects == null || !_projectsSectionVisible(ref)) {
-      return const SizedBox.shrink();
-    }
+    if (!_projectsSectionVisible(ref)) return const SizedBox.shrink();
 
     Future<void> browse() => showBuzzModalBottomSheet<void>(
       context: context,
@@ -56,7 +98,15 @@ class _ProjectsSection extends HookConsumerWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              if (projects.isEmpty)
+              if (loadFailed)
+                _ProjectsLoadError(
+                  text: projects == null
+                      ? 'Projects could not be loaded.'
+                      : 'Could not refresh projects.',
+                ),
+              if (projects == null)
+                const SizedBox.shrink()
+              else if (projects.isEmpty)
                 Padding(
                   padding: const EdgeInsets.only(
                     left: _kChannelLabelInset - Grid.xxs,
@@ -318,9 +368,11 @@ class _BrowseProjectsSheet extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final projectsAsync = ref.watch(activeProjectsProvider);
     final added = ref.watch(projectSidebarMembershipProvider).selectedAddresses;
-    final projects =
-        projectsAsync.value?.projects.where((p) => p.isExplicit).toList() ??
-        const <Project>[];
+    // Growable: the snapshot drops to null on an account or community change.
+    final projects = [
+      ...?projectsAsync.value?.projects.where((p) => p.isExplicit),
+    ];
+    final loadFailed = _projectsLoadFailed(projectsAsync);
     projects.sort(
       (a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()),
     );
@@ -331,13 +383,16 @@ class _BrowseProjectsSheet extends ConsumerWidget {
         padding: EdgeInsets.all(Grid.sm),
         child: Center(child: BuzzLoadingIndicator()),
       );
+    } else if (projects.isEmpty && loadFailed) {
+      body = const Padding(
+        padding: EdgeInsets.symmetric(vertical: Grid.sm),
+        child: _ProjectsLoadError(text: 'Projects could not be loaded.'),
+      );
     } else if (projects.isEmpty) {
-      body = Padding(
-        padding: const EdgeInsets.all(Grid.sm),
+      body = const Padding(
+        padding: EdgeInsets.all(Grid.sm),
         child: Text(
-          projectsAsync.hasError
-              ? 'Projects could not be loaded.'
-              : 'This community has no projects yet.',
+          'This community has no projects yet.',
           textAlign: TextAlign.center,
         ),
       );
@@ -376,6 +431,8 @@ class _BrowseProjectsSheet extends ConsumerWidget {
               ),
             ),
           ),
+          if (loadFailed && projects.isNotEmpty)
+            const _ProjectsLoadError(text: 'Could not refresh projects.'),
           body,
         ],
       ),

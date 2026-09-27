@@ -261,6 +261,26 @@ void main() {
     expect(task.assignees, isEmpty);
     expect(task.assignmentHeads[member], '3'.padLeft(64, '0'));
   });
+  test('applied assignment ids list only operations the state used', () {
+    final removal = operation('3', owner, member, assign: false, time: 2);
+    final valid = operation('4', member, member, time: 3, prior: removal.id);
+    final stale = operation(
+      '5',
+      member,
+      member,
+      assign: false,
+      time: 4,
+      prior: removal.id,
+    );
+    final foreign = operation('6', stranger, member, time: 5);
+    final task = ProjectTask.fromEvents(root(), [
+      stale,
+      valid,
+      removal,
+      foreign,
+    ]);
+    expect(task.appliedAssignmentIds, {removal.id, valid.id});
+  });
   test('self service must reference the current authority head', () {
     final removal = operation('3', owner, member, assign: false, time: 2);
     final valid = operation('4', member, member, time: 3, prior: removal.id);

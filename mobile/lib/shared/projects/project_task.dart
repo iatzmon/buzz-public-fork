@@ -8,12 +8,17 @@ class ProjectTask {
     required this.assignees,
     required this.assignmentHeads,
     required this.comments,
+    this.appliedAssignmentIds = const {},
   });
 
   final NostrEvent root;
   final String status;
   final Set<String> assignees;
   final Map<String, String> assignmentHeads;
+
+  /// Ids of the assignment operations that changed [assignees]. Activity
+  /// shows only these, so it never reports a change the state ignored.
+  final Set<String> appliedAssignmentIds;
   final List<NostrEvent> comments;
 
   String get id => root.id;
@@ -108,6 +113,7 @@ class ProjectTask {
     }
     final assignees = <String>{};
     final heads = <String, String>{};
+    final applied = <String>{};
     for (final event in [...self, ...authority, ...causal]) {
       final keys = _tags(event, 'p').map((v) => v.toLowerCase()).toList();
       if (causal.contains(event) &&
@@ -122,12 +128,14 @@ class ProjectTask {
         }
         heads[key] = event.id.toLowerCase();
       }
+      applied.add(event.id);
     }
     return ProjectTask(
       root: root,
       status: status,
       assignees: Set.unmodifiable(assignees),
       assignmentHeads: Map.unmodifiable(heads),
+      appliedAssignmentIds: Set.unmodifiable(applied),
       comments: List.unmodifiable(comments),
     );
   }

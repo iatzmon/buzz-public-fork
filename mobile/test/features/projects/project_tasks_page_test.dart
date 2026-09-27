@@ -5,6 +5,7 @@ import 'package:buzz/shared/projects/project_task_store.dart';
 import 'package:buzz/shared/relay/relay.dart';
 import 'package:buzz/shared/theme/theme.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -329,5 +330,102 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.textContaining('assigned Carol'), findsNothing);
     expect(find.textContaining('assigned You'), findsOneWidget);
+  });
+  for (final variant in ['uppercase E', 'stale prior']) {
+    testWidgets('activity hides a self-assignment with $variant', (
+      tester,
+    ) async {
+      await pump(
+        tester,
+        published: [],
+        history: [
+          _event(
+            '7',
+            kind: 1,
+            signer: _carol,
+            tags: [
+              [
+                variant == 'uppercase E' ? 'E' : 'e',
+                _event('1').id,
+                '',
+                'root',
+              ],
+              ['a', _repo],
+              ['p', _carol],
+              ['t', 'assignment'],
+              if (variant == 'stale prior') ['prior', 'f' * 64],
+            ],
+          ),
+        ],
+      );
+      await tester.tap(find.text('Mobile project task'));
+      await tester.pumpAndSettle();
+      expect(find.text('Unassigned'), findsOneWidget);
+      expect(find.textContaining('assigned themselves'), findsNothing);
+    });
+  }
+  testWidgets('screen readers can open a task and use its actions', (
+    tester,
+  ) async {
+    final semantics = tester.ensureSemantics();
+    await pump(tester, published: []);
+    final row = tester.getSemantics(find.byKey(ValueKey(_event('1').id)));
+    expect(row.getSemanticsData().hasAction(SemanticsAction.tap), isTrue);
+    await tester.tap(find.text('Mobile project task'));
+    await tester.pumpAndSettle();
+    final assign = tester.getSemantics(
+      find.byKey(const ValueKey('project-task-assign-me')),
+    );
+    expect(assign.getSemanticsData().hasAction(SemanticsAction.tap), isTrue);
+    semantics.dispose();
+  });
+  testWidgets('the member sheet cannot assign after a community switch', (
+    tester,
+  ) async {
+    final published = <NostrEvent>[];
+    final container = await pump(
+      tester,
+      published: published,
+      viewer: _owner,
+      history: [
+        _event(
+          '4',
+          kind: 39002,
+          tags: [
+            ['d', 'channel'],
+            ['p', _carol],
+          ],
+        ),
+      ],
+    );
+    await tester.tap(find.text('Mobile project task'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Assign a member'));
+    await tester.pumpAndSettle();
+    container
+        .read(relayConfigProvider.notifier)
+        .update(baseUrl: 'https://other.example');
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Carol'));
+    await tester.pumpAndSettle();
+    expect(published, isEmpty);
+  });
+  testWidgets('the repository sheet cannot open a composer after a switch', (
+    tester,
+  ) async {
+    final container = await pump(
+      tester,
+      published: [],
+      repositories: {_repo: 'App', _secondRepo: 'Website'},
+    );
+    await tester.tap(find.byTooltip('Create task'));
+    await tester.pumpAndSettle();
+    container
+        .read(relayConfigProvider.notifier)
+        .update(baseUrl: 'https://other.example');
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Website'));
+    await tester.pumpAndSettle();
+    expect(find.widgetWithText(TextField, 'Title'), findsNothing);
   });
 }

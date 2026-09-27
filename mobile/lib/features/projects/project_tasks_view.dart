@@ -42,6 +42,7 @@ Future<void> startProjectTask(
   String? channelId,
 }) async {
   final viewer = ref.read(myPubkeyProvider);
+  final scope = ref.read(relayConfigProvider).baseUrl;
   if (viewer == null || repositories.isEmpty) return;
   var address = repositories.keys.first;
   if (repositories.length > 1) {
@@ -68,14 +69,19 @@ Future<void> startProjectTask(
     if (picked == null) return;
     address = picked;
   }
-  if (!context.mounted) return;
+  // The sheet can close after a community or account change.
+  if (!context.mounted ||
+      ref.read(relayConfigProvider).baseUrl != scope ||
+      ref.read(myPubkeyProvider) != viewer) {
+    return;
+  }
   await Navigator.of(context).push(
     MaterialPageRoute<void>(
       builder: (_) => ProjectTaskComposePage(
         repoAddress: address,
         repositoryName: repositories[address],
         channelId: repositoryChannels[address] ?? channelId,
-        scope: ref.read(relayConfigProvider).baseUrl,
+        scope: scope,
         viewer: viewer,
       ),
     ),
@@ -404,6 +410,7 @@ class _TaskRow extends StatelessWidget {
           '${assignees.isEmpty ? ', unassigned' : ', ${assignees.length} assigned'}'
           '${comments == 0 ? '' : ', $comments comments'}',
       excludeSemantics: true,
+      onTap: onTap,
       child: InkWell(
         onTap: onTap,
         child: Padding(

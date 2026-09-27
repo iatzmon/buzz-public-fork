@@ -88,8 +88,13 @@ class ProjectTaskDetailPage extends HookConsumerWidget {
     String label(String key) =>
         profiles[key]?.label ??
         (key.length <= 8 ? key : '${key.substring(0, 8)}…');
+    // Read live: a sheet can close after a community or account change.
+    bool stillSameContext() =>
+        context.mounted &&
+        ref.read(relayConfigProvider).baseUrl == scope &&
+        ref.read(myPubkeyProvider) == viewer;
     Future<void> change(String key, bool assign) async {
-      if (!sameContext || task == null) return;
+      if (!sameContext || task == null || !stillSameContext()) return;
       error.value = null;
       try {
         await store.assign(
@@ -394,6 +399,7 @@ class _ActionRow extends StatelessWidget {
       enabled: onTap != null,
       excludeSemantics: true,
       label: label,
+      onTap: onTap,
       child: AppListRowRaw(
         leading: _RoundIcon(icon: icon, color: color),
         title: Text(
@@ -520,7 +526,7 @@ class _Activity extends StatelessWidget {
             ),
           for (final comment in task.comments)
             if (_isAssignmentOperation(comment))
-              if (_trustedAssignmentChange(task, comment) case final change?)
+              if (_appliedAssignmentChange(task, comment) case final change?)
                 _AssignmentLine(
                   icon: change.assign
                       ? LucideIcons.userRoundPlus
@@ -554,30 +560,19 @@ bool _isAssignmentOperation(NostrEvent event) {
   return labels.contains('assignment') || labels.contains('unassignment');
 }
 
-/// The assignment change in [event], when its signer may make it: the task
-/// author or repository owner for anyone, everyone else only for themselves.
-/// Mirrors the authority rule in [ProjectTask.fromEvents], so the activity
-/// never shows a change the task state ignored.
-({bool assign, List<String> targets})? _trustedAssignmentChange(
+/// The assignment change in [event], when the task state applied it.
+({bool assign, List<String> targets})? _appliedAssignmentChange(
   ProjectTask task,
   NostrEvent event,
 ) {
-  if (event.kind != 1) return null;
-  final labels = _labels(event);
-  final assign = labels.contains('assignment');
-  if (assign == labels.contains('unassignment')) return null;
-  final pTags = event.tags.where((tag) => tag.isNotEmpty && tag[0] == 'p');
-  if (pTags.isEmpty ||
-      pTags.any((tag) => tag.length < 2 || !isProjectTaskPubkey(tag[1]))) {
-    return null;
-  }
-  final targets = [for (final tag in pTags) tag[1].toLowerCase()];
-  final signer = event.pubkey.toLowerCase();
-  if (!task.canManage(signer) &&
-      !(targets.length == 1 && targets.single == signer)) {
-    return null;
-  }
-  return (assign: assign, targets: targets);
+  if (!task.appliedAssignmentIds.contains(event.id)) return null;
+  return (
+    assign: _labels(event).contains('assignment'),
+    targets: [
+      for (final tag in event.tags)
+        if (tag.length > 1 && tag[0] == 'p') tag[1].toLowerCase(),
+    ],
+  );
 }
 
 String _assignmentText(

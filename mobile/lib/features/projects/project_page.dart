@@ -347,6 +347,7 @@ class _ProjectTabButton extends StatelessWidget {
       selected: selected,
       label: label,
       excludeSemantics: true,
+      onTap: onTap,
       child: InkWell(
         onTap: onTap,
         borderRadius: BorderRadius.circular(Radii.md),

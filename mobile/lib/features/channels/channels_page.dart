@@ -13,6 +13,7 @@ import 'package:lucide_icons_flutter/lucide_icons.dart';
 
 import '../../shared/auth/auth.dart';
 import '../../shared/community/community_icon_provider.dart';
+import '../../shared/projects/projects.dart';
 import '../../shared/relay/relay.dart';
 import '../../shared/theme/theme.dart';
 import '../../shared/widgets/adaptive_workspace.dart';
@@ -33,6 +34,7 @@ import '../profile/profile_provider.dart';
 import '../profile/presence_cache_provider.dart';
 import '../../shared/profile/user_cache_provider.dart';
 import '../pairing/pairing_page.dart';
+import '../projects/project_page.dart';
 import '../pairing/pairing_provider.dart';
 import 'channel.dart';
 import 'channel_actions_sheet.dart';
@@ -56,6 +58,7 @@ import 'unread_badge/observed_unread_event.dart';
 part 'channels_page/body.dart';
 part 'channels_page/browse_channels_sheet.dart';
 part 'channels_page/sections.dart';
+part 'channels_page/projects_section.dart';
 part 'channels_page/channel_tile.dart';
 part 'channels_page/sheets.dart';
 part 'channels_page/badges.dart';
@@ -376,7 +379,13 @@ class ChannelsPage extends HookConsumerWidget {
         topSectionHeight: topSectionHeight,
         usesPinnedGradient: usesPinnedGradient,
         scrollController: channelsScrollController,
-        onRefresh: () => ref.read(channelsProvider.notifier).refresh(),
+        onRefresh: () async {
+          final projectsRefresh = ref
+              .read(activeProjectsNotifierProvider)
+              ?.refresh();
+          await ref.read(channelsProvider.notifier).refresh();
+          await projectsRefresh;
+        },
         onSelectChannel: openChannel,
       ),
     );

@@ -15,6 +15,7 @@ import '../../shared/animated_avatar.dart';
 import '../../shared/emoji/emoji_burst.dart';
 import '../../shared/huddle/huddle.dart';
 import '../../shared/mentions/agent_identity_provider.dart';
+import '../../shared/projects/projects.dart';
 import '../../shared/relay/relay.dart';
 import '../../shared/theme/theme.dart';
 import '../../shared/widgets/avatar_image.dart';
@@ -35,6 +36,7 @@ import '../profile/profile_provider.dart';
 import '../../shared/profile/user_cache_provider.dart';
 import '../../shared/profile/user_profile.dart';
 import '../forum/forum_posts_view.dart';
+import '../projects/project_page.dart';
 import 'android_ime_lift.dart';
 import 'channel.dart';
 import 'channel_actions_sheet.dart';
@@ -569,6 +571,10 @@ class ChannelDetailPage extends HookConsumerWidget {
       });
     }, [channel.id, readState.isReady, readTimestamp]);
 
+    final projectHome = resolvedChannel.isDm
+        ? null
+        : ref.watch(projectHomeForChannelProvider(resolvedChannel.id));
+
     return FrostedScaffold(
       resizeToAvoidBottomInset:
           !usesFixedAndroidImeViewport || resolvedChannel.isForum,
@@ -654,6 +660,20 @@ class ChannelDetailPage extends HookConsumerWidget {
                 ),
               ]
             : [
+                if (projectHome != null)
+                  IconButton(
+                    key: const ValueKey('channel-project-details'),
+                    color: context.colors.primary,
+                    tooltip: 'Project: ${projectHome.name}',
+                    icon: const Icon(LucideIcons.folder, size: 22),
+                    onPressed: () => Navigator.of(context).push(
+                      MaterialPageRoute<void>(
+                        builder: (_) => ProjectPage(
+                          projectAddress: projectHome.projectAddress,
+                        ),
+                      ),
+                    ),
+                  ),
                 if (showsComposer)
                   _HuddleButton(
                     channel: resolvedChannel,

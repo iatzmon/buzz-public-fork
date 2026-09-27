@@ -12,10 +12,12 @@
 /// - [projectByAddressProvider] — lookup by project address.
 /// - [sidebarProjectsProvider], [projectSidebarMembershipProvider],
 ///   [projectSidebarViewProvider] — the sidebar's "added"/"owned" list.
+/// - [listProjectBoundChannels] — the home, related, and repository channels.
 /// - [projectRepoPresentation] — Buzz-hosted vs external host and the
 ///   "Open on `host`" link for a repository.
 library;
 
+export 'project_bound_channels.dart';
 export 'project_enumeration.dart' show ProjectsLoadException;
 export 'project_home.dart'
     show

@@ -7,6 +7,7 @@ import 'package:nostr/nostr.dart' as nostr;
 import '../../../shared/crypto/nip44.dart';
 import '../../../shared/relay/relay.dart';
 import 'observer_models.dart';
+import 'sessions/active_turns.dart';
 import 'transcript_builder.dart';
 
 /// Maximum observer events to keep per agent.
@@ -41,22 +42,42 @@ class ObserverRelayState {
   final Map<String, List<ObserverFrame>> framesByAgent;
   final String? errorMessage;
 
+  /// When the subscription last became open, on this device's clock. Null
+  /// while not open. Frames are live only, so a turn already running is
+  /// learned from its next liveness frame after this time.
+  final DateTime? openSince;
+
+  /// Every turn across agents that started and has not reported an end,
+  /// oldest first. Tracked as frames arrive, apart from [framesByAgent],
+  /// so dropping old transcript frames never drops a turn.
+  final List<ActiveTurn> activeTurns;
+
+  /// Turns dropped only because an agent passed [maxActiveTurnsPerAgent].
+  final int droppedTurnCount;
+
   const ObserverRelayState({
     required this.connection,
     required this.framesByAgent,
     this.errorMessage,
+    this.openSince,
+    this.activeTurns = const [],
+    this.droppedTurnCount = 0,
   });
 
   const ObserverRelayState.initial()
     : connection = ObserverConnectionState.idle,
       framesByAgent = const {},
-      errorMessage = null;
+      errorMessage = null,
+      openSince = null,
+      activeTurns = const [],
+      droppedTurnCount = 0;
 }
 
 class ObserverRelayNotifier extends Notifier<ObserverRelayState> {
   final Map<String, List<ObserverFrame>> _framesByAgent = {};
   final Map<String, Set<String>> _dedupeKeysByAgent = {};
   final Map<String, Uint8List> _conversationKeysByAgent = {};
+  final Map<String, ActiveTurnLedger> _turnLedgersByAgent = {};
 
   void Function()? _unsubscribe;
   Future<void>? _startFuture;
@@ -64,6 +85,7 @@ class ObserverRelayNotifier extends Notifier<ObserverRelayState> {
   String? _ownerPubkey;
   String? _identityKey;
   String? _errorMessage;
+  DateTime? _openSince;
   int _subscriptionEpoch = 0;
   bool _disposed = false;
 
@@ -89,12 +111,10 @@ class ObserverRelayNotifier extends Notifier<ObserverRelayState> {
     }
 
     final hasSigningKey = config.nsec?.isNotEmpty == true;
-    return ObserverRelayState(
-      connection: hasSigningKey
+    return _stateFor(
+      hasSigningKey
           ? _connectionForSession(sessionState.status)
           : ObserverConnectionState.idle,
-      framesByAgent: _snapshotFrames(),
-      errorMessage: _errorMessage,
     );
   }
 
@@ -222,6 +242,9 @@ class ObserverRelayNotifier extends Notifier<ObserverRelayState> {
     );
     frames.add(frame);
     frames.sort(_compareObserverFrames);
+    _turnLedgersByAgent
+        .putIfAbsent(normalizedAgent, () => ActiveTurnLedger(normalizedAgent))
+        .apply(frame);
 
     if (frames.length > _maxObserverEvents) {
       final removeCount = frames.length - _maxObserverEvents;
@@ -272,10 +295,26 @@ class ObserverRelayNotifier extends Notifier<ObserverRelayState> {
 
   void _emit({required ObserverConnectionState connection}) {
     if (_disposed) return;
-    state = ObserverRelayState(
+    state = _stateFor(connection);
+  }
+
+  ObserverRelayState _stateFor(ObserverConnectionState connection) {
+    // Any interruption can drop frames, so a reopen restarts discovery.
+    _openSince = connection == ObserverConnectionState.open
+        ? (_openSince ?? DateTime.now())
+        : null;
+    return ObserverRelayState(
       connection: connection,
       framesByAgent: _snapshotFrames(),
       errorMessage: _errorMessage,
+      openSince: _openSince,
+      activeTurns: sortActiveTurns([
+        for (final ledger in _turnLedgersByAgent.values) ...ledger.turns,
+      ]),
+      droppedTurnCount: _turnLedgersByAgent.values.fold(
+        0,
+        (sum, ledger) => sum + ledger.droppedTurnCount,
+      ),
     );
   }
 
@@ -294,9 +333,11 @@ class ObserverRelayNotifier extends Notifier<ObserverRelayState> {
     _privHex = null;
     _ownerPubkey = null;
     _errorMessage = null;
+    _openSince = null;
     _framesByAgent.clear();
     _dedupeKeysByAgent.clear();
     _conversationKeysByAgent.clear();
+    _turnLedgersByAgent.clear();
   }
 
   static String _decodePrivkey(String nsec) {

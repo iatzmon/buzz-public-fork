@@ -11,6 +11,10 @@ import 'package:buzz/features/channels/channel.dart';
 import 'package:buzz/features/channels/channel_detail_page.dart';
 import 'package:buzz/features/channels/message_content.dart';
 import 'package:buzz/features/channels/channels_provider.dart';
+import 'package:buzz/features/forum/forum_models.dart';
+import 'package:buzz/features/forum/forum_provider.dart';
+import 'package:buzz/features/forum/forum_thread_page.dart';
+import 'package:buzz/shared/relay/relay.dart';
 import 'package:buzz/shared/mentions/agent_identity_provider.dart';
 import 'package:buzz/shared/read_state/read_state_provider.dart';
 import 'package:buzz/shared/profile/user_cache_provider.dart';
@@ -124,6 +128,7 @@ void main() {
     List<ComposeDraft> drafts = const [],
     List<Reminder> reminders = const [],
     Set<String> knownAgentPubkeys = const {},
+    List<dynamic> extraOverrides = const [],
   }) async {
     SharedPreferences.setMockInitialValues({});
     final prefs = await SharedPreferences.getInstance();
@@ -147,6 +152,7 @@ void main() {
           () => _FakeComposeDraftsNotifier(drafts),
         ),
         remindersProvider.overrideWith(() => _FakeRemindersNotifier(reminders)),
+        ...extraOverrides,
       ],
       child: MaterialApp(
         theme: AppTheme.light(),
@@ -755,6 +761,145 @@ void main() {
       page.initialThreadRouteBehavior,
       InitialThreadRouteBehavior.replaceCurrentRoute,
     );
+  });
+
+  group('forum channel rows open the forum post', () {
+    final forumChannel = Channel(
+      id: 'forum1',
+      name: 'buzz',
+      channelType: 'forum',
+      visibility: 'open',
+      description: '',
+      createdBy: 'x',
+      createdAt: DateTime(2025),
+      memberCount: 2,
+      isMember: false,
+      archivedAt: DateTime(2026),
+    );
+    NostrEvent event(String id, int kind, List<List<String>> tags) =>
+        NostrEvent(
+          id: id,
+          pubkey: 'bob_pk',
+          createdAt: now - 60,
+          kind: kind,
+          tags: [
+            ['h', 'forum1'],
+            ...tags,
+          ],
+          content: 'Forum message $id',
+          sig: '',
+        );
+    FeedItem feedItem(String id, int kind, List<List<String>> tags) => FeedItem(
+      id: id,
+      kind: kind,
+      pubkey: 'bob_pk',
+      content: 'Forum message $id',
+      createdAt: now - 60,
+      channelId: 'forum1',
+      channelName: 'buzz',
+      tags: tags,
+      category: 'needs_action',
+    );
+
+    Future<ForumThreadPage> openRow(
+      WidgetTester tester, {
+      required FeedItem item,
+      required List<NostrEvent> replies,
+    }) async {
+      final requestedPosts = <String>[];
+      await tester.pumpWidget(
+        await buildTestable(
+          channels: [forumChannel],
+          feed: HomeFeedResponse(
+            mentions: const [],
+            needsAction: [item],
+            activity: const [],
+            agentActivity: const [],
+          ),
+          extraOverrides: [
+            forumThreadProvider.overrideWith((ref, key) async {
+              requestedPosts.add(key.eventId);
+              return ForumThreadResponse.fromEvents(
+                root: event(key.eventId, 45001, const []),
+                replies: replies,
+              );
+            }),
+          ],
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(ValueKey('inbox-row-${item.id}')));
+      await tester.pumpAndSettle();
+
+      expect(find.byType(ChannelDetailPage), findsNothing);
+      final page = tester.widget<ForumThreadPage>(find.byType(ForumThreadPage));
+      expect(requestedPosts, contains(page.postEventId));
+      expect(page.channelId, 'forum1');
+      expect(page.initialMessageId, item.id);
+      expect(page.isMember, isFalse);
+      expect(page.isArchived, isTrue);
+      expect(
+        find.byKey(ValueKey('forum-message-${item.id}')).hitTestable(),
+        findsOneWidget,
+      );
+      return page;
+    }
+
+    Future<void> expectBackReturnsToInbox(WidgetTester tester) async {
+      await tester.pageBack();
+      await tester.pumpAndSettle();
+      expect(find.byType(ForumThreadPage), findsNothing);
+      expect(find.byType(ActivityPage), findsOneWidget);
+    }
+
+    testWidgets('a forum post opens that post', (tester) async {
+      final page = await openRow(
+        tester,
+        item: feedItem('post1', 45001, const []),
+        replies: const [],
+      );
+      expect(page.postEventId, 'post1');
+      expect(page.initialReply, isNull);
+      await expectBackReturnsToInbox(tester);
+    });
+
+    testWidgets('a nested forum reply opens its root post', (tester) async {
+      const tags = [
+        ['e', 'post1', '', 'root'],
+        ['e', 'parent1', '', 'reply'],
+      ];
+      final page = await openRow(
+        tester,
+        item: feedItem('nested1', 45003, tags),
+        replies: [
+          event('parent1', 45003, const [
+            ['e', 'post1', '', 'reply'],
+          ]),
+          event('nested1', 45003, tags),
+        ],
+      );
+      expect(page.postEventId, 'post1');
+      expect(page.initialReply?.eventId, 'nested1');
+      expect(page.initialReply?.parentEventId, 'parent1');
+      expect(page.initialReply?.rootEventId, 'post1');
+      await expectBackReturnsToInbox(tester);
+    });
+
+    testWidgets('a kind 9 request in a forum thread opens its post', (
+      tester,
+    ) async {
+      const tags = [
+        ['e', 'post1', '', 'reply'],
+      ];
+      final page = await openRow(
+        tester,
+        item: feedItem('request1', 9, tags),
+        replies: [event('request1', 9, tags)],
+      );
+      expect(page.postEventId, 'post1');
+      expect(page.initialReply?.eventId, 'request1');
+      await expectBackReturnsToInbox(tester);
+    });
   });
 
   testWidgets('thread filter matches grouped thread replies', (tester) async {

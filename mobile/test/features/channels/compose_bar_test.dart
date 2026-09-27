@@ -1131,6 +1131,87 @@ void main() {
       expect(sentContent, 'First line\nSecond line');
     });
 
+    for (final modifier in [
+      LogicalKeyboardKey.metaLeft,
+      LogicalKeyboardKey.controlLeft,
+    ]) {
+      testWidgets('hardware ${modifier.keyLabel}+Return sends the draft', (
+        tester,
+      ) async {
+        final sent = <String>[];
+        await tester.pumpWidget(
+          _buildComposeBar(
+            uploadService: _testUploadService(nostr.Keys.generate().nsec),
+            onSend:
+                (
+                  content,
+                  mentionPubkeys, {
+                  mediaTags = const <List<String>>[],
+                }) async {
+                  sent.add(content);
+                },
+          ),
+        );
+
+        await _expandComposer(tester);
+        await tester.showKeyboard(find.byType(TextField));
+
+        Future<void> chord(
+          LogicalKeyboardKey key, {
+          bool withModifier = true,
+        }) async {
+          if (withModifier) await tester.sendKeyDownEvent(modifier);
+          await tester.sendKeyEvent(key);
+          if (withModifier) await tester.sendKeyUpEvent(modifier);
+          await tester.pumpAndSettle();
+        }
+
+        // An empty draft stays put.
+        await chord(LogicalKeyboardKey.enter);
+        expect(sent, isEmpty);
+
+        await tester.enterText(find.byType(TextField), 'from the keyboard');
+        await tester.pumpAndSettle();
+        // Plain Return without the modifier does not send.
+        await chord(LogicalKeyboardKey.enter, withModifier: false);
+        expect(sent, isEmpty);
+
+        await chord(LogicalKeyboardKey.enter);
+        expect(sent, ['from the keyboard']);
+
+        await tester.enterText(find.byType(TextField), 'numpad');
+        await tester.pumpAndSettle();
+        await chord(LogicalKeyboardKey.numpadEnter);
+        expect(sent, ['from the keyboard', 'numpad']);
+
+        // An input method still composing keeps its provisional text.
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text: 'かな',
+            selection: TextSelection.collapsed(offset: 2),
+            composing: TextRange(start: 0, end: 2),
+          ),
+        );
+        await tester.pumpAndSettle();
+        await chord(LogicalKeyboardKey.enter);
+        expect(sent, ['from the keyboard', 'numpad']);
+        expect(
+          tester.widget<TextField>(find.byType(TextField)).controller!.text,
+          'かな',
+        );
+
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text: 'かな',
+            selection: TextSelection.collapsed(offset: 2),
+          ),
+        );
+        await tester.pumpAndSettle();
+        await chord(LogicalKeyboardKey.enter);
+        expect(sent, ['from the keyboard', 'numpad', 'かな']);
+      });
+    }
+
     testWidgets('clears text before the optimistic send completes', (
       tester,
     ) async {

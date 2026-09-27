@@ -219,6 +219,7 @@ class ProjectTaskStore extends Notifier<ProjectTaskState> {
   late ProjectTaskTransport _transport;
   int _generation = 0;
   int _revision = 0;
+  bool _unreadable = false;
   Future<void> _writes = Future.value();
 
   @override
@@ -233,6 +234,7 @@ class ProjectTaskStore extends Notifier<ProjectTaskState> {
     Future.microtask(() {
       if (_current(generation)) unawaited(refresh());
     });
+    _unreadable = false;
     final raw = _prefs.getString(_key);
     if (raw == null) return const ProjectTaskState();
     try {
@@ -248,13 +250,22 @@ class ProjectTaskStore extends Notifier<ProjectTaskState> {
         loaded: json['loaded'] == true,
       );
     } catch (_) {
-      return const ProjectTaskState(error: 'Could not read saved task data.');
+      _unreadable = true;
+      return const ProjectTaskState(
+        error: 'Could not read saved task data. Original data is preserved.',
+      );
     }
   }
 
   bool _current(int generation) => ref.mounted && generation == _generation;
 
   Future<void> _persist() {
+    if (_unreadable)
+      return Future.error(
+        StateError(
+          'Could not read saved task data. Original data is preserved; writes are blocked.',
+        ),
+      );
     final key = _key;
     final prefs = _prefs;
     final value = jsonEncode({
@@ -344,6 +355,7 @@ class ProjectTaskStore extends Notifier<ProjectTaskState> {
     ProjectTask task,
     String assignee, {
     required bool assign,
+    String? assigneeLabel,
   }) async {
     if (state.sending) return;
     final signer = ref.read(myPubkeyProvider) ?? '';
@@ -358,7 +370,7 @@ class ProjectTaskStore extends Notifier<ProjectTaskState> {
     }
     await _send(
       1,
-      '${assign ? 'Assigned' : 'Unassigned'} ${assignee.toLowerCase()}',
+      '${assign ? 'Assigned this task to' : 'Unassigned'} ${assigneeLabel?.trim().isNotEmpty == true ? assigneeLabel!.trim() : assignee.toLowerCase()}',
       tags,
       task.nextOperationTime(
         signer,
@@ -386,8 +398,10 @@ class ProjectTaskStore extends Notifier<ProjectTaskState> {
     final generation = _generation;
     final transport = _transport;
     state = state.copyWith(sending: true);
+    var persisted = false;
     try {
       await _persist(); // Durability before the first network write.
+      persisted = true;
       if (!_current(generation)) return;
       for (final event in state.pending.toList()) {
         await transport.publish(event);
@@ -408,8 +422,9 @@ class ProjectTaskStore extends Notifier<ProjectTaskState> {
       if (_current(generation)) {
         state = state.copyWith(
           sending: false,
-          error:
-              'Not confirmed sent. Your change is saved; retry to confirm. $e',
+          error: persisted
+              ? 'Not confirmed sent. Your change is saved; retry to confirm. $e'
+              : 'Could not save your change. It has not been sent. $e',
         );
       }
       rethrow;

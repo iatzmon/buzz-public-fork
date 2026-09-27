@@ -7,6 +7,7 @@ import 'package:hooks_riverpod/hooks_riverpod.dart';
 
 import '../../shared/profile/user_cache_provider.dart';
 import '../../shared/projects/project_task_store.dart';
+import '../../shared/projects/project_task.dart';
 import '../../shared/relay/relay.dart';
 import '../../shared/theme/theme.dart';
 
@@ -22,7 +23,8 @@ final _taskMembersProvider = FutureProvider.autoDispose
         (e) => e.kind == 39002 && e.getTagValue('d') == channel,
       )) {
         for (final tag in event.tags) {
-          if (tag.length > 1 && tag[0] == 'p') keys.add(tag[1].toLowerCase());
+          if (tag.length > 1 && tag[0] == 'p' && isProjectTaskPubkey(tag[1]))
+            keys.add(tag[1].toLowerCase());
         }
       }
       return keys.toList();
@@ -64,12 +66,18 @@ class ProjectTaskDetailPage extends HookConsumerWidget {
       return null;
     }, [keys.join(',')]);
     String label(String key) =>
-        profiles[key]?.label ?? '${key.substring(0, 8)}…';
+        profiles[key]?.label ??
+        (key.length <= 8 ? key : '${key.substring(0, 8)}…');
     Future<void> change(String key, bool assign) async {
       if (!sameContext || task == null) return;
       error.value = null;
       try {
-        await store.assign(task, key, assign: assign);
+        await store.assign(
+          task,
+          key,
+          assign: assign,
+          assigneeLabel: label(key),
+        );
       } catch (e) {
         if (context.mounted) error.value = '$e';
       }

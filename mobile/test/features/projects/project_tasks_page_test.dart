@@ -54,6 +54,8 @@ void main() {
     bool fail = false,
     required List<NostrEvent> published,
     Map<String, String>? repositories,
+    bool accountSwitch = false,
+    List<NostrEvent> history = const [],
   }) async {
     SharedPreferences.setMockInitialValues({});
     final prefs = await SharedPreferences.getInstance();
@@ -61,7 +63,12 @@ void main() {
       overrides: [
         savedPrefsProvider.overrideWithValue(prefs),
         relayConfigProvider.overrideWith(_Config.new),
-        myPubkeyProvider.overrideWithValue(_viewer),
+        myPubkeyProvider.overrideWith(
+          (ref) =>
+              accountSwitch && ref.watch(relayConfigProvider).nsec == 'second'
+              ? 'd' * 64
+              : _viewer,
+        ),
         userCacheProvider.overrideWith(_Profiles.new),
         projectTaskTransportProvider.overrideWithValue(
           ProjectTaskTransport(
@@ -69,7 +76,7 @@ void main() {
               if (filter.kinds.contains(1621)) {
                 return [_event('1')];
               }
-              return [];
+              return history;
             },
             publish: (e) async {
               published.add(e);
@@ -166,6 +173,68 @@ void main() {
       expect(find.text('No tasks yet.'), findsOneWidget);
     },
   );
+  for (final compose in [false, true]) {
+    testWidgets(
+      'same-community account switch hides ${compose ? 'compose' : 'detail'} actions',
+      (tester) async {
+        final published = <NostrEvent>[];
+        final container = await pump(
+          tester,
+          published: published,
+          accountSwitch: true,
+        );
+        await tester.tap(
+          compose
+              ? find.byTooltip('Create task')
+              : find.text('Mobile project task'),
+        );
+        await tester.pumpAndSettle();
+        if (compose) {
+          await tester.enterText(
+            find.widgetWithText(TextField, 'Title'),
+            'Private draft',
+          );
+          await tester.pumpAndSettle();
+        }
+        container
+            .read(relayConfigProvider.notifier)
+            .update(baseUrl: 'https://tasks.example', nsec: 'second');
+        await tester.pumpAndSettle();
+        expect(
+          find.text('Community or account changed. Reopen Tasks to continue.'),
+          findsOneWidget,
+        );
+        expect(find.text('Assign to me'), findsNothing);
+        expect(find.widgetWithText(FilledButton, 'Create task'), findsNothing);
+        expect(find.text('Private draft'), findsNothing);
+        expect(published, isEmpty);
+      },
+    );
+  }
+  testWidgets('malformed signed assignment cannot crash task detail', (
+    tester,
+  ) async {
+    await pump(
+      tester,
+      published: [],
+      history: [
+        _event(
+          '2',
+          kind: 1,
+          tags: [
+            ['e', _event('1').id],
+            ['a', _repo],
+            ['p', 'x'],
+            ['t', 'assignment'],
+          ],
+        ),
+      ],
+    );
+    await tester.tap(find.text('Mobile project task'));
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+    expect(find.text('Unassigned'), findsOneWidget);
+  });
   testWidgets('community switch hides an open task and its action controls', (
     tester,
   ) async {

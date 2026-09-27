@@ -37,13 +37,19 @@ class ProjectTask {
           tag.length > 1 && tag[0].toLowerCase() == 'e' && tag[1] == root.id,
     );
     final events = related.where(targets).toList()..sort(compareEvents);
-    final statuses = events.where(
+    final statuses = related.where(
       (e) =>
+          e.tags.any(
+            (tag) => tag.length > 1 && tag[0] == 'e' && tag[1] == root.id,
+          ) &&
           e.kind >= 1630 &&
           e.kind <= 1633 &&
           projectTaskCanManage(root, e.pubkey),
     );
-    final latest = statuses.lastOrNull;
+    NostrEvent? latest;
+    for (final event in statuses) {
+      if (latest == null || event.createdAt > latest.createdAt) latest = event;
+    }
     final labels = _tags(root, 't').map((v) => v.toLowerCase()).toSet();
     final status = switch (latest?.kind) {
       1631 => 'Done',
@@ -62,12 +68,28 @@ class ProjectTask {
     final self = <NostrEvent>[];
     final authority = <NostrEvent>[];
     final causal = <NostrEvent>[];
-    for (final event in comments.where((e) => e.kind == 1)) {
+    for (final event in comments.where(
+      (e) =>
+          e.kind == 1 &&
+          e.tags.any(
+            (tag) => tag.length > 1 && tag[0] == 'e' && tag[1] == root.id,
+          ),
+    )) {
       final labels = _tags(event, 't');
       if (labels.contains('assignment') == labels.contains('unassignment')) {
         continue;
       }
       final keys = _tags(event, 'p').map((v) => v.toLowerCase()).toList();
+      if (keys.isEmpty ||
+          keys.any((key) => !isProjectTaskPubkey(key)) ||
+          event.tags.any(
+            (tag) =>
+                tag.isNotEmpty &&
+                tag[0] == 'p' &&
+                (tag.length < 2 || !isProjectTaskPubkey(tag[1])),
+          )) {
+        continue;
+      }
       final signer = event.pubkey.toLowerCase();
       if (projectTaskCanManage(root, signer)) {
         authority.add(event);
@@ -173,3 +195,7 @@ bool projectTaskCanManage(NostrEvent root, String pubkey) {
   final signer = pubkey.toLowerCase();
   return signer == root.pubkey.toLowerCase() || signer == owner?.toLowerCase();
 }
+
+/// Assignee identity tags must contain a complete Nostr public key.
+bool isProjectTaskPubkey(String key) =>
+    RegExp(r'^[a-fA-F0-9]{64}$').hasMatch(key);

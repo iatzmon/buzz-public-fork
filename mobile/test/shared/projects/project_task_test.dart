@@ -66,6 +66,22 @@ class Config extends RelayConfigNotifier {
   RelayConfig build() => const RelayConfig(baseUrl: 'https://tasks.example');
 }
 
+class QuerySession extends RelaySessionNotifier {
+  List<NostrEvent> events = [];
+  @override
+  SessionState build() => const SessionState(status: SessionStatus.connected);
+  @override
+  Future<List<NostrEvent>> queryRelay(
+    List<NostrFilter> filters, {
+    Duration timeout = const Duration(seconds: 8),
+  }) async => events;
+}
+
+String testNsec(String digit) => nostr.Nip19.encode(
+  prefix: nostr.Nip19Prefix.nsec,
+  data: digit.padLeft(64, '0'),
+);
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   test(
@@ -89,6 +105,104 @@ void main() {
           NostrEvent.fromJson({...signed, 'content': 'Altered'}),
         ]),
         throwsA(isA<Exception>()),
+      );
+    },
+  );
+  test(
+    'production transport verifies relay events before returning them',
+    () async {
+      final c = ProviderContainer(
+        overrides: [
+          relayConfigProvider.overrideWith(Config.new),
+          relaySessionProvider.overrideWith(QuerySession.new),
+        ],
+      );
+      addTearDown(c.dispose);
+      final session = c.read(relaySessionProvider.notifier) as QuerySession;
+      final signed = nostr.Event.from(
+        kind: 1621,
+        content: 'Authentic',
+        tags: [
+          ['a', repo],
+        ],
+        secretKey: '1'.padLeft(64, '0'),
+        createdAt: 100,
+      ).toMap();
+      final transport = c.read(projectTaskTransportProvider);
+      session.events = [
+        NostrEvent.fromJson({...signed, 'content': 'Forged'}),
+      ];
+      await expectLater(
+        transport.query(const NostrFilter(kinds: [1621])),
+        throwsA(isA<Exception>()),
+      );
+      session.events = [NostrEvent.fromJson(signed)];
+      expect(
+        (await transport.query(
+          const NostrFilter(kinds: [1621]),
+        )).single.content,
+        'Authentic',
+      );
+      session.events = [
+        NostrEvent.fromJson({...signed, 'content': 'Replaced after cache'}),
+      ];
+      expect(
+        (await transport.query(
+          const NostrFilter(kinds: [1621]),
+        )).single.content,
+        'Authentic',
+      );
+    },
+  );
+  test('malformed assignee tags are ignored even from the task author', () {
+    for (final key in ['x', '', 'z' * 64, 'a' * 63]) {
+      expect(
+        ProjectTask.fromEvents(root(), [operation('2', author, key)]).assignees,
+        isEmpty,
+      );
+    }
+  });
+  test(
+    'uppercase references are not assignment or status operations; status ties preserve relay order',
+    () {
+      final upper = event(
+        '2',
+        kind: 1631,
+        tags: [
+          ['E', root().id],
+        ],
+      );
+      final assignment = event(
+        '3',
+        tags: [
+          ['E', root().id],
+          ['t', 'assignment'],
+          ['p', member],
+        ],
+      );
+      expect(
+        ProjectTask.fromEvents(root(), [upper, assignment]).assignees,
+        isEmpty,
+      );
+      expect(ProjectTask.fromEvents(root(), [upper]).status, 'Backlog');
+      expect(
+        ProjectTask.fromEvents(root(), [
+          event(
+            '2',
+            kind: 1631,
+            tags: [
+              ['e', root().id],
+            ],
+          ),
+          event(
+            '3',
+            kind: 1632,
+            tags: [
+              ['e', root().id],
+            ],
+          ),
+        ]).status,
+        'Done',
       );
     },
   );
@@ -314,6 +428,70 @@ void main() {
   Future<void> settle() =>
       Future<void>.delayed(const Duration(milliseconds: 5));
 
+  test(
+    'same-community accounts have separate durable drafts and outboxes',
+    () async {
+      final c = ProviderContainer(
+        overrides: [
+          savedPrefsProvider.overrideWithValue(prefs),
+          relayConfigProvider.overrideWith(Config.new),
+          projectTaskTransportProvider.overrideWithValue(
+            transport(
+              publish: (_) async {
+                throw StateError('offline');
+              },
+            ),
+          ),
+        ],
+      );
+      addTearDown(c.dispose);
+      final config = c.read(relayConfigProvider.notifier);
+      config.update(baseUrl: 'https://tasks.example', nsec: testNsec('1'));
+      final firstKey = c.read(myPubkeyProvider);
+      var store = c.read(projectTaskStoreProvider(repo).notifier);
+      await settle();
+      await store.saveDraft('Account one draft', 'Private');
+      await expectLater(store.createTask(), throwsStateError);
+      final pendingId = c
+          .read(projectTaskStoreProvider(repo))
+          .pending
+          .single
+          .id;
+      config.update(baseUrl: 'https://tasks.example', nsec: testNsec('2'));
+      expect(c.read(myPubkeyProvider), isNot(firstKey));
+      expect(c.read(projectTaskStoreProvider(repo)).title, isEmpty);
+      expect(c.read(projectTaskStoreProvider(repo)).pending, isEmpty);
+      store = c.read(projectTaskStoreProvider(repo).notifier);
+      await settle();
+      await store.saveDraft('Account two draft', 'Other');
+      config.update(baseUrl: 'https://tasks.example', nsec: testNsec('1'));
+      expect(c.read(projectTaskStoreProvider(repo)).title, 'Account one draft');
+      expect(
+        c.read(projectTaskStoreProvider(repo)).pending.single.id,
+        pendingId,
+      );
+    },
+  );
+  test('unreadable saved outbox is preserved and blocks publication', () async {
+    final key = 'project-tasks-v1:https://tasks.example:$author:$repo';
+    await prefs.setString(key, '{broken pending data');
+    var published = false;
+    final c = container(
+      transport(
+        publish: (_) async {
+          published = true;
+        },
+      ),
+    );
+    addTearDown(c.dispose);
+    final store = c.read(projectTaskStoreProvider(repo).notifier);
+    await settle();
+    await store.saveDraft('New draft', '');
+    await expectLater(store.createTask(), throwsStateError);
+    expect(published, isFalse);
+    expect(prefs.getString(key), '{broken pending data');
+    expect(c.read(projectTaskStoreProvider(repo)).error, contains('preserved'));
+  });
   test(
     'failed create survives restart, retry publishes identical ID and clears draft only after ACK',
     () async {

@@ -1792,10 +1792,17 @@ fn handle_cancel_turn_control(
         tracing::warn!("observer cancel_turn control frame missing valid channelId");
         return;
     };
-    let turn_id = payload
-        .get("turnId")
-        .and_then(|value| value.as_str())
-        .filter(|value| !value.is_empty());
+    // Only an omitted `turnId` selects the channel-only path. A supplied but
+    // malformed target (empty, null, non-string) must never fall back to
+    // cancelling whatever turn the channel happens to be running.
+    let turn_id = match payload.get("turnId") {
+        None => None,
+        Some(serde_json::Value::String(value)) if !value.is_empty() => Some(value.as_str()),
+        Some(_) => {
+            tracing::warn!("observer cancel_turn control frame has an invalid turnId");
+            return;
+        }
+    };
 
     let status = if let Some(turn_id) = turn_id {
         if signal_in_flight_turn(pool, channel_id, turn_id, ControlSignal::Cancel) {
@@ -4308,9 +4315,11 @@ fn signal_in_flight_turn(
 
     if let Some(meta) = entry {
         if let Some(tx) = meta.control_tx.take() {
-            tracing::info!(channel = %channel_id, turn_id, ?mode, "control signal sent to in-flight turn");
-            let _ = tx.send(mode);
-            return true;
+            // A task that already finished may have dropped its receiver
+            // before its metadata is reaped; that is not a delivered signal.
+            let delivered = tx.send(mode).is_ok();
+            tracing::info!(channel = %channel_id, turn_id, delivered, "cancel signal for in-flight turn");
+            return delivered;
         }
     }
     false
@@ -6324,6 +6333,54 @@ mod owner_control_command_tests {
             rx_a.try_recv(),
             Err(tokio::sync::oneshot::error::TryRecvError::Empty)
         );
+    }
+
+    #[tokio::test]
+    async fn observer_cancel_with_malformed_turn_id_signals_nothing() {
+        let mut pool = AgentPool::from_slots(vec![]);
+        let ch = Uuid::new_v4();
+        // One scope only: the channel-only path would cancel this turn.
+        let scope = scope::SessionScope::Conversation { channel_id: ch };
+        let (tx, mut rx) = tokio::sync::oneshot::channel();
+        insert_task_meta_with_turn(&mut pool, 0, scope, "turn-a", tx);
+        let observer = observer::ObserverHandle::in_process();
+
+        for turn_id in [
+            serde_json::json!(""),
+            serde_json::Value::Null,
+            serde_json::json!(42),
+            serde_json::json!(["turn-a"]),
+        ] {
+            handle_cancel_turn_control(
+                &serde_json::json!({ "channelId": ch.to_string(), "turnId": turn_id }),
+                &mut pool,
+                Some(&observer),
+            );
+        }
+        assert!(observer.snapshot().is_empty());
+        assert_eq!(
+            rx.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+        );
+    }
+
+    #[tokio::test]
+    async fn observer_cancel_with_turn_id_reports_dropped_receiver_as_no_active_turn() {
+        let mut pool = AgentPool::from_slots(vec![]);
+        let ch = Uuid::new_v4();
+        let scope = scope::SessionScope::Conversation { channel_id: ch };
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        insert_task_meta_with_turn(&mut pool, 0, scope, "turn-a", tx);
+        // The task finished and dropped its receiver; metadata is not reaped yet.
+        drop(rx);
+        let observer = observer::ObserverHandle::in_process();
+
+        handle_cancel_turn_control(
+            &serde_json::json!({ "channelId": ch.to_string(), "turnId": "turn-a" }),
+            &mut pool,
+            Some(&observer),
+        );
+        assert_eq!(observer.snapshot()[0].payload["status"], "no_active_turn");
     }
 
     #[tokio::test]

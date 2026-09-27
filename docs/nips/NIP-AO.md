@@ -139,6 +139,19 @@ The agent reports the outcome in a `control_result` telemetry frame whose
 payload echoes `type`, `requestId`, and `turnId`, with `status` one of `sent`,
 `no_active_turn` (the named turn has ended or was already stopped), or
 `ambiguous_target` (channel-only request with several candidate sessions).
+A supplied `turnId` that is not a non-empty string is invalid; the agent MUST
+drop the frame without cancelling anything.
+
+`sent` means the cancel signal reached the turn, not that the turn has ended.
+`no_active_turn` does not prove the turn has ended either: a repeated Stop
+reports it while the first cancellation is still finishing. Clients SHOULD
+treat the turn as stopped only when its terminal telemetry frame
+(`turn_completed`, `turn_error`) arrives.
+
+Agents that honor `turnId` set `"cancelByTurnId": true` in the payload of
+`turn_started` and `turn_liveness` frames. Clients SHOULD send `turnId` only to
+a turn that advertised it. An agent that predates `turnId` ignores the field
+and may cancel a different, newer turn in the same channel.
 
 ## Ephemerality Contract
 

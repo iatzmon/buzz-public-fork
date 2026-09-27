@@ -2293,6 +2293,10 @@ pub async fn run_prompt_task(
                 PromptSource::Heartbeat => "heartbeat",
             },
             "triggeringEventIds": triggering_event_ids,
+            // Advertises that `cancel_turn` honors `turnId` for this turn, so
+            // clients never send an exact-turn Stop to a runtime that would
+            // ignore the target and cancel by channel instead.
+            "cancelByTurnId": true,
         }),
     );
 
@@ -4986,7 +4990,7 @@ async fn run_turn_liveness(
             "turn_liveness",
             agent_index,
             &context,
-            serde_json::json!({}),
+            serde_json::json!({ "cancelByTurnId": true }),
         );
         drop(guard);
     }
@@ -9186,7 +9190,7 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
             .all(|event| event.started_at.as_deref() == Some(&started_at)));
         assert!(pings
             .iter()
-            .all(|event| event.payload == serde_json::json!({})));
+            .all(|event| event.payload == serde_json::json!({ "cancelByTurnId": true })));
         assert_eq!(
             serde_json::to_value(&pings[0]).unwrap()["startedAt"],
             started_at,

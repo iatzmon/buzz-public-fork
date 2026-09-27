@@ -22,6 +22,15 @@ class ProjectTaskTransport {
   final NostrEvent Function(int, String, List<List<String>>, int) sign;
 }
 
+/// The isolate captures only public events, never the provider or signing key.
+Future<List<NostrEvent>> verifyProjectTaskEvents(List<NostrEvent> events) =>
+    Isolate.run(() {
+      for (final event in events) {
+        nostr.Event.fromMap(event.toJson());
+      }
+      return events;
+    });
+
 final projectTaskTransportProvider = Provider<ProjectTaskTransport>((ref) {
   final config = ref.watch(relayConfigProvider);
   final session = ref.watch(relaySessionProvider.notifier);
@@ -39,12 +48,7 @@ final projectTaskTransportProvider = Provider<ProjectTaskTransport>((ref) {
       final pending = events
           .where((event) => !verifiedEvents.containsKey(event.id))
           .toList();
-      final verified = await Isolate.run(() {
-        for (final event in pending) {
-          nostr.Event.fromMap(event.toJson());
-        }
-        return pending;
-      });
+      final verified = await verifyProjectTaskEvents(pending);
       checkContext();
       for (final event in verified) {
         verifiedEvents[event.id] = event;

@@ -6,6 +6,7 @@ import 'package:buzz/shared/relay/relay.dart';
 import 'package:buzz/shared/theme/theme_provider.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
+import 'package:nostr/nostr.dart' as nostr;
 import 'package:shared_preferences/shared_preferences.dart';
 
 final author = 'a' * 64;
@@ -67,6 +68,30 @@ class Config extends RelayConfigNotifier {
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+  test(
+    'event verification accepts valid signatures and rejects altered content',
+    () async {
+      final signed = nostr.Event.from(
+        kind: 1621,
+        content: 'Authentic',
+        tags: [
+          ['a', repo],
+        ],
+        secretKey: '1'.padLeft(64, '0'),
+        createdAt: 100,
+      ).toMap();
+      final events = await verifyProjectTaskEvents([
+        NostrEvent.fromJson(signed),
+      ]);
+      expect(events.single.content, 'Authentic');
+      await expectLater(
+        verifyProjectTaskEvents([
+          NostrEvent.fromJson({...signed, 'content': 'Altered'}),
+        ]),
+        throwsA(isA<Exception>()),
+      );
+    },
+  );
   test(
     'repository discovery reaches older tasks behind other repositories',
     () async {

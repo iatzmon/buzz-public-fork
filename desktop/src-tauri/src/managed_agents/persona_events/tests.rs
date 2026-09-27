@@ -891,62 +891,37 @@ mod flush_barrier {
     };
     use nostr::JsonUtil;
 
-    /// What the stub relay saw: the bodies POSTed to `/events` and the number
-    /// of `/query` calls.
-    #[derive(Default)]
-    struct StubRelayLog {
-        posted: Vec<serde_json::Value>,
-        queries: usize,
-    }
-
-    /// Stub relay: `POST /events` rejects kind:5 with HTTP 500 and accepts
-    /// everything else; `POST /query` answers every query with `held`. Returns
-    /// the HTTP base URL and the request log.
-    async fn spawn_stub_relay(held: Vec<nostr::Event>) -> (String, Arc<Mutex<StubRelayLog>>) {
+    /// Stub relay: `POST /events` rejects kind:5 with HTTP 500, accepts
+    /// everything else, and records every POSTed body. Returns the HTTP base
+    /// URL and the recorded bodies.
+    async fn spawn_stub_relay() -> (String, Arc<Mutex<Vec<serde_json::Value>>>) {
         use axum::{http::StatusCode, routing::post, Router};
 
-        let log = Arc::new(Mutex::new(StubRelayLog::default()));
-        let events_log = Arc::clone(&log);
-        let query_log = Arc::clone(&log);
-        let held: Vec<serde_json::Value> = held
-            .iter()
-            .map(|event| serde_json::to_value(event).expect("serialize held event"))
-            .collect();
-        let app = Router::new()
-            .route(
-                "/events",
-                post(move |body: String| {
-                    let log = Arc::clone(&events_log);
-                    async move {
-                        let event: serde_json::Value =
-                            serde_json::from_str(&body).unwrap_or_default();
-                        log.lock().unwrap().posted.push(event.clone());
-                        if event.get("kind").and_then(serde_json::Value::as_u64) == Some(5) {
-                            return (StatusCode::INTERNAL_SERVER_ERROR, String::new());
-                        }
-                        (
-                            StatusCode::OK,
-                            serde_json::json!({
-                                "event_id": event.get("id").and_then(serde_json::Value::as_str).unwrap_or(""),
-                                "accepted": true,
-                                "message": ""
-                            })
-                            .to_string(),
-                        )
+        let posted = Arc::new(Mutex::new(Vec::new()));
+        let log = Arc::clone(&posted);
+        let app = Router::new().route(
+            "/events",
+            post(move |body: String| {
+                let log = Arc::clone(&log);
+                async move {
+                    let event: serde_json::Value =
+                        serde_json::from_str(&body).unwrap_or_default();
+                    log.lock().unwrap().push(event.clone());
+                    if event.get("kind").and_then(serde_json::Value::as_u64) == Some(5) {
+                        return (StatusCode::INTERNAL_SERVER_ERROR, String::new());
                     }
-                }),
-            )
-            .route(
-                "/query",
-                post(move || {
-                    let log = Arc::clone(&query_log);
-                    let held = held.clone();
-                    async move {
-                        log.lock().unwrap().queries += 1;
-                        serde_json::Value::Array(held).to_string()
-                    }
-                }),
-            );
+                    (
+                        StatusCode::OK,
+                        serde_json::json!({
+                            "event_id": event.get("id").and_then(serde_json::Value::as_str).unwrap_or(""),
+                            "accepted": true,
+                            "message": ""
+                        })
+                        .to_string(),
+                    )
+                }
+            }),
+        );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind stub relay");
@@ -954,7 +929,7 @@ mod flush_barrier {
         tokio::spawn(async move {
             axum::serve(listener, app).await.ok();
         });
-        (format!("http://{addr}"), log)
+        (format!("http://{addr}"), posted)
     }
 
     fn retain_signed(
@@ -981,240 +956,98 @@ mod flush_barrier {
         .expect("retain test event");
     }
 
-    fn now_secs() -> i64 {
-        nostr::Timestamp::now().as_secs() as i64
-    }
+    /// A replaceable head signed outside the relay's ±900 s window is
+    /// rejected on every sweep. The flush must not POST it and must leave it
+    /// pending, while a head inside the window still publishes. This is the
+    /// live defect: three expired kind:30177 heads were re-POSTed every 30 s.
+    #[tokio::test]
+    async fn heads_outside_relay_window_are_not_posted_and_stay_pending() {
+        let keys = nostr::Keys::generate();
+        let pubkey = keys.public_key().to_hex();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db_path = dir.path().join("retention.db");
+        let now = nostr::Timestamp::now().as_secs() as i64;
+        let head = |kind: u32, d_tag: &str, created_at: i64| {
+            EventBuilder::new(Kind::Custom(kind as u16), "{}")
+                .tags(vec![Tag::parse(["d", d_tag]).unwrap()])
+                .custom_created_at(nostr::Timestamp::from(created_at as u64))
+        };
+        let agent_kind = buzz_core_pkg::kind::KIND_MANAGED_AGENT;
+        let expired = now - RELAY_ACCEPT_WINDOW_SECS - 100;
+        let future = now + RELAY_ACCEPT_WINDOW_SECS + 100;
 
-    fn persona_head(keys: &nostr::Keys, d_tag: &str, created_at: i64) -> nostr::Event {
-        EventBuilder::new(Kind::Custom(KIND_PERSONA as u16), "{}")
-            .tags(vec![Tag::parse(["d", d_tag]).unwrap()])
-            .custom_created_at(nostr::Timestamp::from(created_at as u64))
-            .sign_with_keys(keys)
-            .expect("sign persona head")
-    }
-
-    fn retain_head(conn: &rusqlite::Connection, event: &nostr::Event, d_tag: &str) {
-        retain_event(
-            conn,
-            &RetainedEvent {
-                kind: event.kind.as_u16() as u32,
-                pubkey: event.pubkey.to_hex(),
-                d_tag: d_tag.to_string(),
-                content: event.content.to_string(),
-                created_at: event.created_at.as_secs() as i64,
-                raw_event: event.as_json(),
-                pending_sync: true,
-            },
-        )
-        .expect("retain head");
-    }
-
-    /// Flush one scope against a stub relay holding `held`. The database sits
-    /// at `<agents dir>/retention/scope.db`, the production layout that lets
-    /// the flush find `managed-agents.json`.
-    struct FlushRun {
-        flushed: u32,
-        log: Arc<Mutex<StubRelayLog>>,
-        conn: rusqlite::Connection,
-    }
-
-    async fn flush_with_relay(
-        keys: &nostr::Keys,
-        agents_dir: &std::path::Path,
-        held: Vec<nostr::Event>,
-        seed: impl FnOnce(&rusqlite::Connection),
-    ) -> FlushRun {
-        let db_path = agents_dir.join("retention").join("scope.db");
-        std::fs::create_dir_all(db_path.parent().unwrap()).expect("retention dir");
-        seed(&open_retention_db(&db_path).expect("open db"));
+        {
+            let conn = open_retention_db(&db_path).expect("open db");
+            retain_signed(
+                &conn,
+                &keys,
+                KIND_PERSONA,
+                "expired",
+                head(KIND_PERSONA, "expired", expired),
+                expired,
+            );
+            retain_signed(
+                &conn,
+                &keys,
+                agent_kind,
+                "agent",
+                head(agent_kind, "agent", expired),
+                expired,
+            );
+            retain_signed(
+                &conn,
+                &keys,
+                KIND_PERSONA,
+                "future",
+                head(KIND_PERSONA, "future", future),
+                future,
+            );
+            retain_signed(
+                &conn,
+                &keys,
+                KIND_PERSONA,
+                "fresh",
+                head(KIND_PERSONA, "fresh", now),
+                now,
+            );
+        }
 
         let state = build_app_state();
-        *state.keys.lock().unwrap() = keys.clone();
-        let (relay, log) = spawn_stub_relay(held).await;
+        *state.keys.lock().unwrap() = keys;
+        let (relay, posted) = spawn_stub_relay().await;
         *state.relay_url_override.lock().unwrap() = Some(relay);
 
         let flushed = flush_pending_events(&db_path, &state).await.expect("flush");
-        FlushRun {
-            flushed,
-            log,
-            conn: open_retention_db(&db_path).expect("reopen db"),
-        }
-    }
+        assert_eq!(flushed, 1, "only the in-window head publishes");
+        assert_eq!(
+            posted.lock().unwrap().len(),
+            1,
+            "heads outside the relay window must not be POSTed"
+        );
 
-    fn is_pending(conn: &rusqlite::Connection, kind: u32, pubkey: &str, d_tag: &str) -> bool {
-        get_retained_event(conn, kind, pubkey, d_tag)
-            .unwrap()
-            .unwrap()
-            .pending_sync
-    }
-
-    /// An expired head the relay has nothing newer for is re-signed past the
-    /// window and published; a future-dated head is left pending unsent.
-    #[tokio::test]
-    async fn expired_head_without_newer_relay_version_is_renewed() {
-        let keys = nostr::Keys::generate();
-        let pubkey = keys.public_key().to_hex();
-        let dir = tempfile::tempdir().expect("tempdir");
-        let expired = persona_head(&keys, "expired", now_secs() - 3600);
-        let future = persona_head(&keys, "future", now_secs() + RELAY_ACCEPT_WINDOW_SECS + 600);
-
-        let run = flush_with_relay(&keys, dir.path(), Vec::new(), |conn| {
-            retain_head(conn, &expired, "expired");
-            retain_head(conn, &future, "future");
-        })
-        .await;
-
-        assert_eq!(run.flushed, 1, "only the renewed head publishes");
-        let log = run.log.lock().unwrap();
-        assert_eq!(log.posted.len(), 1, "the future-dated head is not POSTed");
-        let posted = &log.posted[0];
-        let posted_at = posted["created_at"].as_i64().unwrap();
+        let conn = open_retention_db(&db_path).expect("reopen db");
+        let pending = |kind: u32, d_tag: &str| {
+            get_retained_event(&conn, kind, &pubkey, d_tag)
+                .unwrap()
+                .unwrap()
+                .pending_sync
+        };
         assert!(
-            now_secs() - posted_at <= 5,
-            "the renewed head carries a fresh created_at"
+            pending(KIND_PERSONA, "expired"),
+            "expired head stays pending"
         );
-        assert_ne!(
-            posted["id"],
-            expired.id.to_hex(),
-            "frozen bytes are not replayed"
-        );
-        assert_eq!(posted["content"], "{}");
-        assert_eq!(posted["tags"], serde_json::json!([["d", "expired"]]));
-        assert!(!is_pending(&run.conn, KIND_PERSONA, &pubkey, "expired"));
-        assert!(is_pending(&run.conn, KIND_PERSONA, &pubkey, "future"));
-    }
-
-    /// Cross-device safety: another device published a newer version while the
-    /// local head sat pending. Renewing would give the stale local copy a
-    /// later timestamp and overwrite it, so the head is held for inbound replay.
-    #[tokio::test]
-    async fn expired_head_is_held_when_relay_has_newer_version() {
-        let keys = nostr::Keys::generate();
-        let pubkey = keys.public_key().to_hex();
-        let dir = tempfile::tempdir().expect("tempdir");
-        let local = persona_head(&keys, "shared", now_secs() - 3600);
-        let other_device = persona_head(&keys, "shared", now_secs() - 1800);
-
-        let run = flush_with_relay(&keys, dir.path(), vec![other_device], |conn| {
-            retain_head(conn, &local, "shared");
-        })
-        .await;
-
-        assert_eq!(run.flushed, 0);
         assert!(
-            run.log.lock().unwrap().posted.is_empty(),
-            "nothing is POSTed"
+            pending(agent_kind, "agent"),
+            "expired agent head stays pending"
         );
-        assert!(is_pending(&run.conn, KIND_PERSONA, &pubkey, "shared"));
-    }
-
-    /// A deletion another device published after the local head also wins.
-    #[tokio::test]
-    async fn expired_head_is_held_when_relay_has_newer_deletion() {
-        let keys = nostr::Keys::generate();
-        let pubkey = keys.public_key().to_hex();
-        let dir = tempfile::tempdir().expect("tempdir");
-        let local = persona_head(&keys, "removed", now_secs() - 3600);
-        let deletion = build_persona_delete("removed", &pubkey)
-            .unwrap()
-            .custom_created_at(nostr::Timestamp::from((now_secs() - 1800) as u64))
-            .sign_with_keys(&keys)
-            .unwrap();
-
-        let run = flush_with_relay(&keys, dir.path(), vec![deletion], |conn| {
-            retain_head(conn, &local, "removed");
-        })
-        .await;
-
-        assert_eq!(run.flushed, 0);
-        assert!(run.log.lock().unwrap().posted.is_empty());
-        assert!(is_pending(&run.conn, KIND_PERSONA, &pubkey, "removed"));
-    }
-
-    /// The relay already stores this exact head (the earlier acknowledgement
-    /// was lost): clear the sync flag instead of querying every sweep.
-    #[tokio::test]
-    async fn expired_head_already_on_relay_is_marked_synced() {
-        let keys = nostr::Keys::generate();
-        let pubkey = keys.public_key().to_hex();
-        let dir = tempfile::tempdir().expect("tempdir");
-        let local = persona_head(&keys, "landed", now_secs() - 3600);
-
-        let run = flush_with_relay(&keys, dir.path(), vec![local.clone()], |conn| {
-            retain_head(conn, &local, "landed");
-        })
-        .await;
-
-        assert!(run.log.lock().unwrap().posted.is_empty());
-        assert!(!is_pending(&run.conn, KIND_PERSONA, &pubkey, "landed"));
-    }
-
-    fn agent_head(keys: &nostr::Keys, agent_pubkey: &str, created_at: i64) -> nostr::Event {
-        EventBuilder::new(
-            Kind::Custom(buzz_core_pkg::kind::KIND_MANAGED_AGENT as u16),
-            r#"{"name":"Fizz"}"#,
-        )
-        .tags(vec![Tag::parse(["d", agent_pubkey]).unwrap()])
-        .custom_created_at(nostr::Timestamp::from(created_at as u64))
-        .sign_with_keys(keys)
-        .expect("sign agent head")
-    }
-
-    /// The live defect: an expired managed-agent head whose identity is gone
-    /// from `managed-agents.json` must stay quiet — no POST and no relay query
-    /// on any sweep — rather than be republished as a dead agent.
-    #[tokio::test]
-    async fn expired_agent_head_without_record_is_held_without_network() {
-        let keys = nostr::Keys::generate();
-        let pubkey = keys.public_key().to_hex();
-        let dir = tempfile::tempdir().expect("tempdir");
-        std::fs::write(dir.path().join("managed-agents.json"), "[]").unwrap();
-        let orphan = nostr::Keys::generate().public_key().to_hex();
-        let head = agent_head(&keys, &orphan, now_secs() - 3600);
-
-        let run = flush_with_relay(&keys, dir.path(), Vec::new(), |conn| {
-            retain_head(conn, &head, &orphan);
-        })
-        .await;
-
-        let log = run.log.lock().unwrap();
-        assert!(log.posted.is_empty(), "orphan head is not POSTed");
-        assert_eq!(log.queries, 0, "orphan head costs no relay query");
-        assert!(is_pending(
-            &run.conn,
-            buzz_core_pkg::kind::KIND_MANAGED_AGENT,
-            &pubkey,
-            &orphan
-        ));
-    }
-
-    /// The same head is renewed while its agent still has a record.
-    #[tokio::test]
-    async fn expired_agent_head_with_record_is_renewed() {
-        let keys = nostr::Keys::generate();
-        let pubkey = keys.public_key().to_hex();
-        let dir = tempfile::tempdir().expect("tempdir");
-        let agent = nostr::Keys::generate().public_key().to_hex();
-        std::fs::write(
-            dir.path().join("managed-agents.json"),
-            serde_json::json!([{ "pubkey": agent, "name": "Fizz" }]).to_string(),
-        )
-        .unwrap();
-        let head = agent_head(&keys, &agent, now_secs() - 3600);
-
-        let run = flush_with_relay(&keys, dir.path(), Vec::new(), |conn| {
-            retain_head(conn, &head, &agent);
-        })
-        .await;
-
-        assert_eq!(run.flushed, 1);
-        assert_eq!(run.log.lock().unwrap().posted.len(), 1);
-        assert!(!is_pending(
-            &run.conn,
-            buzz_core_pkg::kind::KIND_MANAGED_AGENT,
-            &pubkey,
-            &agent
-        ));
+        assert!(
+            pending(KIND_PERSONA, "future"),
+            "future-dated head stays pending"
+        );
+        assert!(
+            !pending(KIND_PERSONA, "fresh"),
+            "in-window head is marked synced"
+        );
     }
 
     #[test]
@@ -1295,7 +1128,7 @@ mod flush_barrier {
 
         let state = build_app_state();
         *state.keys.lock().unwrap() = keys;
-        *state.relay_url_override.lock().unwrap() = Some(spawn_stub_relay(Vec::new()).await.0);
+        *state.relay_url_override.lock().unwrap() = Some(spawn_stub_relay().await.0);
 
         let flushed = flush_pending_events(&db_path, &state).await.expect("flush");
         assert_eq!(flushed, 1, "only the unrelated row publishes");

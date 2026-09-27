@@ -136,6 +136,87 @@ void main() {
     expect(find.byType(_CapturedDestination), findsOneWidget);
   });
 
+  testWidgets('notification waits behind a root page that refuses to close', (
+    tester,
+  ) async {
+    final pending = _DeliverablePendingDeepLinkNotifier();
+    final rootNavigator = GlobalKey<NavigatorState>();
+    final canClose = ValueNotifier(false);
+    addTearDown(canClose.dispose);
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          pendingDeepLinkProvider.overrideWith(() => pending),
+          channelsProvider.overrideWith(
+            () => _FakeChannelsNotifier(Future.value([_channel])),
+          ),
+        ],
+        child: MaterialApp(
+          navigatorKey: rootNavigator,
+          home: AdaptiveWorkspace(
+            child: DeepLinkDispatcher(
+              destinationBuilder: (channel, link) =>
+                  _CapturedDestination(channel: channel, link: link),
+              child: const Scaffold(body: Text('Workspace')),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    unawaited(
+      rootNavigator.currentState!.push(
+        MaterialPageRoute<void>(
+          builder: (_) => const Scaffold(body: Text('Settings page')),
+        ),
+      ),
+    );
+    // Like a profile edit that is saving: it blocks back navigation.
+    unawaited(
+      rootNavigator.currentState!.push(
+        MaterialPageRoute<void>(
+          builder: (_) => ValueListenableBuilder<bool>(
+            valueListenable: canClose,
+            builder: (_, canPop, _) => PopScope(
+              canPop: canPop,
+              child: const Scaffold(body: Text('Saving profile')),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    const link = MessageDeepLink(
+      channelId: 'channel-1',
+      messageId: 'message-2',
+      communityId: 'same-community',
+    );
+    pending.deliver(link);
+    await tester.pumpAndSettle();
+
+    expect(find.text('Saving profile'), findsOneWidget);
+    expect(
+      find.byType(_CapturedDestination, skipOffstage: false),
+      findsNothing,
+    );
+    expect(pending.consumeCalls, 0);
+
+    // The save finishes and the page closes itself; Settings is closed next.
+    canClose.value = true;
+    await tester.pumpAndSettle();
+    rootNavigator.currentState!.pop();
+    await tester.pumpAndSettle();
+    expect(find.byType(_CapturedDestination), findsNothing);
+    rootNavigator.currentState!.pop();
+    await tester.pumpAndSettle();
+
+    expect(pending.consumeCalls, 1);
+    expect(find.text('Settings page'), findsNothing);
+    expect(find.byType(_CapturedDestination), findsOneWidget);
+  });
+
   testWidgets('deep link opens in adaptive pane and survives folding', (
     tester,
   ) async {

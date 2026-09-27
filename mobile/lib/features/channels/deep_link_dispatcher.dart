@@ -41,6 +41,7 @@ class DeepLinkDispatcher extends ConsumerStatefulWidget {
 
 class _DeepLinkDispatcherState extends ConsumerState<DeepLinkDispatcher> {
   bool _preparingInvite = false;
+  Animation<double>? _workspaceCover;
 
   @override
   void initState() {
@@ -49,6 +50,12 @@ class _DeepLinkDispatcherState extends ConsumerState<DeepLinkDispatcher> {
       if (!mounted) return;
       _maybeDispatch(ref.read(pendingDeepLinkProvider));
     });
+  }
+
+  @override
+  void dispose() {
+    _workspaceCover?.removeStatusListener(_onWorkspaceCoverStatus);
+    super.dispose();
   }
 
   @override
@@ -139,17 +146,43 @@ class _DeepLinkDispatcherState extends ConsumerState<DeepLinkDispatcher> {
     }
     if (!context.mounted) return;
 
+    if (!_uncoverWorkspace()) return;
     _pushChannel(channel, link);
     ref.read(pendingDeepLinkProvider.notifier).consume();
   }
 
-  void _pushChannel(Channel channel, BuzzDeepLink link) {
-    // A root utility page, such as Settings, can cover the workspace. Close
-    // it, so the destination opens in front and not behind it.
+  /// Closes root pages above the workspace, such as Settings, so the
+  /// destination opens in front and not behind them.
+  ///
+  /// Returns false when a page refuses to close, for example a profile edit
+  /// that is saving. The link then stays parked, and dispatch runs again when
+  /// the workspace is no longer covered.
+  bool _uncoverWorkspace() {
     final rootRoute = AdaptiveWorkspace.rootRouteOf(context);
-    if (rootRoute != null && !rootRoute.isCurrent) {
-      rootRoute.navigator?.popUntil((route) => route == rootRoute);
+    if (rootRoute == null || rootRoute.isCurrent) return true;
+    var blocked = false;
+    rootRoute.navigator?.popUntil((route) {
+      if (route == rootRoute) return true;
+      blocked = route.popDisposition == RoutePopDisposition.doNotPop;
+      return blocked;
+    });
+    if (!blocked) return true;
+    final cover = rootRoute.secondaryAnimation;
+    if (cover != null && !identical(cover, _workspaceCover)) {
+      _workspaceCover?.removeStatusListener(_onWorkspaceCoverStatus);
+      _workspaceCover = cover..addStatusListener(_onWorkspaceCoverStatus);
     }
+    return false;
+  }
+
+  void _onWorkspaceCoverStatus(AnimationStatus status) {
+    if (status != AnimationStatus.dismissed || !mounted) return;
+    _workspaceCover?.removeStatusListener(_onWorkspaceCoverStatus);
+    _workspaceCover = null;
+    _maybeDispatch(ref.read(pendingDeepLinkProvider));
+  }
+
+  void _pushChannel(Channel channel, BuzzDeepLink link) {
     AdaptiveWorkspace.open(
       context,
       MaterialPageRoute<void>(

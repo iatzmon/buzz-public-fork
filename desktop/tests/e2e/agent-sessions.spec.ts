@@ -19,7 +19,7 @@ type ControlRequest = {
 type SeedInput = {
   channelId: string;
   turnId: string;
-  kind?: "turn_started" | "turn_liveness";
+  kind?: "turn_started" | "turn_liveness" | "turn_completed";
   sessionId?: string | null;
   payload?: unknown;
 };
@@ -48,7 +48,9 @@ function row(page: Page, turnId: string) {
 test.describe("Sessions view", () => {
   test.use({ viewport: { width: 1280, height: 720 } });
 
-  test("lists each running turn and stops one exact turn", async ({ page }) => {
+  test("lists each running turn and stops only one exact turn", async ({
+    page,
+  }) => {
     await installMockBridge(page, {
       managedAgents: [
         {
@@ -139,13 +141,74 @@ test.describe("Sessions view", () => {
       row(page, "turn-a").getByTestId("agent-session-activity"),
     ).not.toHaveText("Stopping…");
 
-    // Without advertised support, Stop falls back to the channel-only form.
-    await row(page, "turn-old").getByTestId("agent-session-stop").click();
+    // Without advertised support, the old runtime could only stop "the turn
+    // running in this channel", which may already be a later turn than the
+    // row shows. Stop stays disabled and explains why; nothing is sent.
+    const legacyStop = row(page, "turn-old").getByTestId("agent-session-stop");
+    await expect(legacyStop).toBeDisabled();
+    await expect(
+      row(page, "turn-old").getByTestId("agent-session-stop-unavailable"),
+    ).toHaveText("Update Charlie to stop a single turn from here.");
+    await legacyStop.click({ force: true });
+    await page.waitForTimeout(300);
+    expect(await readControlRequests(page)).toHaveLength(1);
+
+    // A later turn in the same channel gets its own row; Stop on it names
+    // that turn, never "whatever runs in the channel".
+    await seedTurn(page, {
+      channelId: CHANNEL_AGENTS,
+      turnId: "turn-a",
+      kind: "turn_completed",
+    });
+    await seedTurn(page, {
+      channelId: CHANNEL_AGENTS,
+      turnId: "turn-c",
+      payload: supported,
+    });
+    await expect(row(page, "turn-a")).toHaveCount(0);
+    await row(page, "turn-c").getByTestId("agent-session-stop").click();
     await expect
       .poll(async () => (await readControlRequests(page)).length)
       .toBe(2);
-    const [, legacy] = await readControlRequests(page);
-    expect(legacy.payload.channelId).toBe(CHANNEL_GENERAL);
-    expect(legacy.payload).not.toHaveProperty("turnId");
+    const [, second] = await readControlRequests(page);
+    expect(second.payload).toMatchObject({
+      type: "cancel_turn",
+      channelId: CHANNEL_AGENTS,
+      turnId: "turn-c",
+    });
+  });
+
+  test("shows a failed usage read as unavailable, not as no usage", async ({
+    page,
+  }) => {
+    await installMockBridge(page, {
+      managedAgents: [
+        {
+          name: "Charlie",
+          personaId: "sessions-persona",
+          pubkey: AGENT_PUBKEY,
+          status: "running",
+          channelNames: ["agents"],
+        },
+      ],
+      sessionUsageError: "archive unavailable",
+    });
+    await page.goto("/", { waitUntil: "domcontentloaded" });
+    await page.waitForFunction(
+      () => typeof window.__BUZZ_E2E_SEED_ACTIVE_TURNS__ === "function",
+      null,
+      { timeout: 10_000 },
+    );
+    await page.getByTestId("open-sessions-view").click();
+    await seedTurn(page, {
+      channelId: CHANNEL_AGENTS,
+      turnId: "turn-x",
+      sessionId: "sess-x",
+      payload: { cancelByTurnId: true },
+    });
+
+    await expect(
+      row(page, "turn-x").getByTestId("agent-session-usage"),
+    ).toHaveText("Usage unavailable", { timeout: 15_000 });
   });
 });

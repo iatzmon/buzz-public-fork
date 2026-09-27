@@ -39,13 +39,19 @@ export function AgentSessionRow({
     () => describeCurrentActivity(transcript, turn.turnId),
     [transcript, turn.turnId],
   );
-  const usage = formatSessionUsage(
-    useAgentSessionUsage(turn.agentPubkey, turn.sessionId),
+  const usageState = useAgentSessionUsage(turn.agentPubkey, turn.sessionId);
+  const usageText = describeUsage(
+    formatSessionUsage(usageState.usage),
+    usageState.failed,
   );
   const [isStopping, setIsStopping] = React.useState(false);
   const channelLabel = channelName ? `#${channelName}` : "Unknown channel";
+  // A runtime without exact-turn Stop can only stop "whatever runs in this
+  // channel", which may already be a later turn than the row shows.
+  const canStop = turn.cancelByTurnId;
 
   async function handleStop() {
+    if (!canStop) return;
     setIsStopping(true);
     try {
       const requestId = crypto.randomUUID();
@@ -60,7 +66,7 @@ export function AgentSessionRow({
             turn.agentPubkey,
             turn.channelId,
             requestId,
-            turn.cancelByTurnId ? turn.turnId : undefined,
+            turn.turnId,
           );
         },
         scheduleTimeout: (onTimeout) => {
@@ -74,11 +80,7 @@ export function AgentSessionRow({
         return;
       }
       setIsStopping(false);
-      if (outcome === "ambiguous_target") {
-        toast.error(
-          `${agentName} runs an older version that can only stop a whole channel, and ${channelLabel} has several sessions. Update the agent to stop this one.`,
-        );
-      } else if (outcome === "no_active_turn") {
+      if (outcome === "no_active_turn") {
         toast.info("This turn has already ended.");
       } else {
         toast.info("Stop requested, but the agent hasn't confirmed it.");
@@ -113,6 +115,15 @@ export function AgentSessionRow({
         >
           {isStopping ? "Stopping…" : (activity ?? "Working")}
         </p>
+        {canStop ? null : (
+          <p
+            className="truncate text-xs text-muted-foreground"
+            data-testid="agent-session-stop-unavailable"
+            id={`stop-unavailable-${turn.turnId}`}
+          >
+            Update {agentName} to stop a single turn from here.
+          </p>
+        )}
       </div>
       <div className="shrink-0 text-right">
         <p className="text-sm tabular-nums" data-testid="agent-session-runtime">
@@ -122,7 +133,7 @@ export function AgentSessionRow({
           className="text-xs tabular-nums text-muted-foreground"
           data-testid="agent-session-usage"
         >
-          {usage ?? "No usage reported yet"}
+          {usageText}
         </p>
       </div>
       <div className="flex shrink-0 gap-2">
@@ -143,9 +154,12 @@ export function AgentSessionRow({
           Open
         </Button>
         <Button
+          aria-describedby={
+            canStop ? undefined : `stop-unavailable-${turn.turnId}`
+          }
           aria-label={`Stop ${agentName}'s turn in ${channelLabel}`}
           data-testid="agent-session-stop"
-          disabled={isStopping}
+          disabled={isStopping || !canStop}
           onClick={() => void handleStop()}
           size="sm"
           variant="outline"
@@ -156,4 +170,14 @@ export function AgentSessionRow({
       </div>
     </li>
   );
+}
+
+/** Usage line for a row; a failed read never reads as "no usage". */
+function describeUsage(formatted: string | null, failed: boolean): string {
+  if (failed) {
+    return formatted
+      ? `${formatted} (may be out of date)`
+      : "Usage unavailable";
+  }
+  return formatted ?? "No usage reported yet";
 }

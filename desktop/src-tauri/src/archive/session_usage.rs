@@ -1,5 +1,7 @@
-//! Per-session usage for the Sessions view: tokens and cost reported so far
-//! by the completed turns of each running agent session.
+//! Per-session usage for the Sessions view: tokens and cost from the usage
+//! reports of each running agent session that this archive holds. Reports
+//! the archive never received are not counted, so a total can be low without
+//! being marked incomplete.
 //!
 //! Reuses the NIP-AM accounting ladder in [`super::agent_usage`] so a session
 //! total can never disagree with the usage series for the same rows. NIP-AM
@@ -81,12 +83,11 @@ pub(super) fn agent_session_usage(
         if rows.is_empty() {
             continue;
         }
-        let probe_keys = agent_usage::window_probe_keys(&rows);
-        let probe_rows =
-            metric_store::load_rows_at_exact_keys(conn, identity_pk, relay_url, &probe_keys)?;
-        // One unbounded bucket: every row of the session counts once.
+        // Every valid row of the session is already loaded, so it doubles as
+        // the probe set (same key and validity filters as
+        // `load_rows_at_exact_keys`). One unbounded bucket: each row counts once.
         let series =
-            agent_usage::compute_series(&rows, &probe_rows, 0, &[i64::MIN, i64::MAX], None, true);
+            agent_usage::compute_series(&rows, &rows, 0, &[i64::MIN, i64::MAX], None, true);
         if let Some(agent) = series.agents.into_iter().next() {
             out.push(SessionUsage {
                 session_id,

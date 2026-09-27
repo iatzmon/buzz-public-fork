@@ -33,7 +33,7 @@ export function AgentSessionsScreen() {
         data-testid="agent-sessions-page"
       >
         <PageHeader
-          description="Agent turns running now. Tokens count the completed turns of each session; the current turn is added when it ends."
+          description="Agent turns running now. Tokens come from the usage reports of each session on this computer; the current turn is added when it ends."
           title="Sessions"
         />
         {turns.length === 0 ? (

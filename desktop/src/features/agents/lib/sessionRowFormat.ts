@@ -1,5 +1,5 @@
 import type { TranscriptItem } from "@/features/agents/ui/agentSessionTypes";
-import type { ReportedUsage } from "@/shared/api/tauriArchive";
+import type { ReportedUsage, UsageField } from "@/shared/api/tauriArchive";
 
 /**
  * Compact token count from a decimal `u64` string ("12.3k", "1.2M").
@@ -20,18 +20,37 @@ function trimDecimal(value: number): string {
   return value >= 100 ? Math.round(value).toString() : value.toFixed(1);
 }
 
-/** Session usage as one short line, or null when nothing is known yet. */
+/**
+ * Session usage as one short line, or null when nothing is known yet.
+ *
+ * Shows the reported total when there is one. Some harnesses (Claude Code)
+ * report input and output but no total; then each known category is shown on
+ * its own, never summed into an invented total. Cost is independent of the
+ * token fields. A field marked incomplete is a lower bound ("≥").
+ */
 export function formatSessionUsage(usage: ReportedUsage | null): string | null {
   if (!usage) return null;
-  const tokens = formatTokenCount(usage.totalTokens.value);
-  if (!tokens) return null;
-  const lowerBound = usage.totalTokens.incomplete ? "≥ " : "";
-  const cost = usage.estimatedCostUsd.value;
-  const costText =
-    cost === null
-      ? ""
-      : ` · ${usage.estimatedCostUsd.incomplete ? "≥ " : ""}$${cost.toFixed(2)}`;
-  return `${lowerBound}${tokens} tokens${costText}`;
+  const parts: string[] = [];
+  const total = formatUsageField(usage.totalTokens);
+  if (total) {
+    parts.push(`${total} tokens`);
+  } else {
+    const input = formatUsageField(usage.inputTokens);
+    const output = formatUsageField(usage.outputTokens);
+    if (input) parts.push(`${input} in`);
+    if (output) parts.push(`${output} out`);
+  }
+  const cost = usage.estimatedCostUsd;
+  if (cost.value !== null) {
+    parts.push(`${cost.incomplete ? "≥ " : ""}$${cost.value.toFixed(2)}`);
+  }
+  return parts.length > 0 ? parts.join(" · ") : null;
+}
+
+function formatUsageField(field: UsageField): string | null {
+  const count = formatTokenCount(field.value);
+  if (!count) return null;
+  return `${field.incomplete ? "≥ " : ""}${count}`;
 }
 
 /**

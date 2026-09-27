@@ -324,7 +324,9 @@ Exception: `cancel_turn` may carry `turnId`, and the harness then cancels only
 that turn. Send it only to a turn whose `turn_started` or `turn_liveness`
 payload says `cancelByTurnId: true`; an older runtime ignores the field and
 falls back to the channel-only form. The Sessions view (`/sessions`,
-`AgentSessionRow`) is the one caller today. `switch_model` stays channel-only.
+`AgentSessionRow`) is the one caller today. It disables Stop for a turn
+without that flag: a channel-only cancel can reach a later turn than the row
+shows. `switch_model` stays channel-only.
 
 Per-thread `switch_model` remains a separate protocol/UI change. Do not tell
 users to type `!cancel` beside an inline mention: the owner command requires

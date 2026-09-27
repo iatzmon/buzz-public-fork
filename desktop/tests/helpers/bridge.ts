@@ -320,6 +320,8 @@ type MockBridgeOptions = {
     requestId?: string;
     modelId?: string;
   }>;
+  /** Make `get_agent_session_usage` fail with this message. */
+  sessionUsageError?: string;
   /** Session usage returned by `get_agent_session_usage`. */
   sessionUsage?: Array<{
     agentPubkey: string;

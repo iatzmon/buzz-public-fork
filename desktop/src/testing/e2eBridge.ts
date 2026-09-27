@@ -409,6 +409,8 @@ type E2eConfig = {
       requestId?: string;
       modelId?: string;
     }>;
+    /** Make `get_agent_session_usage` fail with this message. */
+    sessionUsageError?: string;
     /** Session usage returned by `get_agent_session_usage`. */
     sessionUsage?: Array<{
       agentPubkey: string;
@@ -15295,6 +15297,10 @@ export function maybeInstallE2eTauriMocks() {
         return null;
       }
       case "get_agent_session_usage": {
+        const usageError = getConfig()?.mock?.sessionUsageError;
+        if (usageError) {
+          throw new Error(usageError);
+        }
         const request = (
           payload as {
             request: { agentPubkey: string; sessionIds: string[] };

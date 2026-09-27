@@ -666,12 +666,16 @@ class ActivityNotifier extends AsyncNotifier<HomeFeedResponse> {
   /// Only the latest lookup of the current `generation` may change the kept
   /// owners or `_ownerLookupFailed`. An older lookup that completes late
   /// returns the kept owners unchanged, so it cannot restore an owner that a
-  /// newer lookup removed.
+  /// newer lookup removed. A fetch from an old generation stops before it
+  /// takes a lookup number, so it cannot make the current lookup look stale.
   Future<Map<String, String>> _fetchRequestAuthorOwners(
     RelaySessionNotifier session,
     int generation,
     Iterable<NostrEvent> requests,
   ) async {
+    if (generation != _subscriptionGeneration) {
+      return Map.of(_requestAuthorOwners);
+    }
     final lookup = ++_ownerLookupSequence;
     bool isLatest() =>
         generation == _subscriptionGeneration && lookup == _ownerLookupSequence;

@@ -683,6 +683,90 @@ void main() {
       },
     );
 
+    test(
+      'a late message history from an older fetch cannot block the current lookup',
+      () async {
+        // Reproduces Codex Forge's second review sequence on PR #16.
+        final agent = nostr.Keys.generate();
+        final session = _GatedProfileSession()
+          ..seed(_profile(agent, [_authTag(me, agent.public)]))
+          ..seed(_request('mine', agent.public, me.public));
+        final channels = _MutableChannelsNotifier();
+        final container = ProviderContainer(
+          overrides: [
+            relayConfigProvider.overrideWith(_FixedRelayConfigNotifier.new),
+            myPubkeyProvider.overrideWithValue(me.public),
+            relaySessionProvider.overrideWith(() => session),
+            channelsProvider.overrideWith(() => channels),
+          ],
+        );
+        addTearDown(container.dispose);
+        await container.read(channelsProvider.future);
+        final initial = await container.read(activityProvider.future);
+        expect(initial.needsAction.map((item) => item.id), ['mine']);
+        final notifier = container.read(activityProvider.notifier);
+
+        // 1. An older refresh holds its message-history query.
+        final oldHistory = Completer<void>();
+        session.mentionFetchGate = oldHistory;
+        final staleRefresh = notifier.refresh();
+        await _waitFor(() => session.activeMentionFetches == 1);
+        session.mentionFetchGate = null;
+
+        // 2. The agent drops its owner attestation; a DM change rebuilds, and
+        //    the current fetch's profile response is held.
+        session._history.removeWhere((event) => event.kind == 0);
+        session.seed(_profile(agent, const []));
+        session.holdNextProfile = true;
+        channels.addDm();
+        final currentFetch = container.read(activityProvider.future);
+        await session.profileHeld.future;
+
+        // 3. The old history lands first, then the current profile response.
+        oldHistory.complete();
+        await staleRefresh;
+        session.releaseProfile.complete();
+        final current = await currentFetch;
+
+        expect(current.needsAction, isEmpty);
+        expect(current.mentions.map((item) => item.id), ['mine']);
+      },
+    );
+
+    test(
+      'a lookup that started earlier cannot overwrite a later one',
+      () async {
+        // Same generation: the build fetch is held on its profile response
+        // while a refresh that started later completes first.
+        final agent = nostr.Keys.generate();
+        final session = _GatedProfileSession()
+          ..holdNextProfile = true
+          ..seed(_profile(agent, [_authTag(me, agent.public)]))
+          ..seed(_request('mine', agent.public, me.public));
+        final container = containerFor(session);
+        await container.read(channelsProvider.future);
+        final buildFetch = container.read(activityProvider.future);
+        await session.profileHeld.future;
+
+        // The agent drops its attestation; the later refresh sees that.
+        session._history.removeWhere((event) => event.kind == 0);
+        session.seed(_profile(agent, const []));
+        await container.read(activityProvider.notifier).refresh();
+
+        // The earlier lookup (still naming me) lands last.
+        session.releaseProfile.complete();
+        await buildFetch;
+        session
+          ..failProfileHttp = true
+          ..failProfileWs = true;
+        await container.read(activityProvider.notifier).refresh();
+
+        final latest = container.read(activityProvider).value!;
+        expect(latest.needsAction, isEmpty);
+        expect(latest.mentions.map((item) => item.id), ['mine']);
+      },
+    );
+
     test('retries stop after a bounded number of failed lookups', () async {
       final session = _RecordingSessionNotifier()
         ..failProfileHttp = true

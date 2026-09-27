@@ -757,7 +757,9 @@ export function InboxListPane({
                     ? "Turn off Show unread only to see read activity."
                     : filter === "all"
                       ? "New activity will appear here."
-                      : "Switch back to All to see other activity."}
+                      : filter === "needs_action"
+                        ? "Requests you have read are under All."
+                        : "Switch back to All to see other activity."}
                 </p>
               </div>
             </div>

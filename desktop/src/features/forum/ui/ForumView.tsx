@@ -22,18 +22,13 @@ import {
   hasUnreadForumReplies,
   latestForumThreadActivityAt,
 } from "../lib/forumActivity";
-import { sortForumOldestFirst } from "../lib/forumOrder";
+import { sortForumPostsByActivity } from "../lib/forumOrder";
 import { ForumPostCard } from "./ForumPostCard";
 import { ForumPostList } from "./ForumPostList";
 import { ForumThreadPanel } from "./ForumThreadPanel";
 
 type ForumViewProps = {
   channel: Channel;
-  /**
-   * The forum's read marker as it stood when the channel was opened, before
-   * opening it advanced the marker. Baseline for posts never opened.
-   */
-  channelOpenReadAt?: number | null;
   currentPubkey?: string;
   onClosePost: () => void;
   onSelectPost: (postId: string) => void;
@@ -49,7 +44,6 @@ const EMPTY_TYPING_ENTRIES: TypingIndicatorEntry[] = [];
 
 export function ForumView({
   channel,
-  channelOpenReadAt = null,
   currentPubkey,
   onClosePost,
   onSelectPost,
@@ -79,7 +73,7 @@ export function ForumView({
 
   const postsData = postsQuery.data?.posts;
   const posts = React.useMemo(
-    () => sortForumOldestFirst(postsData ?? []),
+    () => sortForumPostsByActivity(postsData ?? []),
     [postsData],
   );
   const typingGroups = React.useMemo(
@@ -91,19 +85,20 @@ export function ForumView({
   // biome-ignore lint/correctness/useExhaustiveDependencies: readStateVersion invalidates getThreadReadAt results
   const unreadPostIds = React.useMemo(() => {
     const ids = new Set<string>();
+    const nowSeconds = Math.floor(Date.now() / 1_000);
     for (const post of posts) {
       if (
         hasUnreadForumReplies({
           lastReplyAt: post.threadSummary?.lastReplyAt,
           threadReadAt: getThreadReadAt(post.eventId),
-          channelBaselineAt: channelOpenReadAt,
+          nowSeconds,
         })
       ) {
         ids.add(post.eventId);
       }
     }
     return ids;
-  }, [channelOpenReadAt, getThreadReadAt, posts, readStateVersion]);
+  }, [getThreadReadAt, posts, readStateVersion]);
 
   // Opening a post marks it read up to the newest activity it shows, and keeps
   // doing so while it stays open (new replies, including the viewer's own).

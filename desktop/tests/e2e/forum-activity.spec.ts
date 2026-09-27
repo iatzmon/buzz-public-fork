@@ -4,8 +4,7 @@ import { waitForAnimations } from "../helpers/animations";
 import { installMockBridge } from "../helpers/bridge";
 
 // Forum post list activity: an agent working on a reply shows on the post it
-// is replying under, and replies newer than the viewer's last visit mark the
-// post until it is opened.
+// is replying under, and replies mark the post until the viewer opens it.
 
 const FORUM = "watercooler";
 const FORUM_CHANNEL_ID = "a27e1ee9-76a6-5bdf-a5d5-1d85610dad11";
@@ -108,42 +107,53 @@ test("shows channel-level agent work below the post list", async ({ page }) => {
   ).toHaveCount(0);
 });
 
-test("marks a post with replies since the last visit until it is opened", async ({
+test("marks a post with replies until it is opened, across forum visits", async ({
   page,
 }) => {
   await page.goto("/");
   await waitForMockLiveSubscription(page, "general", READ_STATE_KIND);
   // The read-state store drops live markers until its startup load settles
-  // (same settle wait as badge.spec.ts). Seeding earlier leaves no baseline.
+  // (same settle wait as badge.spec.ts).
   await page.waitForTimeout(3000);
 
-  // The viewer last read the forum 70 minutes ago. The release post has
-  // replies up to 56 minutes ago; the offsite post has none.
-  const lastVisit = Math.floor(Date.now() / 1000) - 70 * 60;
+  // The viewer read the forum channel just now, after every reply. That
+  // marker does not clear posts the viewer never opened.
   await page.evaluate(
     ({ channelId, ts }) =>
       window.__BUZZ_E2E_EMIT_MOCK_READ_STATE__?.({
         clientId: "other-device-client-id",
         slotId: "e2e00000000000000000000000000000",
         contexts: { [channelId]: ts },
-        createdAt: Math.floor(Date.now() / 1000),
+        createdAt: ts,
       }),
-    { channelId: FORUM_CHANNEL_ID, ts: lastVisit },
+    { channelId: FORUM_CHANNEL_ID, ts: Math.floor(Date.now() / 1000) },
   );
 
   await openForum(page);
 
-  const releaseCard = page.getByTestId(`forum-post-card-${RELEASE_POST}`);
-  const offsiteCard = page.getByTestId(`forum-post-card-${OFFSITE_POST}`);
-  await expect(releaseCard.getByTestId("forum-post-unread-dot")).toBeVisible();
-  await expect(offsiteCard.getByTestId("forum-post-unread-dot")).toHaveCount(0);
+  const releaseDot = page
+    .getByTestId(`forum-post-card-${RELEASE_POST}`)
+    .getByTestId("forum-post-unread-dot");
+  const offsiteDot = page
+    .getByTestId(`forum-post-card-${OFFSITE_POST}`)
+    .getByTestId("forum-post-unread-dot");
+  await expect(releaseDot).toBeVisible();
+  await expect(offsiteDot).toHaveCount(0);
 
   await waitForAnimations(page);
-  await releaseCard.screenshot({
+  await page.getByTestId(`forum-post-card-${RELEASE_POST}`).screenshot({
     path: "test-results/forum-activity/02-card-new-replies.png",
   });
 
-  await releaseCard.click();
+  // Leave the forum and come back without opening the post.
+  await page.getByTestId("channel-general").click();
+  await expect(page.getByTestId(`forum-post-card-${RELEASE_POST}`)).toHaveCount(
+    0,
+  );
+  await openForum(page);
+  await expect(releaseDot).toBeVisible();
+
+  await page.getByTestId(`forum-post-card-${RELEASE_POST}`).click();
   await expect(
     page.locator(`[data-forum-event-id="${RELEASE_POST}"]`),
   ).toBeVisible();
@@ -152,9 +162,5 @@ test("marks a post with replies since the last visit until it is opened", async 
   await expect(
     page.getByTestId(`forum-post-card-${RELEASE_POST}`),
   ).toBeVisible();
-  await expect(
-    page
-      .getByTestId(`forum-post-card-${RELEASE_POST}`)
-      .getByTestId("forum-post-unread-dot"),
-  ).toHaveCount(0);
+  await expect(releaseDot).toHaveCount(0);
 });

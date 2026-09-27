@@ -19,6 +19,7 @@ import 'package:buzz/shared/mentions/agent_identity_provider.dart';
 import 'package:buzz/shared/profile/user_cache_provider.dart';
 import 'package:buzz/shared/profile/user_profile.dart';
 import 'package:buzz/shared/read_state/read_state_format.dart';
+import 'package:buzz/shared/read_state/read_state_time.dart';
 import 'package:buzz/shared/read_state/read_state_provider.dart';
 import 'package:buzz/shared/relay/relay.dart';
 import 'package:buzz/shared/theme/theme.dart';
@@ -124,18 +125,12 @@ Widget _app(Widget child) => MaterialApp(
 Widget _card({
   required ForumPost post,
   required _RecordingReadStateNotifier readState,
-  int? channelReadSnapshot,
   List<TypingEntry> typing = const [],
 }) => ProviderScope(
   overrides: _commonOverrides(readState: readState, typing: typing),
   child: _app(
     Scaffold(
-      body: ForumPostCard(
-        post: post,
-        currentPubkey: _self,
-        onTap: () {},
-        channelReadSnapshot: channelReadSnapshot,
-      ),
+      body: ForumPostCard(post: post, currentPubkey: _self, onTap: () {}),
     ),
   ),
 );
@@ -152,27 +147,38 @@ void main() {
   });
 
   group('forumPostHasNewReplies', () {
-    // (summary, threadReadAt, channelReadSnapshot) -> expected
-    final cases = <(String, ForumThreadSummary?, int?, int?, bool)>[
-      ('no summary', null, 0, 0, false),
-      ('no replies', _summary(replyCount: 0), 0, 0, false),
-      ('no last reply time', _summary(lastReplyAt: null), 0, 0, false),
-      ('both markers null', _summary(), null, null, false),
-      ('thread marker older', _summary(), 1999, null, true),
-      ('thread marker equal', _summary(), 2000, null, false),
-      ('thread marker newer', _summary(), 2001, null, false),
-      ('snapshot older, no thread marker', _summary(), null, 1999, true),
-      ('snapshot equal, no thread marker', _summary(), null, 2000, false),
-      ('thread marker wins over older snapshot', _summary(), 2000, 1, false),
-      ('thread marker wins over newer snapshot', _summary(), 1, 3000, true),
+    const now = 1000000;
+    const horizon = now - readStateHorizonSeconds;
+    ForumThreadSummary recent() => _summary(lastReplyAt: now - 100);
+    // (summary, threadReadAt) -> expected, at [now]
+    final cases = <(String, ForumThreadSummary?, int?, bool)>[
+      ('no summary', null, 0, false),
+      ('no replies', _summary(replyCount: 0), 0, false),
+      ('no last reply time', _summary(lastReplyAt: null), 0, false),
+      ('thread marker older', _summary(), 1999, true),
+      ('thread marker equal', _summary(), 2000, false),
+      ('thread marker newer', _summary(), 2001, false),
+      ('never opened, recent reply', recent(), null, true),
+      (
+        'never opened, reply past the horizon',
+        _summary(lastReplyAt: horizon),
+        null,
+        false,
+      ),
+      (
+        'never opened, reply just inside the horizon',
+        _summary(lastReplyAt: horizon + 1),
+        null,
+        true,
+      ),
     ];
-    for (final (name, summary, threadReadAt, snapshot, expected) in cases) {
+    for (final (name, summary, threadReadAt, expected) in cases) {
       test(name, () {
         expect(
           forumPostHasNewReplies(
             summary: summary,
             threadReadAt: threadReadAt,
-            channelReadSnapshot: snapshot,
+            nowSeconds: now,
           ),
           expected,
         );
@@ -365,8 +371,9 @@ void main() {
       handle.dispose();
     });
 
-    testWidgets('thread marker at the last reply clears the flag even with '
-        'an older channel snapshot', (tester) async {
+    testWidgets('thread marker at the last reply clears the flag', (
+      tester,
+    ) async {
       final handle = tester.ensureSemantics();
       await tester.pumpWidget(
         _card(
@@ -374,7 +381,6 @@ void main() {
           readState: _RecordingReadStateNotifier({
             threadContextKey('post1'): 2000,
           }),
-          channelReadSnapshot: 100,
         ),
       );
       await tester.pump();
@@ -385,23 +391,21 @@ void main() {
       handle.dispose();
     });
 
-    testWidgets('falls back to the channel snapshot without a thread marker', (
-      tester,
-    ) async {
+    testWidgets('flags a recent reply on a post never opened', (tester) async {
       await tester.pumpWidget(
         _card(
-          post: _post(summary: _summary(lastReplyAt: 2000)),
+          post: _post(
+            summary: _summary(lastReplyAt: currentUnixSeconds() - 100),
+          ),
           readState: _RecordingReadStateNotifier({}),
-          channelReadSnapshot: 1500,
         ),
       );
       await tester.pump();
       expect(_dot, findsOneWidget);
     });
 
-    testWidgets('no marker without a thread marker or snapshot', (
-      tester,
-    ) async {
+    testWidgets('does not flag a never-opened post whose replies are older '
+        'than the read-state horizon', (tester) async {
       await tester.pumpWidget(
         _card(
           post: _post(summary: _summary(lastReplyAt: 2000)),
@@ -413,18 +417,18 @@ void main() {
     });
 
     testWidgets('clears when the thread marker advances', (tester) async {
+      final lastReplyAt = currentUnixSeconds() - 100;
       final readState = _RecordingReadStateNotifier({});
       await tester.pumpWidget(
         _card(
-          post: _post(summary: _summary(lastReplyAt: 2000)),
+          post: _post(summary: _summary(lastReplyAt: lastReplyAt)),
           readState: readState,
-          channelReadSnapshot: 1500,
         ),
       );
       await tester.pump();
       expect(_dot, findsOneWidget);
 
-      readState.markContextRead(threadContextKey('post1'), 2000);
+      readState.markContextRead(threadContextKey('post1'), lastReplyAt);
       await tester.pump();
       expect(_dot, findsNothing);
     });
@@ -501,24 +505,40 @@ void main() {
       ),
     );
 
-    testWidgets('keeps the flag after the channel is marked read on open', (
-      tester,
-    ) async {
-      final readState = _RecordingReadStateNotifier({_channelId: 1500});
-      await tester.pumpWidget(
-        view(
-          readState: readState,
-          posts: [_post(summary: _summary(lastReplyAt: 2000))],
-        ),
-      );
+    testWidgets('keeps the flag across forum visits until the post is '
+        'opened', (tester) async {
+      final lastReplyAt = currentUnixSeconds() - 100;
+      // The forum was already read after the reply; that does not clear a
+      // post the reader never opened.
+      final readState = _RecordingReadStateNotifier({
+        _channelId: lastReplyAt + 50,
+      });
+      final posts = [_post(summary: _summary(lastReplyAt: lastReplyAt))];
+      await tester.pumpWidget(view(readState: readState, posts: posts));
       await tester.pump();
       await tester.pump();
       expect(_dot, findsOneWidget);
 
       // The channel page marks the forum read at its latest activity.
-      readState.markContextRead(_channelId, 2500);
+      readState.markContextRead(_channelId, lastReplyAt + 60);
       await tester.pump();
       expect(_dot, findsOneWidget);
+
+      // Leave the forum and come back without opening the post. A new scope
+      // needs its own notifier; it carries the same read markers.
+      await tester.pumpWidget(const SizedBox());
+      final revisited = _RecordingReadStateNotifier({
+        _channelId: lastReplyAt + 60,
+      });
+      await tester.pumpWidget(view(readState: revisited, posts: posts));
+      await tester.pump();
+      await tester.pump();
+      expect(_dot, findsOneWidget);
+
+      // Opening the post marks it read.
+      revisited.markContextRead(threadContextKey('post1'), lastReplyAt);
+      await tester.pump();
+      expect(_dot, findsNothing);
     });
 
     testWidgets('shows a channel-level working line for untagged entries', (

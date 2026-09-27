@@ -21,8 +21,6 @@ import { ViewLoadingFallback } from "@/shared/ui/ViewLoadingFallback";
 type ForumChannelContentProps = {
   canResetPanelWidth: boolean;
   channel: Channel;
-  /** The forum's read marker as it stood when the channel was opened. */
-  channelOpenReadAt?: number | null;
   currentPubkey?: string;
   header: React.ReactNode;
   /** Host-owned side panel, such as a project home's Tasks or Files sheet. */
@@ -70,7 +68,6 @@ type ForumChannelContentProps = {
 export function ForumChannelContent({
   canResetPanelWidth,
   channel,
-  channelOpenReadAt,
   currentPubkey,
   header,
   idleAuxiliaryPanel = null,
@@ -107,7 +104,6 @@ export function ForumChannelContent({
           <React.Suspense fallback={<ViewLoadingFallback kind="forum" />}>
             <ForumView
               channel={channel}
-              channelOpenReadAt={channelOpenReadAt}
               currentPubkey={currentPubkey}
               onClosePost={onClosePost}
               onSelectPost={onSelectPost}

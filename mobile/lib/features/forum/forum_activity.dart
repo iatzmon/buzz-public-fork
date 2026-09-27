@@ -1,3 +1,4 @@
+import '../../shared/read_state/read_state_format.dart';
 import '../channels/channel_typing_provider.dart';
 import 'forum_models.dart';
 
@@ -23,21 +24,22 @@ List<String> forumTypingPubkeys(
 
 /// Whether a post card should flag replies newer than the reader has seen.
 ///
-/// The baseline is the post's own `thread:<postId>` read marker when one
-/// exists; otherwise the forum channel's read marker as captured when the
-/// post list opened. With neither marker there is nothing to compare, so no
-/// post is flagged. All timestamps are Unix seconds.
+/// The baseline is the post's own `thread:<postId>` read marker, set when the
+/// reader opens the post. A post without one stays flagged until it is
+/// opened: leaving and re-opening the forum does not clear it. Only replies
+/// newer than the read-state horizon count, because post read markers older
+/// than it are dropped. All timestamps are Unix seconds.
 bool forumPostHasNewReplies({
   required ForumThreadSummary? summary,
   required int? threadReadAt,
-  required int? channelReadSnapshot,
+  required int nowSeconds,
 }) {
   final lastReplyAt = summary?.lastReplyAt;
   if (summary == null || summary.replyCount <= 0 || lastReplyAt == null) {
     return false;
   }
-  final baseline = threadReadAt ?? channelReadSnapshot;
-  return baseline != null && lastReplyAt > baseline;
+  final baseline = threadReadAt ?? nowSeconds - readStateHorizonSeconds;
+  return lastReplyAt > baseline;
 }
 
 /// The `thread:<postId>` read timestamp (Unix seconds) for an open thread.

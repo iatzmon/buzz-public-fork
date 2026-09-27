@@ -185,7 +185,8 @@ class ForumPostsResponse {
     );
   }
 
-  /// Build from relay events. Posts are sorted newest-first.
+  /// Build from relay events. Posts are sorted by latest activity, newest
+  /// first (see [compareForumPostsByActivity]).
   ///
   /// Kind:45001 events become posts. A kind:39005 thread summary from the
   /// relay's channel window becomes the summary of the post its `e` tag names.
@@ -210,7 +211,7 @@ class ForumPostsResponse {
       for (final event in events)
         if (event.kind == EventKind.forumPost)
           ForumPost.fromEvent(event, threadSummary: summaries[event.id]),
-    ]..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+    ]..sort(compareForumPostsByActivity);
     return ForumPostsResponse(posts: posts, nextCursor: null);
   }
 }
@@ -277,4 +278,23 @@ String formatRelativeTime(int timestamp) {
     isUtc: true,
   ).toLocal();
   return '${dt.month}/${dt.day}/${dt.year}';
+}
+
+/// Latest activity on a forum post (Unix seconds): its newest reply, or the
+/// post itself when it has no replies.
+int forumPostActivityAt(ForumPost post) {
+  final lastReplyAt = post.threadSummary?.lastReplyAt;
+  return lastReplyAt != null && lastReplyAt > post.createdAt
+      ? lastReplyAt
+      : post.createdAt;
+}
+
+/// Orders posts by latest activity, newest first. Ties fall back to post
+/// time, then event id, so refreshes do not shuffle the list.
+int compareForumPostsByActivity(ForumPost a, ForumPost b) {
+  final byActivity = forumPostActivityAt(b).compareTo(forumPostActivityAt(a));
+  if (byActivity != 0) return byActivity;
+  final byCreated = b.createdAt.compareTo(a.createdAt);
+  if (byCreated != 0) return byCreated;
+  return a.eventId.compareTo(b.eventId);
 }

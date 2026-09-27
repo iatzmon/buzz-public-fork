@@ -454,7 +454,6 @@ export function ChannelScreen({
     handleMarkMessageUnread,
     isMessageUnread,
     markRevealedRepliesRead,
-    openFrontierSeconds,
     openThreadHeadMessage,
     threadFirstUnreadReplyId,
     threadReplyTargetMessage,
@@ -835,7 +834,7 @@ export function ChannelScreen({
                 profilePanelTab={profilePanelTab}
                 profilePanelView={profilePanelView}
                 selectedPostId={selectedForumPostId}
-                  targetReplyId={targetForumReplyId} typingEntries={typingEntries} channelOpenReadAt={openFrontierSeconds}
+                  targetReplyId={targetForumReplyId} typingEntries={typingEntries}
                 />,
                 searchTarget,
               )

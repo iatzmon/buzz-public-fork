@@ -2247,6 +2247,15 @@ fn send_prompt_result(
     });
 }
 
+/// Whether an observer `cancel_turn` naming this turn's `turnId` can reach it.
+///
+/// Exact-turn Stop needs a control receiver to deliver the signal and a
+/// channel to match the frame against. Heartbeat turns have neither, so they
+/// must not advertise `cancelByTurnId`.
+fn cancel_by_turn_id_supported(source: &PromptSource, has_control_rx: bool) -> bool {
+    has_control_rx && source.channel_id().is_some()
+}
+
 /// Core async function spawned for each prompt.
 ///
 /// Lifecycle:
@@ -2274,6 +2283,7 @@ pub async fn run_prompt_task(
         None => PromptSource::Heartbeat,
     };
     let observer_channel_id = source.channel_id();
+    let cancel_by_turn_id = cancel_by_turn_id_supported(&source, control_rx.is_some());
     let turn_started_at = chrono::Utc::now().to_rfc3339();
     agent.acp.set_observer_context(observer::context_for_turn(
         observer_channel_id,
@@ -2295,8 +2305,9 @@ pub async fn run_prompt_task(
             "triggeringEventIds": triggering_event_ids,
             // Advertises that `cancel_turn` honors `turnId` for this turn, so
             // clients never send an exact-turn Stop to a runtime that would
-            // ignore the target and cancel by channel instead.
-            "cancelByTurnId": true,
+            // ignore the target and cancel by channel instead. False for
+            // turns that cannot be cancelled at all (heartbeats).
+            "cancelByTurnId": cancel_by_turn_id,
         }),
     );
 
@@ -2335,6 +2346,7 @@ pub async fn run_prompt_task(
         ),
         ctx.turn_liveness_interval,
         Arc::clone(&liveness_state),
+        cancel_by_turn_id,
     );
     let liveness_handle = tokio::spawn(liveness);
     let liveness_guard = LivenessGuard::new(liveness_handle, liveness_state);
@@ -4961,6 +4973,7 @@ async fn run_turn_liveness(
     mut context: observer::ObserverContext,
     interval: Duration,
     state: Arc<Mutex<LivenessState>>,
+    cancel_by_turn_id: bool,
 ) {
     let Some(observer) = observer else {
         return std::future::pending::<()>().await;
@@ -4990,7 +5003,7 @@ async fn run_turn_liveness(
             "turn_liveness",
             agent_index,
             &context,
-            serde_json::json!({ "cancelByTurnId": true }),
+            serde_json::json!({ "cancelByTurnId": cancel_by_turn_id }),
         );
         drop(guard);
     }
@@ -9117,6 +9130,7 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
                     context,
                     Duration::from_secs(10),
                     Arc::clone(&state),
+                    true,
                 )),
                 state,
             );
@@ -9154,6 +9168,118 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
         );
     }
 
+    #[test]
+    fn cancel_by_turn_id_follows_cancellation_eligibility() {
+        let channel = PromptSource::Channel(conv(Uuid::new_v4()));
+        assert!(cancel_by_turn_id_supported(&channel, true));
+        assert!(!cancel_by_turn_id_supported(&channel, false));
+        assert!(!cancel_by_turn_id_supported(
+            &PromptSource::Heartbeat,
+            false
+        ));
+        assert!(!cancel_by_turn_id_supported(&PromptSource::Heartbeat, true));
+    }
+
+    /// Runs one turn against an ACP child that exits at once and returns the
+    /// payload of its `turn_started` frame. The turn itself fails; only the
+    /// start frame, emitted before any session work, matters here.
+    async fn turn_started_payload(
+        batch: Option<FlushBatch>,
+        control_rx: Option<tokio::sync::oneshot::Receiver<ControlSignal>>,
+    ) -> serde_json::Value {
+        let acp = AcpClient::spawn("bash", &["-c".into(), "exit 0".into()], &[], false)
+            .await
+            .expect("spawn exiting ACP");
+        let mut agent = OwnedAgent {
+            index: 0,
+            acp,
+            state: SessionState::default(),
+            model_capabilities: None,
+            desired_model: None,
+            model_overridden: false,
+            desired_model_request_id: None,
+            desired_model_pending_ack: false,
+            startup_effort: None,
+            agent_name: "cancel-capability-agent".into(),
+            goose_system_prompt_supported: None,
+            protocol_version: 1,
+        };
+        let observer = observer::ObserverHandle::in_process();
+        agent.acp.set_observer(Some(observer.clone()), 0);
+        let mut ctx = make_prompt_context_no_owner();
+        ctx.rest_client.base_url = "http://127.0.0.1:1".into();
+        let (result_tx, mut result_rx) = mpsc::unbounded_channel();
+        tokio::time::timeout(
+            Duration::from_secs(30),
+            run_prompt_task(
+                agent,
+                batch,
+                None,
+                Arc::new(ctx),
+                result_tx,
+                control_rx,
+                "capability-turn".into(),
+            ),
+        )
+        .await
+        .expect("turn must finish");
+        let mut result = result_rx.recv().await.expect("prompt result");
+        result.agent.acp.shutdown().await;
+        observer
+            .snapshot()
+            .into_iter()
+            .find(|event| event.kind == "turn_started")
+            .expect("turn_started frame")
+            .payload
+    }
+
+    #[tokio::test]
+    async fn turn_started_advertises_cancel_by_turn_id_only_for_cancellable_turns() {
+        let (_control_tx, control_rx) = tokio::sync::oneshot::channel();
+        let channel =
+            turn_started_payload(Some(one_event_batch(Uuid::new_v4())), Some(control_rx)).await;
+        assert_eq!(channel["source"], "channel");
+        assert_eq!(channel["cancelByTurnId"], true);
+
+        let heartbeat = turn_started_payload(None, None).await;
+        assert_eq!(heartbeat["source"], "heartbeat");
+        assert_eq!(heartbeat["cancelByTurnId"], false);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_liveness_carries_non_cancellable_flag() {
+        let observer = observer::ObserverHandle::in_process();
+        let context =
+            observer::context_for_turn(None, None, "hb".into(), "2026-07-14T21:00:00Z".into());
+        let state = open_liveness_state();
+        let guard = LivenessGuard::new(
+            tokio::spawn(run_turn_liveness(
+                Some(observer.clone()),
+                Some(0),
+                context,
+                Duration::from_secs(10),
+                Arc::clone(&state),
+                false,
+            )),
+            state,
+        );
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_secs(15)).await;
+        tokio::task::yield_now().await;
+        drop(guard);
+
+        let pings: Vec<_> = observer
+            .snapshot()
+            .into_iter()
+            .filter(|e| e.kind == "turn_liveness")
+            .collect();
+        assert_eq!(pings.len(), 1);
+        assert_eq!(
+            pings[0].payload,
+            serde_json::json!({ "cancelByTurnId": false })
+        );
+    }
+
     #[tokio::test(start_paused = true)]
     async fn test_liveness_fires_until_guard_drops() {
         let observer = observer::ObserverHandle::in_process();
@@ -9167,6 +9293,7 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
                 context,
                 Duration::from_secs(10),
                 Arc::clone(&state),
+                true,
             )),
             state,
         );
@@ -9219,6 +9346,7 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
                 context,
                 Duration::from_secs(10),
                 Arc::clone(&state),
+                true,
             )),
             state,
         );
@@ -9261,6 +9389,7 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
             context,
             Duration::ZERO,
             open_liveness_state(),
+            true,
         );
         tokio::pin!(liveness);
 
@@ -9284,6 +9413,7 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
             context,
             Duration::from_secs(10),
             open_liveness_state(),
+            true,
         );
         tokio::pin!(liveness);
 
@@ -9323,6 +9453,7 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
             context,
             Duration::from_secs(10),
             state,
+            true,
         );
         tokio::time::timeout(Duration::from_secs(60), liveness)
             .await

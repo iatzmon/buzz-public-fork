@@ -149,8 +149,10 @@ treat the turn as stopped only when its terminal telemetry frame
 (`turn_completed`, `turn_error`) arrives.
 
 Agents that honor `turnId` set `"cancelByTurnId": true` in the payload of
-`turn_started` and `turn_liveness` frames. Clients SHOULD send `turnId` only to
-a turn that advertised it. An agent that predates `turnId` ignores the field
+`turn_started` and `turn_liveness` frames for each turn that Stop can reach. A
+turn that cannot be cancelled (such as a heartbeat turn) carries `false` or
+omits the field; clients SHOULD NOT offer Stop for it. Clients SHOULD send
+`turnId` only to a turn that advertised it. An agent that predates `turnId` ignores the field
 and may cancel a different, newer turn in the same channel.
 
 ## Ephemerality Contract

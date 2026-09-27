@@ -34,6 +34,7 @@ pub(crate) async fn enforce_http_admission(
     let limit = state.auth.config().rate_limits.human_api_calls_per_min;
     match crate::admission::check_principal(
         state.admission_rate_limiter.as_ref(),
+        state.admission_local_fallback.as_deref(),
         tenant,
         pubkey,
         LimitType::ApiCalls,
@@ -2675,6 +2676,41 @@ fn ban_json(b: &buzz_db::moderation::BanRecord) -> Value {
         "actor_pubkey": hex::encode(&b.actor_pubkey),
         "updated_at": b.updated_at,
     })
+}
+
+#[cfg(test)]
+mod admission_fallback_tests {
+    use super::*;
+
+    fn tenant() -> TenantContext {
+        TenantContext::resolved(
+            buzz_core::CommunityId::from_uuid(uuid::Uuid::new_v4()),
+            "relay.example",
+        )
+    }
+
+    /// With Redis unreachable and no fallback, HTTP admission fails closed.
+    #[tokio::test]
+    async fn http_admission_rejects_when_redis_is_unreachable_without_fallback() {
+        let state = crate::state::tests::test_state().await;
+        let pubkey = nostr::Keys::generate().public_key();
+
+        let result = enforce_http_admission(&state, &tenant(), &pubkey).await;
+
+        let (status, _) = result.expect_err("admission must fail closed");
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    /// With the opt-in fallback, the same unreachable Redis admits the call.
+    #[tokio::test]
+    async fn http_admission_uses_the_local_fallback_when_enabled() {
+        let state = crate::state::tests::test_state_with_local_admission_fallback().await;
+        let pubkey = nostr::Keys::generate().public_key();
+
+        let result = enforce_http_admission(&state, &tenant(), &pubkey).await;
+
+        assert!(result.is_ok(), "the local fallback must admit the call");
+    }
 }
 
 #[cfg(test)]

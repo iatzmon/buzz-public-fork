@@ -188,6 +188,7 @@ async fn enforce_search_admission(
     let limit = state.auth.config().rate_limits.gif_searches_per_min;
     match crate::admission::check_principal(
         state.admission_rate_limiter.as_ref(),
+        state.admission_local_fallback.as_deref(),
         tenant,
         pubkey,
         LimitType::GifSearches,
@@ -357,6 +358,34 @@ mod tests {
         Router,
     };
     use tower::ServiceExt;
+
+    fn admission_tenant() -> buzz_core::TenantContext {
+        buzz_core::TenantContext::resolved(
+            buzz_core::CommunityId::from_uuid(uuid::Uuid::new_v4()),
+            "relay.example",
+        )
+    }
+
+    #[tokio::test]
+    async fn search_admission_rejects_when_redis_is_unreachable_without_fallback() {
+        let state = crate::state::tests::test_state().await;
+        let pubkey = nostr::Keys::generate().public_key();
+
+        let result = enforce_search_admission(&state, &admission_tenant(), &pubkey).await;
+
+        let (status, _) = result.expect_err("admission must fail closed");
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn search_admission_uses_the_local_fallback_when_enabled() {
+        let state = crate::state::tests::test_state_with_local_admission_fallback().await;
+        let pubkey = nostr::Keys::generate().public_key();
+
+        let result = enforce_search_admission(&state, &admission_tenant(), &pubkey).await;
+
+        assert!(result.is_ok(), "the local fallback must admit the search");
+    }
 
     async fn unconfigured_test_state() -> Arc<AppState> {
         let mut config = crate::config::Config::from_env().expect("test config");

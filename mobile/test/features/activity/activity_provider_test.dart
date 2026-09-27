@@ -1,12 +1,17 @@
 import 'dart:async';
+import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:buzz/features/activity/activity_provider.dart';
+import 'package:buzz/features/activity/feed_item.dart';
 import 'package:buzz/features/channels/channel.dart';
 import 'package:buzz/features/channels/channel_management_provider.dart';
 import 'package:buzz/features/channels/channels_provider.dart';
 import 'package:buzz/shared/relay/relay.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
+import 'package:nostr/nostr.dart' as nostr;
+import 'package:pointycastle/digests/sha256.dart';
 
 /// Records subscriptions and DM history queries for Activity projection tests.
 class _RecordingSessionNotifier extends RelaySessionNotifier {
@@ -163,6 +168,8 @@ class _RecordingSessionNotifier extends RelaySessionNotifier {
 
   bool _matches(NostrFilter filter, NostrEvent event) {
     if (!filter.kinds.contains(event.kind)) return false;
+    final authors = filter.authors;
+    if (authors != null && !authors.contains(event.pubkey)) return false;
     for (final entry in filter.tags.entries) {
       final tagName = entry.key.startsWith('#')
           ? entry.key.substring(1)
@@ -216,6 +223,46 @@ NostrEvent _mentionEvent(String id, int createdAt) => NostrEvent(
     ['h', 'channel-1'],
   ],
   content: 'Hello from the live relay',
+  sig: '',
+);
+
+/// NIP-OA `auth` tag in which `owner` attests `agentPubkey`.
+List<String> _authTag(nostr.Keys owner, String agentPubkey) {
+  final preimage = utf8.encode('nostr:agent-auth:$agentPubkey:');
+  final digest = SHA256Digest().process(Uint8List.fromList(preimage));
+  final message = digest.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+  final sig = nostr.Schnorr.sign(secretKey: owner.secret, message: message);
+  return ['auth', owner.public, '', sig];
+}
+
+/// Kind:0 profile for `agent`. `tags` carries its owner attestation, if any.
+NostrEvent _profile(String agent, List<List<String>> tags) => NostrEvent(
+  id: 'profile-$agent',
+  pubkey: agent,
+  createdAt: 1_700_000_000,
+  kind: 0,
+  tags: tags,
+  content: '{}',
+  sig: '',
+);
+
+/// A kind:9 message from `author` that mentions `me`.
+NostrEvent _request(
+  String id,
+  String author,
+  String me, {
+  bool marked = true,
+}) => NostrEvent(
+  id: id,
+  pubkey: author,
+  createdAt: 1_700_000_100,
+  kind: 9,
+  tags: [
+    ['h', 'channel-1'],
+    ['p', me],
+    if (marked) ['needs_action', '1'],
+  ],
+  content: 'please review',
   sig: '',
 );
 
@@ -302,6 +349,74 @@ void main() {
     expect(session.queryFilterCounts, [3]);
     expect(session.mentionFetchCount, 1);
     expect(feed.mentions.map((item) => item.id), ['fallback-mention']);
+  });
+
+  group('needs-action requests from agents', () {
+    final me = nostr.Keys.generate();
+    final myAgent = nostr.Keys.generate();
+    final otherOwner = nostr.Keys.generate();
+    final otherAgent = nostr.Keys.generate();
+    final forgedAgent = nostr.Keys.generate();
+    final person = nostr.Keys.generate();
+
+    Future<HomeFeedResponse> feedFor(_RecordingSessionNotifier session) async {
+      final container = ProviderContainer(
+        overrides: [
+          relayConfigProvider.overrideWith(_FixedRelayConfigNotifier.new),
+          myPubkeyProvider.overrideWithValue(me.public),
+          relaySessionProvider.overrideWith(() => session),
+          channelsProvider.overrideWith(
+            () => _FixedChannelsNotifier(const <Channel>[]),
+          ),
+        ],
+      );
+      addTearDown(container.dispose);
+      await container.read(channelsProvider.future);
+      return container.read(activityProvider.future);
+    }
+
+    test('only a marked mention from my own agent needs action', () async {
+      // The forged profile names me as owner, but the signature is made by
+      // another key, so it must not verify.
+      final forgedTag = _authTag(otherOwner, forgedAgent.public)
+        ..[1] = me.public;
+      final session = _RecordingSessionNotifier()
+        ..seed(_profile(myAgent.public, [_authTag(me, myAgent.public)]))
+        ..seed(
+          _profile(otherAgent.public, [
+            _authTag(otherOwner, otherAgent.public),
+          ]),
+        )
+        ..seed(_profile(forgedAgent.public, [forgedTag]))
+        ..seed(_profile(person.public, const []))
+        ..seed(_request('mine', myAgent.public, me.public))
+        ..seed(_request('mine-plain', myAgent.public, me.public, marked: false))
+        ..seed(_request('other-owner', otherAgent.public, me.public))
+        ..seed(_request('forged', forgedAgent.public, me.public))
+        ..seed(_request('person', person.public, me.public));
+
+      final feed = await feedFor(session);
+
+      expect(feed.needsAction.map((item) => item.id), ['mine']);
+      expect(feed.needsAction.single.category, 'needs_action');
+      expect(feed.mentions.map((item) => item.id).toSet(), {
+        'mine-plain',
+        'other-owner',
+        'forged',
+        'person',
+      });
+    });
+
+    test('unmarked mentions skip the profile lookup', () async {
+      final session = _RecordingSessionNotifier()
+        ..seed(_request('plain', myAgent.public, me.public, marked: false));
+
+      final feed = await feedFor(session);
+
+      expect(session.queryFilterCounts, [3]);
+      expect(feed.needsAction, isEmpty);
+      expect(feed.mentions.map((item) => item.id), ['plain']);
+    });
   });
 
   test(

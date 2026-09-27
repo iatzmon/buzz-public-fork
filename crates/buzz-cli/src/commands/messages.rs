@@ -606,6 +606,7 @@ pub struct SendMessageParams {
     pub broadcast: bool,
     pub files: Vec<String>,
     pub mentions: Vec<String>,
+    pub needs_action: bool,
 }
 
 pub async fn cmd_send_message(
@@ -634,6 +635,12 @@ pub async fn cmd_send_message(
     let (member_pubkeys, auto_resolved) =
         resolve_content_mentions(client, &p.channel_id, &p.content, has_explicit_mentions).await?;
     let mention_pubkeys = merge_message_mentions(&explicit_mentions, &uri_pubkeys, &auto_resolved)?;
+
+    if p.needs_action && mention_pubkeys.is_empty() {
+        return Err(CliError::Usage(
+            "--needs-action requires at least one mentioned person (use @Name or --mention)".into(),
+        ));
+    }
 
     let missing = missing_members(&mention_pubkeys, &member_pubkeys);
     if !missing.is_empty() {
@@ -740,6 +747,13 @@ pub async fn cmd_send_message(
                 "--kind {k} is not supported (use 9, 45001, or 45003)"
             )))
         }
+    };
+
+    let builder = if p.needs_action {
+        buzz_sdk::mark_needs_action(builder)
+            .map_err(|e| CliError::Other(format!("mark_needs_action failed: {e}")))?
+    } else {
+        builder
     };
 
     let event = client.sign_event(builder)?;
@@ -945,6 +959,7 @@ pub async fn dispatch(
             broadcast,
             files,
             mentions,
+            needs_action,
         } => {
             cmd_send_message(
                 client,
@@ -956,6 +971,7 @@ pub async fn dispatch(
                     broadcast,
                     files,
                     mentions,
+                    needs_action,
                 },
             )
             .await
@@ -1717,7 +1733,99 @@ mod tests {
             broadcast: false,
             files: vec![],
             mentions: vec![],
+            needs_action: false,
         }
+    }
+
+    /// Relay reply for the membership preflight: one kind:39002 event listing
+    /// `member` as the only channel member.
+    fn send_members_response(member: &str) -> String {
+        serde_json::json!([{
+            "kind": 39002,
+            "created_at": 100,
+            "tags": [["d", SEND_TEST_CHANNEL], ["p", member, "", "member"]]
+        }])
+        .to_string()
+    }
+
+    fn submitted_tags(raw: &Option<CapturedEvent>) -> Vec<Vec<String>> {
+        let raw = raw.as_ref().expect("event must have been submitted");
+        let event: serde_json::Value = serde_json::from_str(&raw.body).unwrap();
+        event["tags"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| {
+                t.as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|v| v.as_str().unwrap_or("").to_string())
+                    .collect()
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn cmd_send_message_needs_action_adds_marker_next_to_mention() {
+        let owner = Keys::generate().public_key().to_hex();
+        let (url, _, captured_event) = fake_send_relay(send_members_response(&owner)).await;
+        let client = BuzzClient::new(url, Keys::generate(), None, None).unwrap();
+
+        let mut params = send_params("please review the draft");
+        params.mentions = vec![owner.clone()];
+        params.needs_action = true;
+        cmd_send_message(&client, params).await.unwrap();
+
+        let tags = submitted_tags(&captured_event.lock().unwrap());
+        assert!(
+            tags.iter()
+                .any(|t| t.as_slice() == [buzz_sdk::NEEDS_ACTION_TAG, "1"]),
+            "submitted event must carry the needs_action marker, got tags: {tags:?}"
+        );
+        assert!(
+            tags.iter().any(|t| t.as_slice() == ["p", owner.as_str()]),
+            "submitted event must still mention the owner, got tags: {tags:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn cmd_send_message_without_needs_action_sends_plain_mention() {
+        let owner = Keys::generate().public_key().to_hex();
+        let (url, _, captured_event) = fake_send_relay(send_members_response(&owner)).await;
+        let client = BuzzClient::new(url, Keys::generate(), None, None).unwrap();
+
+        let mut params = send_params("fyi");
+        params.mentions = vec![owner.clone()];
+        cmd_send_message(&client, params).await.unwrap();
+
+        let tags = submitted_tags(&captured_event.lock().unwrap());
+        assert!(
+            !tags
+                .iter()
+                .any(|t| t.first().map(String::as_str) == Some(buzz_sdk::NEEDS_ACTION_TAG)),
+            "a plain send must not carry the needs_action marker, got tags: {tags:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn cmd_send_message_needs_action_without_mention_is_rejected_before_send() {
+        let (url, _, captured_event) = fake_send_relay("[]".to_string()).await;
+        let client = BuzzClient::new(url, Keys::generate(), None, None).unwrap();
+
+        let mut params = send_params("nobody is asked");
+        params.needs_action = true;
+        let err = cmd_send_message(&client, params)
+            .await
+            .expect_err("needs_action without a mention must fail");
+
+        assert!(
+            matches!(err, CliError::Usage(ref msg) if msg.contains("--needs-action")),
+            "expected a usage error naming --needs-action, got {err:?}"
+        );
+        assert!(
+            captured_event.lock().unwrap().is_none(),
+            "no event may be submitted"
+        );
     }
 
     #[tokio::test]

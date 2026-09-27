@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 
+import '../../shared/crypto/nip_oa.dart';
 import '../../shared/relay/relay.dart';
 import '../channels/channel.dart';
 import '../channels/channel_management_provider.dart';
@@ -28,6 +29,8 @@ final dmResurfaceActionProvider = Provider<DmResurfaceAction>(
 /// - mentions of me on user-visible channel kinds (also yields thread
 ///   replies, which the thread filter classifies from NIP-10 tags)
 /// - workflow approvals / needs-action events addressed to me
+/// - mentions marked `["needs_action", "1"]` by an agent I own (see
+///   [isOwnedAgentRequest])
 /// - agent job lifecycle events addressed to me (kinds 43001-43006)
 /// - recent DM messages from others (desktop surfaces DMs through p-tags;
 ///   mobile queries DM channels directly so untagged DM sends still appear)
@@ -508,6 +511,15 @@ class ActivityNotifier extends AsyncNotifier<HomeFeedResponse> {
     );
 
     const mentionKinds = {9, 40002, 1, 45001, 45003};
+    bool isMention(NostrEvent event) =>
+        mentionKinds.contains(event.kind) &&
+        isAddressedToMe(event) &&
+        isFromOther(event);
+    final ownerByAgent = await _fetchRequestAuthorOwners(
+      session,
+      events.where((event) => isMention(event) && hasNeedsActionMarker(event)),
+    );
+
     const needsActionKinds = {46010, 46011, 46012};
     const agentActivityKinds = {43001, 43002, 43003, 43004, 43005, 43006};
     final dmChannelIdSet = dmChannelIds.toSet();
@@ -536,12 +548,12 @@ class ActivityNotifier extends AsyncNotifier<HomeFeedResponse> {
     add(
       events.where(
         (event) =>
-            mentionKinds.contains(event.kind) &&
-            isAddressedToMe(event) &&
-            isFromOther(event),
+            isMention(event) &&
+            isOwnedAgentRequest(event, ownerByAgent: ownerByAgent, myPk: myPk),
       ),
-      'mention',
+      'needs_action',
     );
+    add(events.where(isMention), 'mention');
     add(
       events.where(
         (event) =>
@@ -617,6 +629,32 @@ class ActivityNotifier extends AsyncNotifier<HomeFeedResponse> {
     return events;
   }
 
+  /// Verified NIP-OA owners of the authors of `requests`, keyed by lowercase
+  /// agent pubkey. Only authors of marked mentions are looked up, so the
+  /// extra profile query runs only when a request is present. A failed lookup
+  /// yields no owners, which leaves every request an ordinary mention.
+  Future<Map<String, String>> _fetchRequestAuthorOwners(
+    RelaySessionNotifier session,
+    Iterable<NostrEvent> requests,
+  ) async {
+    final authors = {
+      for (final event in requests) event.pubkey.toLowerCase(),
+    }.toList();
+    if (authors.isEmpty) return const {};
+    try {
+      final profiles = await _queryWithWebSocketFallback(session, [
+        NostrFilters.profilesBatch(authors),
+      ]);
+      return agentOwnersFromProfiles(profiles);
+    } catch (error) {
+      debugPrint(
+        '[ActivityNotifier] request author lookup failed; '
+        'showing requests as mentions: $error',
+      );
+      return const {};
+    }
+  }
+
   FeedItem _feedItem(NostrEvent event, {required String category}) {
     return FeedItem(
       id: event.id,
@@ -645,6 +683,42 @@ class _PendingResurface {
 
   final int generation;
   bool retry = false;
+}
+
+/// Tag that marks a message as a request for its mentioned people to act.
+/// Mirrors `buzz_sdk::NEEDS_ACTION_TAG`.
+const needsActionTag = 'needs_action';
+
+/// Whether `event` carries the `["needs_action", "1"]` marker.
+bool hasNeedsActionMarker(NostrEvent event) => event.tags.any(
+  (tag) => tag.length > 1 && tag[0] == needsActionTag && tag[1] == '1',
+);
+
+/// Maps each agent pubkey (lowercase) to its verified NIP-OA owner, read from
+/// the agent's own kind:0 profile. Profiles without a valid attestation are
+/// skipped, so a forged owner claim maps to nothing.
+Map<String, String> agentOwnersFromProfiles(Iterable<NostrEvent> profiles) {
+  final owners = <String, String>{};
+  for (final profile in profiles) {
+    if (profile.kind != 0) continue;
+    final owner = verifiedOaOwnerPubkey(profile.tags, profile.pubkey);
+    if (owner != null) owners[profile.pubkey.toLowerCase()] = owner;
+  }
+  return owners;
+}
+
+/// A mention is a needs-action request only when it carries the marker and
+/// its author is an agent whose verified owner is `myPk`. Marked mentions
+/// from people or from another owner's agent stay ordinary mentions.
+/// Mirrors desktop's `mention_feed_category`.
+bool isOwnedAgentRequest(
+  NostrEvent event, {
+  required Map<String, String> ownerByAgent,
+  required String myPk,
+}) {
+  if (!hasNeedsActionMarker(event)) return false;
+  final owner = ownerByAgent[event.pubkey.toLowerCase()];
+  return owner != null && owner.toLowerCase() == myPk.toLowerCase();
 }
 
 final activityProvider =

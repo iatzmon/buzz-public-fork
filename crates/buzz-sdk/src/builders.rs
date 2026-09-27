@@ -262,6 +262,19 @@ pub fn build_message(
         .allow_self_tagging())
 }
 
+/// Tag name that marks a message as a request for its mentioned people to act.
+///
+/// Clients show a message with `["needs_action", "1"]` under "Needs action"
+/// only for a mentioned person who owns the author agent (NIP-OA). For anyone
+/// else the message stays an ordinary mention.
+pub const NEEDS_ACTION_TAG: &str = "needs_action";
+
+/// Add the `["needs_action", "1"]` marker to a message, forum post, or forum
+/// comment builder. See [`NEEDS_ACTION_TAG`].
+pub fn mark_needs_action(builder: EventBuilder) -> Result<EventBuilder, SdkError> {
+    Ok(builder.tag(tag(&[NEEDS_ACTION_TAG, "1"])?))
+}
+
 /// Build an encrypted agent observer frame (kind 24200).
 ///
 /// `recipient_pubkey` is the cleartext `p` tag used by the relay for owner-only
@@ -2724,6 +2737,20 @@ mod tests {
         let cid = uuid();
         let ev = sign(build_message(cid, "hi", None, &[], true, &[], &[]).unwrap());
         assert!(has_tag(&ev, "broadcast", "1"));
+    }
+
+    #[test]
+    fn mark_needs_action_adds_marker_and_keeps_other_tags() {
+        let cid = uuid();
+        let hex = "abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234";
+        let plain = sign(build_message(cid, "hi", None, &[hex], false, &[], &[]).unwrap());
+        assert!(!has_tag(&plain, NEEDS_ACTION_TAG, "1"));
+
+        let builder = build_message(cid, "hi", None, &[hex], false, &[], &[]).unwrap();
+        let ev = sign(mark_needs_action(builder).unwrap());
+        assert!(has_tag(&ev, NEEDS_ACTION_TAG, "1"));
+        assert!(has_tag(&ev, "p", hex));
+        assert!(has_tag(&ev, "h", &cid.to_string()));
     }
 
     #[test]

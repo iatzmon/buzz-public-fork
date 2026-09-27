@@ -3,6 +3,8 @@ use tauri::{AppHandle, State};
 
 mod forum;
 
+#[cfg(test)]
+use forum::agent_owner_pubkeys_from_profiles;
 use forum::{
     apply_link_preview_suppression, fetch_agent_owner_pubkeys, link_preview_suppression_targets,
 };
@@ -103,7 +105,9 @@ pub async fn get_feed(
         approval_filter["since"] = serde_json::json!(s);
     }
 
-    let mention_events = if want_mentions {
+    // My agents' requests arrive as marked mentions, so the mention query also
+    // feeds the needs-action section.
+    let mention_events = if want_mentions || want_needs_action {
         query_relay(&state, &[mention_filter])
             .await
             .unwrap_or_default()
@@ -143,10 +147,17 @@ pub async fn get_feed(
             item
         })
         .collect();
-    let needs_action: Vec<FeedItemInfo> = approval_events
+    let mut needs_action: Vec<FeedItemInfo> = approval_events
         .iter()
         .map(|ev| feed_item_from_event(ev, FeedItemCategory::NeedsAction))
         .collect();
+    let (mentions, owned_agent_requests) =
+        split_owned_agent_requests(mentions, &mention_owner_pubkeys, &my_pubkey);
+    let mentions = if want_mentions { mentions } else { Vec::new() };
+    if want_needs_action {
+        needs_action.extend(owned_agent_requests);
+        needs_action.sort_by_key(|item| std::cmp::Reverse(item.created_at));
+    }
 
     let total = (mentions.len() + needs_action.len()) as u64;
     Ok(FeedResponse {
@@ -970,6 +981,50 @@ fn channel_id_from_tags(ev: &nostr::Event) -> Option<String> {
 
 fn tags_to_vec(ev: &nostr::Event) -> Vec<Vec<String>> {
     ev.tags.iter().map(|t| t.as_slice().to_vec()).collect()
+}
+
+/// The feed category for an event that mentions `my_pubkey`.
+///
+/// A mention is a needs-action request only when it carries the
+/// `["needs_action", "1"]` marker and its author is an agent whose verified
+/// NIP-OA owner is `my_pubkey`. `owner_by_agent` maps agent pubkeys to owners
+/// (see `fetch_agent_owner_pubkeys`). Every other mention, including a marked
+/// one from a person or from another owner's agent, stays a mention.
+fn mention_feed_category(
+    item: &FeedItemInfo,
+    owner_by_agent: &std::collections::HashMap<String, String>,
+    my_pubkey: &str,
+) -> FeedItemCategory {
+    let marked = item.tags.iter().any(|tag| {
+        tag.first().map(String::as_str) == Some(buzz_sdk_pkg::NEEDS_ACTION_TAG)
+            && tag.get(1).map(String::as_str) == Some("1")
+    });
+    let from_my_agent = owner_by_agent
+        .get(&item.pubkey)
+        .is_some_and(|owner| owner.eq_ignore_ascii_case(my_pubkey));
+    if marked && from_my_agent {
+        FeedItemCategory::NeedsAction
+    } else {
+        FeedItemCategory::Mention
+    }
+}
+
+/// Moves mentions that are requests from my own agents out of `mentions`.
+/// Returns `(mentions, requests)`; each request carries the needs-action
+/// category. See [`mention_feed_category`].
+fn split_owned_agent_requests(
+    mentions: Vec<FeedItemInfo>,
+    owner_by_agent: &std::collections::HashMap<String, String>,
+    my_pubkey: &str,
+) -> (Vec<FeedItemInfo>, Vec<FeedItemInfo>) {
+    let (requests, mentions) = mentions
+        .into_iter()
+        .map(|mut item| {
+            item.category = mention_feed_category(&item, owner_by_agent, my_pubkey);
+            item
+        })
+        .partition(|item| item.category == FeedItemCategory::NeedsAction);
+    (mentions, requests)
 }
 
 fn feed_item_from_event(ev: &nostr::Event, category: FeedItemCategory) -> FeedItemInfo {

@@ -60,7 +60,8 @@ export const SLOT_DESCRIPTIONS: Record<SoundSlot, string> = {
   dm: "When someone messages you directly.",
   mention: "When someone tags you in a channel.",
   thread_reply: "When someone replies in a thread you follow or posted in.",
-  needs_action: "When an approval or reminder is waiting on you.",
+  needs_action:
+    "When an approval, reminder, or request from your agent is waiting on you.",
   job_accepted: "When an agent picks up a job.",
   job_progress: "While an agent works through a job.",
   job_result: "When an agent finishes a job.",

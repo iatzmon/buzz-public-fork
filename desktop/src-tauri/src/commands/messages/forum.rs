@@ -23,18 +23,27 @@ pub(super) async fn fetch_agent_owner_pubkeys(
         return std::collections::HashMap::new();
     }
 
-    super::query_relay(
+    let profiles = super::query_relay(
         state,
         &[serde_json::json!({ "kinds": [0], "authors": authors })],
     )
     .await
-    .unwrap_or_default()
-    .into_iter()
-    .filter_map(|profile| {
-        crate::nostr_convert::profile_valid_oa_owner_pubkey(&profile)
-            .map(|owner| (profile.pubkey.to_hex(), owner))
-    })
-    .collect()
+    .unwrap_or_default();
+    agent_owner_pubkeys_from_profiles(&profiles)
+}
+
+/// Maps each agent pubkey to its verified NIP-OA owner, read from the agent's
+/// own kind:0 profile. Profiles without a valid owner attestation are skipped.
+pub(super) fn agent_owner_pubkeys_from_profiles(
+    profiles: &[nostr::Event],
+) -> std::collections::HashMap<String, String> {
+    profiles
+        .iter()
+        .filter_map(|profile| {
+            crate::nostr_convert::profile_valid_oa_owner_pubkey(profile)
+                .map(|owner| (profile.pubkey.to_hex(), owner))
+        })
+        .collect()
 }
 
 fn tags_to_vec(event: &nostr::Event) -> Vec<Vec<String>> {

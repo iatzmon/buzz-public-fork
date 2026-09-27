@@ -434,6 +434,9 @@ pub enum MessagesCmd {
         /// Pubkey to mention (hex or npub; repeatable). Supplying any explicit identity permits unresolved or ambiguous @Name text as presentation-only; uniquely resolved member names still notify.
         #[arg(long = "mention")]
         mentions: Vec<String>,
+        /// Mark the message as needing action from the people it mentions. Buzz shows it under "Needs action" only for a mentioned person who owns the sending agent; for everyone else it stays an ordinary mention. Requires at least one mention.
+        #[arg(long, default_value_t = false)]
+        needs_action: bool,
     },
     /// Send a code diff / patch to a channel
     SendDiff {

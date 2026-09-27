@@ -30,10 +30,22 @@ Every other case stays an ordinary mention: a marked message from a person,
 from another owner's agent, or from an agent with a forged or invalid owner
 claim. So only your own agents can add to your Needs action list.
 
+"Valid" means the same on both clients: the profile is kind 0 with a valid
+event signature, it carries exactly one `auth` tag, the owner key and
+signature are lowercase hex, and every signed condition (`kind=`,
+`created_at<`, `created_at>`) holds for the profile event itself.
+
 Desktop classifies in `get_feed` (`mention_feed_category` in
-`desktop/src-tauri/src/commands/messages.rs`). Mobile classifies in
+`desktop/src-tauri/src/commands/messages.rs`, owner check
+`profile_valid_oa_owner_pubkey`). Mobile classifies in
 `ActivityNotifier._fetch` (`isOwnedAgentRequest` in
-`mobile/lib/features/activity/activity_provider.dart`).
+`mobile/lib/features/activity/activity_provider.dart`, owner check
+`verifiedProfileOaOwnerPubkey`).
+
+If mobile cannot load the author profiles (HTTP and websocket both fail), it
+keeps owners it verified earlier and retries with backoff, up to six times.
+Until a first lookup succeeds, an unverified request shows as a mention.
+Desktop refetches the whole feed every 30 seconds while focused.
 
 ## Read and clear behavior
 

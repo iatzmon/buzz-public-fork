@@ -52,7 +52,20 @@ class ActivityNotifier extends AsyncNotifier<HomeFeedResponse> {
     46012,
   ];
 
+  /// Base delay before retrying a failed request-author owner lookup; doubles
+  /// per attempt. Tests shorten it.
+  @visibleForTesting
+  static Duration ownerLookupRetryBaseDelay = const Duration(seconds: 2);
+  static const _ownerLookupMaxRetries = 6;
+
   void Function()? _unsubscribeAddressed;
+  // Verified owners of request authors, kept across fetches so a failed
+  // lookup never demotes a request that was already verified. Scoped to the
+  // relay + account (cleared with `_dmResurfaceScope`).
+  final Map<String, String> _requestAuthorOwners = {};
+  bool _ownerLookupFailed = false;
+  int _ownerLookupRetryAttempt = 0;
+  Timer? _ownerLookupRetryTimer;
   final List<void Function()> _unsubscribeDms = [];
   final List<void Function()> _unsubscribeHiddenDms = [];
   Timer? _liveRefreshTimer;
@@ -85,6 +98,8 @@ class ActivityNotifier extends AsyncNotifier<HomeFeedResponse> {
     if (_dmResurfaceScope != currentScope) {
       _dmResurfaceScope = currentScope;
       _pendingDmResurfaceRetry.clear();
+      _requestAuthorOwners.clear();
+      _ownerLookupRetryAttempt = 0;
     }
     _clearLiveSubscriptions();
     ref.onDispose(() {
@@ -97,6 +112,7 @@ class ActivityNotifier extends AsyncNotifier<HomeFeedResponse> {
         generation == _subscriptionGeneration) {
       unawaited(_subscribeLive(generation));
     }
+    _scheduleOwnerLookupRetryIfNeeded(generation);
     return response;
   }
 
@@ -396,6 +412,7 @@ class ActivityNotifier extends AsyncNotifier<HomeFeedResponse> {
           final next = await _fetch();
           if (generation != _subscriptionGeneration) return;
           state = AsyncData(next);
+          _scheduleOwnerLookupRetryIfNeeded(generation);
         } catch (error) {
           if (generation != _subscriptionGeneration) return;
           debugPrint(
@@ -415,6 +432,8 @@ class ActivityNotifier extends AsyncNotifier<HomeFeedResponse> {
   void _clearLiveSubscriptions() {
     _liveRefreshTimer?.cancel();
     _liveRefreshTimer = null;
+    _ownerLookupRetryTimer?.cancel();
+    _ownerLookupRetryTimer = null;
     _refreshInFlight = null;
     _refreshGeneration = null;
     _refreshQueued = false;
@@ -629,30 +648,73 @@ class ActivityNotifier extends AsyncNotifier<HomeFeedResponse> {
     return events;
   }
 
-  /// Verified NIP-OA owners of the authors of `requests`, keyed by lowercase
-  /// agent pubkey. Only authors of marked mentions are looked up, so the
-  /// extra profile query runs only when a request is present. A failed lookup
-  /// yields no owners, which leaves every request an ordinary mention.
+  /// Verified NIP-OA owners of request authors, keyed by lowercase agent
+  /// pubkey. Only authors of marked mentions are looked up, so the extra
+  /// profile query runs only when a request is present.
+  ///
+  /// A successful lookup refreshes the kept owners for those authors (a
+  /// revoked attestation drops out). A failed lookup (HTTP and websocket
+  /// both fail) keeps the owners verified earlier and sets
+  /// `_ownerLookupFailed`, so the caller schedules a bounded retry instead
+  /// of treating the failure as "no owners".
   Future<Map<String, String>> _fetchRequestAuthorOwners(
     RelaySessionNotifier session,
     Iterable<NostrEvent> requests,
   ) async {
+    _ownerLookupFailed = false;
     final authors = {
       for (final event in requests) event.pubkey.toLowerCase(),
     }.toList();
     if (authors.isEmpty) return const {};
+
+    final filter = NostrFilters.profilesBatch(authors);
+    List<NostrEvent> profiles;
     try {
-      final profiles = await _queryWithWebSocketFallback(session, [
-        NostrFilters.profilesBatch(authors),
-      ]);
-      return agentOwnersFromProfiles(profiles);
-    } catch (error) {
-      debugPrint(
-        '[ActivityNotifier] request author lookup failed; '
-        'showing requests as mentions: $error',
-      );
-      return const {};
+      profiles = await session.queryRelay([filter]);
+    } catch (httpError) {
+      try {
+        profiles = await session.fetchHistory(filter);
+      } catch (error) {
+        debugPrint(
+          '[ActivityNotifier] request author lookup failed '
+          '(http: $httpError; websocket: $error); keeping verified owners '
+          'and retrying',
+        );
+        _ownerLookupFailed = true;
+        return Map.of(_requestAuthorOwners);
+      }
     }
+
+    final verified = agentOwnersFromProfiles(profiles);
+    for (final author in authors) {
+      final owner = verified[author];
+      if (owner == null) {
+        _requestAuthorOwners.remove(author);
+      } else {
+        _requestAuthorOwners[author] = owner;
+      }
+    }
+    return Map.of(_requestAuthorOwners);
+  }
+
+  /// After a fetch whose owner lookup failed, refetch with exponential
+  /// backoff up to [_ownerLookupMaxRetries] times. A successful lookup
+  /// resets the budget; live events and manual refresh still refetch after
+  /// the budget is spent.
+  void _scheduleOwnerLookupRetryIfNeeded(int generation) {
+    if (generation != _subscriptionGeneration) return;
+    if (!_ownerLookupFailed) {
+      _ownerLookupRetryAttempt = 0;
+      return;
+    }
+    if (_ownerLookupRetryAttempt >= _ownerLookupMaxRetries) return;
+    final delay = ownerLookupRetryBaseDelay * (1 << _ownerLookupRetryAttempt);
+    _ownerLookupRetryAttempt += 1;
+    _ownerLookupRetryTimer?.cancel();
+    _ownerLookupRetryTimer = Timer(
+      delay,
+      () => unawaited(_queueRefresh(generation)),
+    );
   }
 
   FeedItem _feedItem(NostrEvent event, {required String category}) {
@@ -695,13 +757,13 @@ bool hasNeedsActionMarker(NostrEvent event) => event.tags.any(
 );
 
 /// Maps each agent pubkey (lowercase) to its verified NIP-OA owner, read from
-/// the agent's own kind:0 profile. Profiles without a valid attestation are
-/// skipped, so a forged owner claim maps to nothing.
+/// the agent's own kind:0 profile with [verifiedProfileOaOwnerPubkey].
+/// Profiles without a fully valid attestation are skipped, so a forged,
+/// duplicated, or condition-restricted owner claim maps to nothing.
 Map<String, String> agentOwnersFromProfiles(Iterable<NostrEvent> profiles) {
   final owners = <String, String>{};
   for (final profile in profiles) {
-    if (profile.kind != 0) continue;
-    final owner = verifiedOaOwnerPubkey(profile.tags, profile.pubkey);
+    final owner = verifiedProfileOaOwnerPubkey(profile);
     if (owner != null) owners[profile.pubkey.toLowerCase()] = owner;
   }
   return owners;

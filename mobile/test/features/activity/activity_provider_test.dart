@@ -23,6 +23,11 @@ class _RecordingSessionNotifier extends RelaySessionNotifier {
   Completer<void>? mentionFetchGate;
   bool failNextMentionFetch = false;
   bool failNextQueryRelay = false;
+  // Fail kind:0 profile queries over HTTP (`queryRelay`) and/or websocket
+  // history (`fetchHistory`).
+  bool failProfileHttp = false;
+  bool failProfileWs = false;
+  int profileQueryCount = 0;
   int mentionFetchCount = 0;
   int activeMentionFetches = 0;
   int maxActiveMentionFetches = 0;
@@ -42,6 +47,10 @@ class _RecordingSessionNotifier extends RelaySessionNotifier {
     NostrFilter filter, {
     Duration timeout = const Duration(seconds: 8),
   }) async {
+    if (filter.kinds.contains(0)) {
+      profileQueryCount += 1;
+      if (failProfileWs) throw StateError('websocket profile query failed');
+    }
     final h = filter.tags['#h'];
     if (h != null) dmQueries.add(h);
     final isMentionFetch =
@@ -72,6 +81,10 @@ class _RecordingSessionNotifier extends RelaySessionNotifier {
     Duration timeout = const Duration(seconds: 8),
   }) async {
     queryFilterCounts.add(filters.length);
+    if (filters.any((filter) => filter.kinds.contains(0))) {
+      profileQueryCount += 1;
+      if (failProfileHttp) throw StateError('HTTP profile query failed');
+    }
     if (failNextQueryRelay) {
       failNextQueryRelay = false;
       throw StateError('transient HTTP query failure');
@@ -227,24 +240,41 @@ NostrEvent _mentionEvent(String id, int createdAt) => NostrEvent(
 );
 
 /// NIP-OA `auth` tag in which `owner` attests `agentPubkey`.
-List<String> _authTag(nostr.Keys owner, String agentPubkey) {
-  final preimage = utf8.encode('nostr:agent-auth:$agentPubkey:');
+List<String> _authTag(
+  nostr.Keys owner,
+  String agentPubkey, {
+  String conditions = '',
+}) {
+  final preimage = utf8.encode('nostr:agent-auth:$agentPubkey:$conditions');
   final digest = SHA256Digest().process(Uint8List.fromList(preimage));
   final message = digest.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
   final sig = nostr.Schnorr.sign(secretKey: owner.secret, message: message);
-  return ['auth', owner.public, '', sig];
+  return ['auth', owner.public, conditions, sig];
 }
 
-/// Kind:0 profile for `agent`. `tags` carries its owner attestation, if any.
-NostrEvent _profile(String agent, List<List<String>> tags) => NostrEvent(
-  id: 'profile-$agent',
-  pubkey: agent,
-  createdAt: 1_700_000_000,
-  kind: 0,
-  tags: tags,
-  content: '{}',
-  sig: '',
-);
+/// Kind:0 profile signed by `agent`. `tags` carries its owner attestation.
+NostrEvent _profile(
+  nostr.Keys agent,
+  List<List<String>> tags, {
+  int createdAt = 1_700_000_000,
+}) {
+  final event = nostr.Event.from(
+    kind: 0,
+    content: '{}',
+    secretKey: agent.secret,
+    tags: tags,
+    createdAt: createdAt,
+  );
+  return NostrEvent(
+    id: event.id,
+    pubkey: event.pubkey,
+    createdAt: event.createdAt,
+    kind: event.kind,
+    tags: event.tags,
+    content: event.content,
+    sig: event.sig,
+  );
+}
 
 /// A kind:9 message from `author` that mentions `me`.
 NostrEvent _request(
@@ -355,11 +385,17 @@ void main() {
     final me = nostr.Keys.generate();
     final myAgent = nostr.Keys.generate();
     final otherOwner = nostr.Keys.generate();
-    final otherAgent = nostr.Keys.generate();
-    final forgedAgent = nostr.Keys.generate();
-    final person = nostr.Keys.generate();
 
-    Future<HomeFeedResponse> feedFor(_RecordingSessionNotifier session) async {
+    setUp(() {
+      ActivityNotifier.ownerLookupRetryBaseDelay = const Duration(
+        milliseconds: 10,
+      );
+    });
+    tearDown(() {
+      ActivityNotifier.ownerLookupRetryBaseDelay = const Duration(seconds: 2);
+    });
+
+    ProviderContainer containerFor(_RecordingSessionNotifier session) {
       final container = ProviderContainer(
         overrides: [
           relayConfigProvider.overrideWith(_FixedRelayConfigNotifier.new),
@@ -371,24 +407,41 @@ void main() {
         ],
       );
       addTearDown(container.dispose);
+      return container;
+    }
+
+    Future<HomeFeedResponse> feedFor(_RecordingSessionNotifier session) async {
+      final container = containerFor(session);
       await container.read(channelsProvider.future);
       return container.read(activityProvider.future);
     }
 
+    /// Classifies one marked request from a fresh agent whose profile is
+    /// built by `profile`.
+    Future<String> categoryFor(
+      NostrEvent Function(nostr.Keys agent) profile,
+    ) async {
+      final agent = nostr.Keys.generate();
+      final session = _RecordingSessionNotifier()
+        ..seed(profile(agent))
+        ..seed(_request('request', agent.public, me.public));
+      final feed = await feedFor(session);
+      return feed.all.singleWhere((item) => item.id == 'request').category;
+    }
+
     test('only a marked mention from my own agent needs action', () async {
+      final otherAgent = nostr.Keys.generate();
+      final forgedAgent = nostr.Keys.generate();
+      final person = nostr.Keys.generate();
       // The forged profile names me as owner, but the signature is made by
       // another key, so it must not verify.
       final forgedTag = _authTag(otherOwner, forgedAgent.public)
         ..[1] = me.public;
       final session = _RecordingSessionNotifier()
-        ..seed(_profile(myAgent.public, [_authTag(me, myAgent.public)]))
-        ..seed(
-          _profile(otherAgent.public, [
-            _authTag(otherOwner, otherAgent.public),
-          ]),
-        )
-        ..seed(_profile(forgedAgent.public, [forgedTag]))
-        ..seed(_profile(person.public, const []))
+        ..seed(_profile(myAgent, [_authTag(me, myAgent.public)]))
+        ..seed(_profile(otherAgent, [_authTag(otherOwner, otherAgent.public)]))
+        ..seed(_profile(forgedAgent, [forgedTag]))
+        ..seed(_profile(person, const []))
         ..seed(_request('mine', myAgent.public, me.public))
         ..seed(_request('mine-plain', myAgent.public, me.public, marked: false))
         ..seed(_request('other-owner', otherAgent.public, me.public))
@@ -407,15 +460,192 @@ void main() {
       });
     });
 
+    test('owner conditions that hold for the profile are accepted', () async {
+      expect(
+        await categoryFor(
+          (agent) => _profile(agent, [
+            _authTag(
+              me,
+              agent.public,
+              conditions: 'kind=0&created_at>1600000000&created_at<1800000000',
+            ),
+          ]),
+        ),
+        'needs_action',
+      );
+    });
+
+    test(
+      'an owner attestation restricted to another kind is rejected',
+      () async {
+        expect(
+          await categoryFor(
+            (agent) => _profile(agent, [
+              _authTag(me, agent.public, conditions: 'kind=9'),
+            ]),
+          ),
+          'mention',
+        );
+      },
+    );
+
+    test('an owner attestation outside its time window is rejected', () async {
+      expect(
+        await categoryFor(
+          (agent) => _profile(agent, [
+            _authTag(me, agent.public, conditions: 'created_at<1600000000'),
+          ]),
+        ),
+        'mention',
+      );
+      expect(
+        await categoryFor(
+          (agent) => _profile(agent, [
+            _authTag(me, agent.public, conditions: 'created_at>1800000000'),
+          ]),
+        ),
+        'mention',
+      );
+    });
+
+    test('a profile with two auth tags is rejected', () async {
+      expect(
+        await categoryFor(
+          (agent) => _profile(agent, [
+            _authTag(me, agent.public),
+            _authTag(me, agent.public),
+          ]),
+        ),
+        'mention',
+      );
+      expect(
+        await categoryFor(
+          (agent) => _profile(agent, [
+            _authTag(me, agent.public),
+            ['auth', 'malformed'],
+          ]),
+        ),
+        'mention',
+      );
+    });
+
+    test(
+      'a profile whose event signature does not verify is rejected',
+      () async {
+        expect(
+          await categoryFor((agent) {
+            final signed = _profile(agent, [_authTag(me, agent.public)]);
+            return NostrEvent(
+              id: signed.id,
+              pubkey: signed.pubkey,
+              createdAt: signed.createdAt,
+              kind: signed.kind,
+              tags: signed.tags,
+              content: '{"name":"tampered"}',
+              sig: signed.sig,
+            );
+          }),
+          'mention',
+        );
+      },
+    );
+
+    test('an uppercase owner key is rejected', () async {
+      expect(
+        await categoryFor((agent) {
+          final tag = _authTag(me, agent.public);
+          tag[1] = tag[1].toUpperCase();
+          return _profile(agent, [tag]);
+        }),
+        'mention',
+      );
+    });
+
     test('unmarked mentions skip the profile lookup', () async {
       final session = _RecordingSessionNotifier()
         ..seed(_request('plain', myAgent.public, me.public, marked: false));
 
       final feed = await feedFor(session);
 
+      expect(session.profileQueryCount, 0);
       expect(session.queryFilterCounts, [3]);
       expect(feed.needsAction, isEmpty);
       expect(feed.mentions.map((item) => item.id), ['plain']);
+    });
+
+    test('an HTTP profile failure falls back to websocket history', () async {
+      final session = _RecordingSessionNotifier()
+        ..failProfileHttp = true
+        ..seed(_profile(myAgent, [_authTag(me, myAgent.public)]))
+        ..seed(_request('mine', myAgent.public, me.public));
+
+      final feed = await feedFor(session);
+
+      expect(session.profileQueryCount, 2);
+      expect(feed.needsAction.map((item) => item.id), ['mine']);
+    });
+
+    test('a failed lookup retries until the request is verified', () async {
+      final session = _RecordingSessionNotifier()
+        ..failProfileHttp = true
+        ..failProfileWs = true
+        ..seed(_profile(myAgent, [_authTag(me, myAgent.public)]))
+        ..seed(_request('mine', myAgent.public, me.public));
+      final container = containerFor(session);
+      await container.read(channelsProvider.future);
+
+      final first = await container.read(activityProvider.future);
+      expect(first.needsAction, isEmpty);
+      expect(first.mentions.map((item) => item.id), ['mine']);
+
+      session
+        ..failProfileHttp = false
+        ..failProfileWs = false;
+      await _waitFor(
+        () =>
+            container.read(activityProvider).value?.needsAction.isNotEmpty ??
+            false,
+      );
+      expect(
+        container.read(activityProvider).value!.needsAction.map((i) => i.id),
+        ['mine'],
+      );
+    });
+
+    test('a failed lookup keeps requests that were already verified', () async {
+      final session = _RecordingSessionNotifier()
+        ..seed(_profile(myAgent, [_authTag(me, myAgent.public)]))
+        ..seed(_request('mine', myAgent.public, me.public));
+      final container = containerFor(session);
+      await container.read(channelsProvider.future);
+      final first = await container.read(activityProvider.future);
+      expect(first.needsAction.map((item) => item.id), ['mine']);
+
+      session
+        ..failProfileHttp = true
+        ..failProfileWs = true;
+      final lookupsBefore = session.profileQueryCount;
+      await container.read(activityProvider.notifier).refresh();
+
+      expect(session.profileQueryCount, greaterThan(lookupsBefore));
+      final refreshed = container.read(activityProvider).value!;
+      expect(refreshed.needsAction.map((item) => item.id), ['mine']);
+      expect(refreshed.mentions, isEmpty);
+    });
+
+    test('retries stop after a bounded number of failed lookups', () async {
+      final session = _RecordingSessionNotifier()
+        ..failProfileHttp = true
+        ..failProfileWs = true
+        ..seed(_request('mine', myAgent.public, me.public));
+      final container = containerFor(session);
+      await container.read(channelsProvider.future);
+      await container.read(activityProvider.future);
+
+      // 1 initial lookup + 6 retries, each an HTTP and a websocket attempt.
+      await _waitFor(() => session.profileQueryCount >= 14);
+      await Future<void>.delayed(const Duration(seconds: 2));
+      expect(session.profileQueryCount, 14);
     });
   });
 

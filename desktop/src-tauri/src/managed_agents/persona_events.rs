@@ -182,6 +182,11 @@ pub fn monotonic_created_at(prior_head_created_at: Option<i64>) -> nostr::Timest
     nostr::Timestamp::from(now.max(floor) as u64)
 }
 
+/// Relay ingest rejects any event whose `created_at` is more than ±900s from
+/// server time (`crates/buzz-relay/src/handlers/ingest.rs`
+/// `MAX_TIMESTAMP_DRIFT_SECS`).
+pub(crate) const RELAY_ACCEPT_WINDOW_SECS: i64 = 900;
+
 /// Build a kind:30175 event from a `AgentDefinition`.
 ///
 /// Returns an unsigned `EventBuilder` — the caller signs and submits.
@@ -379,12 +384,12 @@ pub(crate) async fn flush_pending_events_at(
         let event = nostr::Event::from_json(&current.raw_event)
             .map_err(|e| format!("failed to parse retained event '{}': {e}", current.d_tag))?;
 
-        // Relay ingest rejects any event whose `created_at` is more than
-        // ±900s from server time (`crates/buzz-relay/src/handlers/ingest.rs`
-        // MAX_TIMESTAMP_DRIFT_SECS). A kind:5 tombstone is signed strictly past
-        // the head it retracts, so its retained `created_at` is the domination
-        // floor `f`: any publish at `t >= f` still soft-deletes the head (NIP-09
-        // only clears coordinate versions with `created_at <= t`). Reconcile the
+        // Relay ingest rejects any event whose `created_at` is outside
+        // `RELAY_ACCEPT_WINDOW_SECS` of server time. A kind:5 tombstone is
+        // signed strictly past the head it retracts, so its retained
+        // `created_at` is the domination floor `f`: any publish at `t >= f`
+        // still soft-deletes the head (NIP-09 only clears coordinate versions
+        // with `created_at <= t`). Reconcile the
         // two constraints at publish time so a byte-frozen future-dated
         // tombstone can never age out of the acceptance window and strand the
         // head live forever:
@@ -395,9 +400,8 @@ pub(crate) async fn flush_pending_events_at(
         //                       clock advances toward `f`.
         // A boundary publish the relay still rejects self-heals: the submit
         // error below re-queues it for the next sweep.
-        const RELAY_ACCEPT_WINDOW_SECS: i64 = 900;
+        let now = nostr::Timestamp::now().as_secs() as i64;
         let event = if current.kind == 5 {
-            let now = nostr::Timestamp::now().as_secs() as i64;
             if current.created_at - now > RELAY_ACCEPT_WINDOW_SECS {
                 // Its replacement must keep deferring behind the unpublished
                 // tombstone so a re-created head is never wiped out of order.
@@ -413,6 +417,14 @@ pub(crate) async fn flush_pending_events_at(
             // and `mark_synced` below still compares against the retained row's
             // original `created_at`/`content`, which are untouched.
             resign_with_fresh_timestamp(&event, state)?
+        } else if (event.created_at.as_secs() as i64 - now).abs() > RELAY_ACCEPT_WINDOW_SECS {
+            // The relay rejects these frozen bytes on every sweep, so POSTing
+            // them only adds relay load. Leave the row pending: a later local
+            // edit re-signs the coordinate, and a future-dated head becomes
+            // publishable as the clock catches up. Renewing an expired head
+            // automatically is deliberately not done here — a fresh timestamp
+            // could overwrite a newer edit or deletion from another device.
+            continue;
         } else {
             event
         };

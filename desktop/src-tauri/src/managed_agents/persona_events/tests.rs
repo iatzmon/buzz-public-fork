@@ -892,26 +892,34 @@ mod flush_barrier {
     use nostr::JsonUtil;
 
     /// Stub relay: `POST /events` rejects kind:5 with HTTP 500, accepts
-    /// everything else. Returns the HTTP base URL.
-    async fn spawn_stub_relay() -> String {
+    /// everything else, and records every POSTed body. Returns the HTTP base
+    /// URL and the recorded bodies.
+    async fn spawn_stub_relay() -> (String, Arc<Mutex<Vec<serde_json::Value>>>) {
         use axum::{http::StatusCode, routing::post, Router};
 
+        let posted = Arc::new(Mutex::new(Vec::new()));
+        let log = Arc::clone(&posted);
         let app = Router::new().route(
             "/events",
-            post(|body: String| async move {
-                let event: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
-                if event.get("kind").and_then(serde_json::Value::as_u64) == Some(5) {
-                    return (StatusCode::INTERNAL_SERVER_ERROR, String::new());
+            post(move |body: String| {
+                let log = Arc::clone(&log);
+                async move {
+                    let event: serde_json::Value =
+                        serde_json::from_str(&body).unwrap_or_default();
+                    log.lock().unwrap().push(event.clone());
+                    if event.get("kind").and_then(serde_json::Value::as_u64) == Some(5) {
+                        return (StatusCode::INTERNAL_SERVER_ERROR, String::new());
+                    }
+                    (
+                        StatusCode::OK,
+                        serde_json::json!({
+                            "event_id": event.get("id").and_then(serde_json::Value::as_str).unwrap_or(""),
+                            "accepted": true,
+                            "message": ""
+                        })
+                        .to_string(),
+                    )
                 }
-                (
-                    StatusCode::OK,
-                    serde_json::json!({
-                        "event_id": event.get("id").and_then(serde_json::Value::as_str).unwrap_or(""),
-                        "accepted": true,
-                        "message": ""
-                    })
-                    .to_string(),
-                )
             }),
         );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -921,7 +929,7 @@ mod flush_barrier {
         tokio::spawn(async move {
             axum::serve(listener, app).await.ok();
         });
-        format!("http://{addr}")
+        (format!("http://{addr}"), posted)
     }
 
     fn retain_signed(
@@ -946,6 +954,100 @@ mod flush_barrier {
             },
         )
         .expect("retain test event");
+    }
+
+    /// A replaceable head signed outside the relay's ±900 s window is
+    /// rejected on every sweep. The flush must not POST it and must leave it
+    /// pending, while a head inside the window still publishes. This is the
+    /// live defect: three expired kind:30177 heads were re-POSTed every 30 s.
+    #[tokio::test]
+    async fn heads_outside_relay_window_are_not_posted_and_stay_pending() {
+        let keys = nostr::Keys::generate();
+        let pubkey = keys.public_key().to_hex();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db_path = dir.path().join("retention.db");
+        let now = nostr::Timestamp::now().as_secs() as i64;
+        let head = |kind: u32, d_tag: &str, created_at: i64| {
+            EventBuilder::new(Kind::Custom(kind as u16), "{}")
+                .tags(vec![Tag::parse(["d", d_tag]).unwrap()])
+                .custom_created_at(nostr::Timestamp::from(created_at as u64))
+        };
+        let agent_kind = buzz_core_pkg::kind::KIND_MANAGED_AGENT;
+        let expired = now - RELAY_ACCEPT_WINDOW_SECS - 100;
+        let future = now + RELAY_ACCEPT_WINDOW_SECS + 100;
+
+        {
+            let conn = open_retention_db(&db_path).expect("open db");
+            retain_signed(
+                &conn,
+                &keys,
+                KIND_PERSONA,
+                "expired",
+                head(KIND_PERSONA, "expired", expired),
+                expired,
+            );
+            retain_signed(
+                &conn,
+                &keys,
+                agent_kind,
+                "agent",
+                head(agent_kind, "agent", expired),
+                expired,
+            );
+            retain_signed(
+                &conn,
+                &keys,
+                KIND_PERSONA,
+                "future",
+                head(KIND_PERSONA, "future", future),
+                future,
+            );
+            retain_signed(
+                &conn,
+                &keys,
+                KIND_PERSONA,
+                "fresh",
+                head(KIND_PERSONA, "fresh", now),
+                now,
+            );
+        }
+
+        let state = build_app_state();
+        *state.keys.lock().unwrap() = keys;
+        let (relay, posted) = spawn_stub_relay().await;
+        *state.relay_url_override.lock().unwrap() = Some(relay);
+
+        let flushed = flush_pending_events(&db_path, &state).await.expect("flush");
+        assert_eq!(flushed, 1, "only the in-window head publishes");
+        assert_eq!(
+            posted.lock().unwrap().len(),
+            1,
+            "heads outside the relay window must not be POSTed"
+        );
+
+        let conn = open_retention_db(&db_path).expect("reopen db");
+        let pending = |kind: u32, d_tag: &str| {
+            get_retained_event(&conn, kind, &pubkey, d_tag)
+                .unwrap()
+                .unwrap()
+                .pending_sync
+        };
+        assert!(
+            pending(KIND_PERSONA, "expired"),
+            "expired head stays pending"
+        );
+        assert!(
+            pending(agent_kind, "agent"),
+            "expired agent head stays pending"
+        );
+        assert!(
+            pending(KIND_PERSONA, "future"),
+            "future-dated head stays pending"
+        );
+        assert!(
+            !pending(KIND_PERSONA, "fresh"),
+            "in-window head is marked synced"
+        );
     }
 
     #[test]
@@ -1026,7 +1128,7 @@ mod flush_barrier {
 
         let state = build_app_state();
         *state.keys.lock().unwrap() = keys;
-        *state.relay_url_override.lock().unwrap() = Some(spawn_stub_relay().await);
+        *state.relay_url_override.lock().unwrap() = Some(spawn_stub_relay().await.0);
 
         let flushed = flush_pending_events(&db_path, &state).await.expect("flush");
         assert_eq!(flushed, 1, "only the unrelated row publishes");

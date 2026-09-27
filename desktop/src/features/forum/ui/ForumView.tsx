@@ -1,20 +1,13 @@
-import { MessageSquareText } from "lucide-react";
 import * as React from "react";
 
 import { useAppShell } from "@/app/AppShellContext";
 import { resolveMessageManagePermissions } from "@/features/messages/lib/messageDeleteAuthority";
-import { handleTimelineMentionCopy } from "@/features/messages/lib/timelineMentionCopy";
 import { useCanModerateChannelMessages } from "@/features/messages/lib/useCanModerateChannelMessages";
 import { useProfileQuery, useUsersBatchQuery } from "@/features/profile/hooks";
 import { mergeCurrentProfileIntoLookup } from "@/features/profile/lib/identity";
 import type { TypingIndicatorEntry } from "@/features/messages/useChannelTyping";
-import { TypingIndicatorRow } from "@/features/messages/ui/TypingIndicatorRow";
 import { getMentionTagPubkey } from "@/shared/lib/resolveMentionNames";
 import type { Channel } from "@/shared/api/types";
-import { channelChrome } from "@/shared/layout/chromeLayout";
-import { cn } from "@/shared/lib/cn";
-import { Skeleton } from "@/shared/ui/skeleton";
-import { VirtualizedList } from "@/shared/ui/VirtualizedList";
 
 import {
   useCreateForumPostMutation,
@@ -29,8 +22,9 @@ import {
   hasUnreadForumReplies,
   latestForumThreadActivityAt,
 } from "../lib/forumActivity";
-import { ForumComposer } from "./ForumComposer";
+import { sortForumOldestFirst } from "../lib/forumOrder";
 import { ForumPostCard } from "./ForumPostCard";
+import { ForumPostList } from "./ForumPostList";
 import { ForumThreadPanel } from "./ForumThreadPanel";
 
 type ForumViewProps = {
@@ -67,7 +61,6 @@ export function ForumView({
   typingEntries = EMPTY_TYPING_ENTRIES,
 }: ForumViewProps) {
   const [isComposerOpen, setIsComposerOpen] = React.useState(false);
-  const postsScrollRef = React.useRef<HTMLDivElement>(null);
   const { getThreadReadAt, markThreadRead, readStateVersion } = useAppShell();
 
   const profileQuery = useProfileQuery();
@@ -84,7 +77,11 @@ export function ForumView({
     selectedPostId,
   );
 
-  const posts = postsQuery.data?.posts ?? [];
+  const postsData = postsQuery.data?.posts;
+  const posts = React.useMemo(
+    () => sortForumOldestFirst(postsData ?? []),
+    [postsData],
+  );
   const typingGroups = React.useMemo(
     () => groupForumTypingByPost(typingEntries),
     [typingEntries],
@@ -265,114 +262,45 @@ export function ForumView({
   }
 
   return (
-    <div className={cn("flex h-full flex-col", channelChrome.contentPadding)}>
-      <div className="border-b border-border/60 p-4">
-        {isComposerOpen ? (
-          <ForumComposer
-            autocompleteBelow
-            channelId={channel.id}
-            channelType="forum"
-            draftKey={`forum:${channel.id}`}
-            isSending={createPostMutation.isPending}
-            onCancel={() => setIsComposerOpen(false)}
-            onSubmit={async (content, mentionPubkeys, mediaTags) => {
-              await createPostMutation.mutateAsync({
-                content,
-                mentionPubkeys,
-                mediaTags,
+    <ForumPostList
+      channel={channel}
+      channelTypingPubkeys={typingGroups.channelLevel}
+      currentPubkey={effectiveCurrentPubkey}
+      isComposerOpen={isComposerOpen}
+      isCreatingPost={createPostMutation.isPending}
+      isLoading={postsQuery.isLoading}
+      key={channel.id}
+      onComposerOpenChange={setIsComposerOpen}
+      onCreatePost={(content, mentionPubkeys, mediaTags) =>
+        createPostMutation.mutateAsync({ content, mentionPubkeys, mediaTags })
+      }
+      posts={posts}
+      profiles={profiles}
+      renderPost={(post) => {
+        const deleteAuthority = postDeleteAuthority(post);
+        return (
+          <ForumPostCard
+            canDelete={deleteAuthority !== null}
+            currentPubkey={effectiveCurrentPubkey}
+            hasUnreadReplies={unreadPostIds.has(post.eventId)}
+            isActive={selectedPostId === post.eventId}
+            isDeleting={
+              deletePostMutation.isPending &&
+              deletePostMutation.variables?.eventId === post.eventId
+            }
+            onClick={() => onSelectPost(post.eventId)}
+            onDelete={(eventId) => {
+              deletePostMutation.mutate({
+                eventId,
+                asModerator: deleteAuthority === "moderator",
               });
-              setIsComposerOpen(false);
             }}
-            placeholder="Write your post..."
+            post={post}
             profiles={profiles}
+            typingPubkeys={typingGroups.byPostId.get(post.eventId)}
           />
-        ) : (
-          <button
-            className="w-full rounded-xl border border-dashed border-border/80 px-4 py-3 text-left text-sm text-muted-foreground transition-colors hover:border-border hover:bg-accent/30 hover:text-foreground"
-            disabled={!channel.isMember || channel.archivedAt !== null}
-            onClick={() => setIsComposerOpen(true)}
-            type="button"
-          >
-            {channel.archivedAt
-              ? "This forum is archived."
-              : !channel.isMember
-                ? "Join this forum to create posts."
-                : "Start a new post..."}
-          </button>
-        )}
-      </div>
-
-      {typingGroups.channelLevel.length > 0 ? (
-        <TypingIndicatorRow
-          channel={channel}
-          className="border-b border-border/60"
-          currentPubkey={effectiveCurrentPubkey}
-          profiles={profiles}
-          typingPubkeys={typingGroups.channelLevel}
-        />
-      ) : null}
-
-      <div
-        className="flex-1 overflow-y-auto"
-        data-scroll-restoration-id={`forum-list:${channel.id}`}
-        onCopy={handleTimelineMentionCopy}
-        ref={postsScrollRef}
-      >
-        {postsQuery.isLoading ? (
-          <div className="space-y-3 p-4">
-            <Skeleton className="h-24 w-full rounded-xl" />
-            <Skeleton className="h-24 w-full rounded-xl" />
-            <Skeleton className="h-24 w-full rounded-xl" />
-          </div>
-        ) : posts.length === 0 ? (
-          <div className="flex flex-col items-center justify-center gap-3 px-4 py-16 text-center">
-            <MessageSquareText className="h-10 w-10 text-muted-foreground/40" />
-            <div>
-              <p className="text-sm font-medium text-foreground/70">
-                No posts yet
-              </p>
-              <p className="mt-1 text-xs text-muted-foreground">
-                Start a discussion by creating the first post.
-              </p>
-            </div>
-          </div>
-        ) : (
-          <VirtualizedList
-            estimateSize={120}
-            getItemKey={(post) => post.eventId}
-            innerClassName="p-4"
-            items={posts}
-            renderItem={(post) => {
-              const deleteAuthority = postDeleteAuthority(post);
-              return (
-                <div className="pb-3">
-                  <ForumPostCard
-                    canDelete={deleteAuthority !== null}
-                    currentPubkey={effectiveCurrentPubkey}
-                    hasUnreadReplies={unreadPostIds.has(post.eventId)}
-                    isActive={selectedPostId === post.eventId}
-                    isDeleting={
-                      deletePostMutation.isPending &&
-                      deletePostMutation.variables?.eventId === post.eventId
-                    }
-                    onClick={() => onSelectPost(post.eventId)}
-                    onDelete={(eventId) => {
-                      deletePostMutation.mutate({
-                        eventId,
-                        asModerator: deleteAuthority === "moderator",
-                      });
-                    }}
-                    post={post}
-                    profiles={profiles}
-                    typingPubkeys={typingGroups.byPostId.get(post.eventId)}
-                  />
-                </div>
-              );
-            }}
-            scrollRef={postsScrollRef}
-          />
-        )}
-      </div>
-    </div>
+        );
+      }}
+    />
   );
 }

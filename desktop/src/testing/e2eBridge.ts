@@ -5414,15 +5414,16 @@ async function handleGetForumThread(args: {
       const thread = getThreadReferenceFromTags(event.tags);
       return (thread.rootEventId ?? thread.parentEventId) === root.id;
     })
-    .sort((left, right) => left.created_at - right.created_at)
+    // Newest first, like the relay query behind the real command; the forum
+    // view orders replies for display itself.
+    .sort((left, right) => right.created_at - left.created_at)
     .map((event) => toRawForumReply(event, args.channelId));
 
   return {
     root: toRawForumPost(root, args.channelId, {
       reply_count: replies.length,
       descendant_count: replies.length,
-      last_reply_at:
-        replies.length > 0 ? replies[replies.length - 1].created_at : null,
+      last_reply_at: replies.length > 0 ? replies[0].created_at : null,
       participants: [...new Set(replies.map((reply) => reply.pubkey))],
     }),
     replies,

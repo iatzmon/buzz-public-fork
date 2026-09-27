@@ -19,8 +19,11 @@ import { parseImetaTags } from "@/shared/ui/markdown/parseImeta";
 import { Markdown } from "@/shared/ui/markdown";
 import { hasLinkPreviewSuppression } from "@/features/messages/lib/formatTimelineMessages";
 import { TypingIndicatorRow } from "@/features/messages/ui/TypingIndicatorRow";
+import { useAnchoredScroll } from "@/features/messages/ui/useAnchoredScroll";
 import { Skeleton } from "@/shared/ui/skeleton";
+import { UnreadPill, unreadCountLabel } from "@/shared/ui/UnreadPill";
 
+import { sortForumOldestFirst } from "../lib/forumOrder";
 import { formatRelativeTime } from "../lib/time";
 import { DeleteActionMenu } from "./DeleteActionMenu";
 import { ForumComposer } from "./ForumComposer";
@@ -95,6 +98,7 @@ function ReplyRow({
     <div
       className="group content-visibility-auto px-4 py-3"
       data-forum-event-id={reply.eventId}
+      data-message-id={reply.eventId}
     >
       <div className="flex items-center gap-2">
         <UserProfilePopover
@@ -179,47 +183,166 @@ export function ForumThreadPanel({
     [channels],
   );
 
-  React.useEffect(() => {
-    if (!thread || !targetEventId) {
-      return;
-    }
+  const contentRef = React.useRef<HTMLDivElement>(null);
+  const replies = React.useMemo(
+    () => sortForumOldestFirst(thread?.replies ?? []),
+    [thread?.replies],
+  );
+  // The post itself is the first row, so a target on the post resolves too.
+  const threadRows = React.useMemo(
+    () =>
+      thread
+        ? [
+            { id: thread.post.eventId },
+            ...replies.map((reply) => ({ id: reply.eventId })),
+          ]
+        : [],
+    [replies, thread],
+  );
+  const {
+    isAtBottom,
+    newMessageCount,
+    onScroll,
+    scrollToBottom,
+    scrollToBottomOnNextUpdate,
+  } = useAnchoredScroll({
+    channelId: postId,
+    contentRef,
+    highlightTargetMessage: false,
+    isLoading: isLoading || !thread,
+    messages: threadRows,
+    onTargetReached,
+    scrollContainerRef: scrollRef,
+    targetMessageId: targetEventId,
+  });
 
-    const targetElement =
-      scrollRef.current?.querySelector<HTMLElement>(
-        `[data-forum-event-id="${targetEventId}"]`,
-      ) ?? null;
-    if (!targetElement) {
-      return;
-    }
-
-    targetElement.scrollIntoView({ block: "center" });
-    onTargetReached?.(targetEventId);
-  }, [onTargetReached, targetEventId, thread]);
-
-  if (isLoading || !thread) {
-    return (
-      <div className={cn("flex h-full flex-col", channelChrome.contentPadding)}>
-        <div className="border-b border-border/60 px-4 py-3">
-          <Button
-            className="gap-1.5 text-muted-foreground"
-            onClick={onBack}
-            size="sm"
-            variant="ghost"
-          >
-            <ArrowLeft className="h-4 w-4" />
-            Back to posts
-          </Button>
-        </div>
-        <div className="flex-1 space-y-4 p-4">
-          <Skeleton className="h-8 w-3/4" />
-          <Skeleton className="h-24 w-full" />
-          <Skeleton className="h-16 w-full" />
-        </div>
+  // The scroll container and its content wrapper stay mounted while the
+  // post loads: the anchored-scroll hook observes them from its first render.
+  return (
+    <div className={cn("flex h-full flex-col", channelChrome.contentPadding)}>
+      <div className="border-b border-border/60 px-4 py-3">
+        <Button
+          className="gap-1.5 text-muted-foreground"
+          onClick={onBack}
+          size="sm"
+          variant="ghost"
+        >
+          <ArrowLeft className="h-4 w-4" />
+          Back to posts
+        </Button>
       </div>
-    );
-  }
 
-  const { post, replies } = thread;
+      <div className="relative min-h-0 flex-1">
+        <div
+          className="h-full overflow-y-auto"
+          data-scroll-restoration-id={`forum-thread:${channelId}`}
+          data-testid="forum-thread-scroll"
+          onCopy={handleTimelineMentionCopy}
+          onScroll={onScroll}
+          ref={scrollRef}
+        >
+          <div ref={contentRef}>
+            {isLoading || !thread ? (
+              <div className="space-y-4 p-4">
+                <Skeleton className="h-8 w-3/4" />
+                <Skeleton className="h-24 w-full" />
+                <Skeleton className="h-16 w-full" />
+              </div>
+            ) : (
+              <ForumThreadContent
+                canDeletePost={canDeletePost}
+                canModerate={canModerate}
+                channelNames={channelNames}
+                currentPubkey={currentPubkey}
+                isDeletingPost={isDeletingPost}
+                onDeletePost={onDeletePost}
+                onDeleteReply={onDeleteReply}
+                post={thread.post}
+                profiles={profiles}
+                replies={replies}
+                targetSearchMessageId={targetSearchMessageId}
+                targetSearchQuery={targetSearchQuery}
+              />
+            )}
+          </div>
+        </div>
+
+        {!isAtBottom ? (
+          <div className="pointer-events-none absolute inset-x-0 bottom-4 z-10 flex justify-center px-4">
+            <UnreadPill
+              direction="down"
+              label={
+                newMessageCount > 0
+                  ? unreadCountLabel(newMessageCount)
+                  : "Jump to latest"
+              }
+              onClick={() => scrollToBottom("smooth")}
+              testId="forum-thread-scroll-to-latest"
+            />
+          </div>
+        ) : null}
+      </div>
+
+      {thread && typingPubkeys && typingPubkeys.length > 0 ? (
+        <TypingIndicatorRow
+          channel={null}
+          className="border-t border-border/60"
+          currentPubkey={currentPubkey}
+          profiles={profiles}
+          typingPubkeys={typingPubkeys}
+        />
+      ) : null}
+
+      {thread ? (
+        <div className="border-t border-border/60 p-4">
+          <ForumComposer
+            channelId={channelId}
+            channelType="forum"
+            draftKey={`thread:${postId}`}
+            isSending={isSendingReply}
+            onSubmit={(content, mentionPubkeys, mediaTags) => {
+              // The reply lands at the bottom; follow it there even when the
+              // reader had scrolled up to older replies.
+              scrollToBottomOnNextUpdate();
+              return onReply(content, mentionPubkeys, mediaTags);
+            }}
+            placeholder="Reply to this post..."
+            profiles={profiles}
+          />
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function ForumThreadContent({
+  canDeletePost,
+  canModerate,
+  channelNames,
+  currentPubkey,
+  isDeletingPost,
+  onDeletePost,
+  onDeleteReply,
+  post,
+  profiles,
+  replies,
+  targetSearchMessageId,
+  targetSearchQuery,
+}: {
+  canDeletePost?: boolean;
+  canModerate: boolean;
+  channelNames: string[];
+  currentPubkey?: string;
+  isDeletingPost?: boolean;
+  onDeletePost?: (eventId: string) => void;
+  onDeleteReply?: (eventId: string, options: { asModerator: boolean }) => void;
+  post: ForumThreadResponse["post"];
+  profiles?: UserProfileLookup;
+  /** Replies oldest first; the newest renders at the bottom. */
+  replies: ThreadReply[];
+  targetSearchMessageId?: string;
+  targetSearchQuery?: string;
+}) {
   const {
     mentionNames: postMentionNames,
     mentionPubkeysByName: postMentionPubkeysByName,
@@ -236,135 +359,95 @@ export function ForumThreadPanel({
     profiles?.[post.pubkey.toLowerCase()]?.isAgent === true;
 
   return (
-    <div className={cn("flex h-full flex-col", channelChrome.contentPadding)}>
-      <div className="border-b border-border/60 px-4 py-3">
-        <Button
-          className="gap-1.5 text-muted-foreground"
-          onClick={onBack}
-          size="sm"
-          variant="ghost"
-        >
-          <ArrowLeft className="h-4 w-4" />
-          Back to posts
-        </Button>
-      </div>
-
+    <>
       <div
-        className="flex-1 overflow-y-auto"
-        data-scroll-restoration-id={`forum-thread:${channelId}`}
-        onCopy={handleTimelineMentionCopy}
-        ref={scrollRef}
+        className={cn(
+          "group border-b border-border/60 p-4",
+          isDeletingPost && "pointer-events-none opacity-50",
+        )}
+        data-forum-event-id={post.eventId}
+        data-message-id={post.eventId}
       >
-        <div
-          className={cn(
-            "group border-b border-border/60 p-4",
-            isDeletingPost && "pointer-events-none opacity-50",
-          )}
-          data-forum-event-id={post.eventId}
-        >
-          <div className="flex items-center gap-2">
-            <UserProfilePopover
-              pubkey={post.pubkey}
-              role={postAuthorIsAgent ? "bot" : undefined}
+        <div className="flex items-center gap-2">
+          <UserProfilePopover
+            pubkey={post.pubkey}
+            role={postAuthorIsAgent ? "bot" : undefined}
+          >
+            <button
+              className="flex items-center gap-2 rounded-xl focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+              type="button"
             >
-              <button
-                className="flex items-center gap-2 rounded-xl focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
-                type="button"
-              >
-                <UserAvatar
-                  accent={postAuthorIsAgent}
-                  avatarUrl={postAvatarUrl}
-                  displayName={postAuthorLabel}
-                  shape={postAuthorIsAgent ? "squircle" : "circle"}
-                />
-                <span className="text-sm font-semibold text-foreground hover:underline">
-                  {postAuthorLabel}
-                </span>
-              </button>
-            </UserProfilePopover>
-            <span className="text-xs text-muted-foreground">
-              {formatRelativeTime(post.createdAt)}
-            </span>
-
-            {canDeletePost && onDeletePost ? (
-              <DeleteActionMenu
-                label="post"
-                onConfirm={() => onDeletePost(post.eventId)}
+              <UserAvatar
+                accent={postAuthorIsAgent}
+                avatarUrl={postAvatarUrl}
+                displayName={postAuthorLabel}
+                shape={postAuthorIsAgent ? "squircle" : "circle"}
               />
-            ) : null}
-          </div>
-          <div className="mt-3">
-            <Markdown
-              channelNames={channelNames}
-              className="text-sm"
-              content={post.content}
-              messageId={post.eventId}
-              linkPreviewsSuppressed={hasLinkPreviewSuppression(post.tags)}
-              linkPreviewTags={post.tags}
-              imetaByUrl={parseImetaTags(post.tags)}
-              mentionNames={postMentionNames}
-              mentionPubkeysByName={postMentionPubkeysByName}
-              searchQuery={
-                targetSearchMessageId === post.eventId
-                  ? targetSearchQuery
-                  : undefined
-              }
+              <span className="text-sm font-semibold text-foreground hover:underline">
+                {postAuthorLabel}
+              </span>
+            </button>
+          </UserProfilePopover>
+          <span className="text-xs text-muted-foreground">
+            {formatRelativeTime(post.createdAt)}
+          </span>
+
+          {canDeletePost && onDeletePost ? (
+            <DeleteActionMenu
+              label="post"
+              onConfirm={() => onDeletePost(post.eventId)}
             />
-          </div>
-        </div>
-
-        <div className="flex items-center gap-1.5 border-b border-border/60 px-4 py-2.5 text-sm font-medium text-muted-foreground">
-          <MessageSquare className="h-4 w-4" />
-          {replies.length} {replies.length === 1 ? "reply" : "replies"}
-        </div>
-
-        <div className="divide-y divide-border/40">
-          {replies.map((reply) => (
-            <ReplyRow
-              canModerate={canModerate}
-              channelNames={channelNames}
-              currentPubkey={currentPubkey}
-              key={reply.eventId}
-              onDelete={onDeleteReply}
-              profiles={profiles}
-              reply={reply}
-              searchQuery={
-                targetSearchMessageId === reply.eventId
-                  ? targetSearchQuery
-                  : undefined
-              }
-            />
-          ))}
-
-          {replies.length === 0 ? (
-            <div className="px-4 py-6 text-center text-sm text-muted-foreground">
-              No replies yet. Be the first to respond.
-            </div>
           ) : null}
         </div>
+        <div className="mt-3">
+          <Markdown
+            channelNames={channelNames}
+            className="text-sm"
+            content={post.content}
+            messageId={post.eventId}
+            linkPreviewsSuppressed={hasLinkPreviewSuppression(post.tags)}
+            linkPreviewTags={post.tags}
+            imetaByUrl={parseImetaTags(post.tags)}
+            mentionNames={postMentionNames}
+            mentionPubkeysByName={postMentionPubkeysByName}
+            searchQuery={
+              targetSearchMessageId === post.eventId
+                ? targetSearchQuery
+                : undefined
+            }
+          />
+        </div>
       </div>
 
-      {typingPubkeys && typingPubkeys.length > 0 ? (
-        <TypingIndicatorRow
-          channel={null}
-          className="border-t border-border/60"
-          currentPubkey={currentPubkey}
-          profiles={profiles}
-          typingPubkeys={typingPubkeys}
-        />
-      ) : null}
-
-      <div className="border-t border-border/60 p-4">
-        <ForumComposer
-          channelId={channelId}
-          channelType="forum"
-          draftKey={`thread:${postId}`}
-          isSending={isSendingReply}
-          onSubmit={onReply}
-          placeholder="Reply to this post..."
-          profiles={profiles}
-        />
+      <div className="flex items-center gap-1.5 border-b border-border/60 px-4 py-2.5 text-sm font-medium text-muted-foreground">
+        <MessageSquare className="h-4 w-4" />
+        {replies.length} {replies.length === 1 ? "reply" : "replies"}
       </div>
-    </div>
+
+      <div className="divide-y divide-border/40">
+        {replies.map((reply) => (
+          <ReplyRow
+            canModerate={canModerate}
+            channelNames={channelNames}
+            currentPubkey={currentPubkey}
+            key={reply.eventId}
+            onDelete={onDeleteReply}
+            profiles={profiles}
+            reply={reply}
+            searchQuery={
+              targetSearchMessageId === reply.eventId
+                ? targetSearchQuery
+                : undefined
+            }
+          />
+        ))}
+
+        {replies.length === 0 ? (
+          <div className="px-4 py-6 text-center text-sm text-muted-foreground">
+            No replies yet. Be the first to respond.
+          </div>
+        ) : null}
+      </div>
+    </>
   );
 }

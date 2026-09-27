@@ -16,7 +16,7 @@ import type {
   RelayEvent,
   UserProfileSummary,
 } from "@/shared/api/types";
-import { KIND_REMINDER } from "@/shared/constants/kinds";
+import { KIND_APPROVAL_REQUEST, KIND_REMINDER } from "@/shared/constants/kinds";
 import { normalizePubkey } from "@/shared/lib/pubkey";
 import { resolveMentionProps } from "@/shared/lib/resolveMentionNames";
 
@@ -35,6 +35,35 @@ export function hasInboxThreadContext(
 ) {
   return [item.item, ...item.groupItems, ...contextMessages].some((event) =>
     hasThreadReplyTags(event.tags ?? []),
+  );
+}
+
+const WORKFLOW_APPROVAL_KINDS: ReadonlySet<number> = new Set([
+  KIND_APPROVAL_REQUEST,
+  KIND_APPROVAL_REQUEST + 1,
+  KIND_APPROVAL_REQUEST + 2,
+]);
+
+/**
+ * Whether a read row leaves the current list. "Unread only" hides every read
+ * row. The Needs action filter hides a read request from an owned agent:
+ * reading it is how the owner clears it. A row with a workflow approval stays,
+ * because reading an approval does not decide it.
+ */
+export function hidesReadInboxItem(
+  item: { groupItems?: readonly Pick<FeedItem, "kind">[] },
+  filter: InboxFilter,
+  unreadOnly: boolean,
+) {
+  if (unreadOnly) {
+    return true;
+  }
+
+  return (
+    filter === "needs_action" &&
+    !(item.groupItems ?? []).some((groupItem) =>
+      WORKFLOW_APPROVAL_KINDS.has(groupItem.kind),
+    )
   );
 }
 

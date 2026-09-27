@@ -190,6 +190,20 @@ bool matchesInboxFilter(InboxItem item, InboxFilter filter) {
   };
 }
 
+/// Workflow approval request kinds (46010–46012).
+const _workflowApprovalKinds = {46010, 46011, 46012};
+
+/// Whether a read [item] leaves the list — desktop's `hidesReadInboxItem`.
+/// "Unread only" hides every read row. The Needs action filter hides a read
+/// request from an owned agent: reading it is how the owner clears it. A row
+/// with a workflow approval stays, because reading an approval does not
+/// decide it.
+bool hidesReadInboxItem(InboxItem item, InboxFilter filter, bool unreadOnly) {
+  if (unreadOnly) return true;
+  return filter == InboxFilter.needsAction &&
+      !item.groupItems.any((i) => _workflowApprovalKinds.contains(i.kind));
+}
+
 /// Group raw feed items into conversation rows sorted by latest activity.
 /// [isDmChannel] identifies DM channels so their ordinary top-level messages
 /// collapse into one row per DM conversation. Mirrors desktop's

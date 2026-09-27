@@ -20,6 +20,7 @@ import { useInboxEditMessage } from "@/features/home/useInboxEditMessage";
 import { useOwnedAgentPubkeys } from "@/features/home/useOwnedAgentPubkeys";
 import {
   filterInboxItems,
+  hidesReadInboxItem,
   matchesInboxFilter,
 } from "@/features/home/lib/inboxViewHelpers";
 import { resolveInboxFilterSelection } from "@/features/home/lib/inboxSelection";
@@ -434,7 +435,7 @@ export function HomeView({
     return inboxItems.filter(
       (item) =>
         matchesInboxFilter(item, filter, ownedAgentPubkeys) &&
-        (!unreadOnly ||
+        (!hidesReadInboxItem(item, filter, unreadOnly) ||
           !effectiveDoneSet.has(item.id) ||
           item.conversationId === selectedConversationId),
     );
@@ -556,7 +557,7 @@ export function HomeView({
       const nextItems = inboxItems.filter(
         (item) =>
           matchesInboxFilter(item, nextFilter, ownedAgentPubkeys) &&
-          (!unreadOnly ||
+          (!hidesReadInboxItem(item, nextFilter, unreadOnly) ||
             !effectiveDoneSet.has(item.id) ||
             item.conversationId === selectedConversationId),
       );

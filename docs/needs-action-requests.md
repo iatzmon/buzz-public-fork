@@ -56,11 +56,15 @@ separate "resolved" state.
 - It becomes read when the shared read marker for its channel or thread
   reaches it: opening the conversation, or **Mark as read** in the inbox
   (desktop `useHomeInboxReadState.ts`, mobile `inbox_read_state.dart`).
-- A read request stays in the Needs action list, shown as read, until it
-  falls outside the inbox's recent-mentions window. **Mark unread** brings the
-  highlight back.
+- A read request leaves the Needs action list. On desktop, a row you have
+  open stays until you select another row. The request stays under **All**,
+  shown as read, until it falls outside the inbox's recent-mentions window.
+  **Mark unread** there brings it back to Needs action (desktop
+  `hidesReadInboxItem` in `inboxViewHelpers.ts`, mobile `hidesReadInboxItem`
+  in `inbox_item.dart`).
 - Replying to the request, or doing the work it asks for, does not change its
   state by itself.
 
-Workflow approval requests (kinds 46010–46012) keep their existing behavior
-and share the same filter.
+Workflow approval requests (kinds 46010–46012) share the same filter but
+stay in it after they are read, because reading an approval does not decide
+it. A row that holds an approval stays for the same reason.

@@ -691,6 +691,71 @@ async fn expression_filters_dm_filters_and_nonchat_filters_remain_in_force() {
 }
 
 #[tokio::test]
+async fn malformed_profiles_fail_closed_but_explicit_mention_still_works() {
+    let (owner, agent) = (Keys::generate(), Keys::generate());
+    let channel = Uuid::new_v4();
+    for content in [
+        "null",
+        "[]",
+        r#""text""#,
+        r#"{"bot":"true"}"#,
+        r#"{"bot":null}"#,
+    ] {
+        let author = Keys::generate();
+        let profile = EventBuilder::new(Kind::Metadata, content)
+            .sign_with_keys(&author)
+            .unwrap();
+        let fixture = Fixture::new(vec![profile]).await;
+        let root = message(&author, channel, None, &[], "unmentioned root");
+        assert!(
+            !fixture
+                .admit(
+                    root,
+                    channel,
+                    &agent,
+                    &owner,
+                    RecipientPolicy::Conversation,
+                    RespondTo::Anyone
+                )
+                .await,
+            "profile {content} must not admit an unmentioned root"
+        );
+        let explicit = message(&author, channel, None, &[&agent], "mentioned root");
+        assert!(
+            fixture
+                .admit(
+                    explicit,
+                    channel,
+                    &agent,
+                    &owner,
+                    RecipientPolicy::Conversation,
+                    RespondTo::Anyone
+                )
+                .await,
+            "profile {content} must still allow an explicit mention"
+        );
+    }
+    let human = Keys::generate();
+    let profile = EventBuilder::new(Kind::Metadata, r#"{"name":"h","bot":false}"#)
+        .sign_with_keys(&human)
+        .unwrap();
+    let fixture = Fixture::new(vec![profile]).await;
+    let root = message(&human, channel, None, &[], "human root");
+    assert!(
+        fixture
+            .admit(
+                root,
+                channel,
+                &agent,
+                &owner,
+                RecipientPolicy::Conversation,
+                RespondTo::Anyone
+            )
+            .await
+    );
+}
+
+#[tokio::test]
 async fn missing_profile_or_network_failure_does_not_fall_back_to_broadcast() {
     let (owner, agent, unknown) = (Keys::generate(), Keys::generate(), Keys::generate());
     let channel = Uuid::new_v4();

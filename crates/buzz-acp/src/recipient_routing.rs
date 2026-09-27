@@ -184,9 +184,14 @@ async fn accepts(
         }
         let metadata: Value =
             serde_json::from_str(&profile.content).context("invalid author profile")?;
-        if has_agent_attestation(profile)
-            || metadata.get("bot").and_then(Value::as_bool) == Some(true)
-        {
+        // Only a JSON object with an absent or boolean `bot` proves a human
+        // author; anything else fails closed so a mention is required.
+        let is_bot = match metadata.as_object().map(|fields| fields.get("bot")) {
+            Some(None) => false,
+            Some(Some(Value::Bool(bot))) => *bot,
+            _ => bail!("malformed author profile; use an explicit mention"),
+        };
+        if has_agent_attestation(profile) || is_bot {
             return Ok(false);
         }
     }

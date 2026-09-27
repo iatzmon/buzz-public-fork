@@ -260,6 +260,26 @@ void main() {
         expect(visible([agentRepo], [deletionOf(bob, address)]), [address]);
       });
 
+      test('an attestation on one coordinate does not cover another', () {
+        // Carol attests the agent's project only for kind 30621. The agent's
+        // repository carries no attestation, so Carol may not delete it.
+        final agentProject = projectEvent(
+          owner: agent,
+          dtag: 'agent-project',
+          repoAddresses: const [],
+          extraTags: [oaAuthTag(carol, agent, conditions: 'kind=30621')],
+        );
+        final agentRepo = repoEvent(owner: agent, dtag: 'agent-repo');
+        final address = repoAddress(agent, 'agent-repo');
+        final projects = buildProjectReadModels(
+          projectEvents: [agentProject],
+          repositoryEvents: [agentRepo],
+          deletionEvents: [deletionOf(carol, address)],
+          relayOrigin: relayOrigin,
+        );
+        expect(projects.map((p) => p.projectAddress), contains(address));
+      });
+
       test('ignores an owner the auth tag does not validly attest', () {
         final address = repoAddress(agent, 'scratch');
         final tombstone = deletionOf(carol, address);

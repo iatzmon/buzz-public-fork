@@ -101,27 +101,30 @@ List<Project> buildProjectReadModels({
 ///
 /// Relays are not trusted to have checked who may delete what. A tombstone
 /// counts for a coordinate `kind:<author>:<d>` only when its signer is that
-/// author, or the author's NIP-OA owner as attested by the `auth` tag of one
-/// of the author's announcement [heads] ([attestedOaOwnerPubkey]). Every event
-/// must already have a verified id and signature. The relay authorizes owner
-/// deletions from the agent's live profile instead; an owner the
-/// announcement still attests after a profile change is accepted here.
+/// author, or the NIP-OA owner attested by the `auth` tag of that same
+/// coordinate's head in [heads] ([attestedOaOwnerPubkey], with the tag's
+/// conditions holding for that head). An attestation on one of the author's
+/// coordinates never authorizes deletions of another. Every event must
+/// already have a verified id and signature. The relay authorizes owner
+/// deletions from the agent's live profile instead; an owner the head still
+/// attests after a profile change is accepted here.
 Map<String, int> buildDeletionThresholds(
   List<NostrEvent> deletionEvents,
   List<NostrEvent> heads,
 ) {
-  final attestedOwners = <String, Set<String>>{};
+  final attestedOwnerByCoordinate = <String, String>{};
   for (final head in heads) {
+    final coordinate = eventCoordinate(head);
     final owner = attestedOaOwnerPubkey(head);
-    if (owner == null) continue;
-    attestedOwners.putIfAbsent(head.pubkey.toLowerCase(), () => {}).add(owner);
+    if (coordinate != null && owner != null) {
+      attestedOwnerByCoordinate[coordinate] = owner;
+    }
   }
   bool mayDelete(String signer, String coordinate) {
     final parts = coordinate.split(':');
     if (parts.length < 3) return false;
-    final author = parts[1].toLowerCase();
-    return signer == author ||
-        (attestedOwners[author]?.contains(signer) ?? false);
+    return signer == parts[1].toLowerCase() ||
+        attestedOwnerByCoordinate[coordinate] == signer;
   }
 
   final thresholds = <String, int>{};

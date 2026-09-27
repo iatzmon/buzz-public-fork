@@ -394,6 +394,21 @@ pub fn build_delete_compat(
     Ok(EventBuilder::new(Kind::Custom(5), "").tags(tags))
 }
 
+/// Kind 9005 — NIP-29 DELETE_EVENT. The moderator delete path: the relay
+/// accepts it from the author, the agent's owner, channel owner/admin, and
+/// community owner/admin, soft-deletes the target, and posts a
+/// `message_deleted` tombstone. Mirrors `buzz_sdk::build_delete_message`.
+pub fn build_delete_event(
+    channel_id: Uuid,
+    target_event_id: EventId,
+) -> Result<EventBuilder, String> {
+    let tags = vec![
+        tag(vec!["h", &channel_id.to_string()])?,
+        tag(vec!["e", &target_event_id.to_hex()])?,
+    ];
+    Ok(EventBuilder::new(Kind::Custom(9005), "").tags(tags))
+}
+
 // ── Reactions ────────────────────────────────────────────────────────────────
 
 /// Kind 7 — NIP-25 reaction.
@@ -783,6 +798,25 @@ pub use workflows::{
 mod tests {
     use super::*;
     use nostr::Keys;
+    #[test]
+    fn delete_event_builder_emits_kind_9005_with_h_and_e_tags() {
+        let channel_id = Uuid::new_v4();
+        let target = EventId::from_hex(&"12".repeat(32)).unwrap();
+        let event = build_delete_event(channel_id, target)
+            .unwrap()
+            .sign_with_keys(&Keys::generate())
+            .unwrap();
+        let tags: Vec<Vec<String>> = event.tags.iter().map(|t| t.as_slice().to_vec()).collect();
+
+        assert_eq!(event.kind, Kind::Custom(9005));
+        assert_eq!(
+            tags,
+            vec![
+                vec!["h".to_string(), channel_id.to_string()],
+                vec!["e".to_string(), target.to_hex()],
+            ]
+        );
+    }
     #[test]
     fn channel_builders_reject_hash_only_names() {
         let channel_id = Uuid::new_v4();

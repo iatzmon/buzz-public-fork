@@ -364,13 +364,20 @@ class ChannelActions {
     _ensureCommunityValid();
   }
 
+  /// Deletes [eventId] from [channelId].
+  ///
+  /// Authors and agent owners use a NIP-09 kind:5 deletion. When
+  /// [asModerator] is true the viewer is deleting someone else's message as a
+  /// community or channel moderator, which the relay only accepts as a NIP-29
+  /// kind:9005 DELETE_EVENT. Both kinds carry the same `h` + `e` tags.
   Future<void> deleteMessage({
     required String channelId,
     required String eventId,
+    bool asModerator = false,
   }) async {
     _ensureCommunityValid();
     await _signedEventRelay.submit(
-      kind: EventKind.deletion,
+      kind: asModerator ? EventKind.nip29DeleteEvent : EventKind.deletion,
       content: '',
       tags: buildDeleteMessageTags(channelId: channelId, eventId: eventId),
     );

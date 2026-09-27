@@ -47,6 +47,11 @@ class _ThreadMessage extends HookConsumerWidget {
         currentPubkey?.toLowerCase() == pk ||
         (profile?.ownerPubkey != null &&
             profile?.ownerPubkey == currentPubkey?.toLowerCase());
+    // Community and channel owners/admins may delete (never edit) others'
+    // messages.
+    final canModerateMessage = ref.watch(
+      canModerateChannelMessagesProvider(channelId),
+    );
 
     final userCache = ref.watch(userCacheProvider);
     final knownAgentPubkeys = agentPubkeysWithProfileOwners(
@@ -82,6 +87,7 @@ class _ThreadMessage extends HookConsumerWidget {
         message: message,
         channelId: channelId,
         canManageMessage: canManageMessage,
+        canModerateMessage: canModerateMessage,
         allMessages: allMessages,
         currentPubkey: currentPubkey,
         isMember: isMember,
@@ -262,6 +268,8 @@ class _ThreadMessage extends HookConsumerWidget {
                                         channelId: channelId,
                                         imageUrl: imageUrl,
                                         canManageMessage: canManageMessage,
+                                        canModerateMessage: canModerateMessage,
+                                        currentPubkey: currentPubkey,
                                         onDeleted: () {
                                           if (viewerContext.mounted) {
                                             Navigator.of(

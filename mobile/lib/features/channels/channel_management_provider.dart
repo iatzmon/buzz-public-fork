@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 
 import '../../shared/auth/auth.dart';
+import '../../shared/community/community_membership_provider.dart';
 import '../../shared/custom_emoji/custom_emoji.dart';
 import '../../shared/custom_emoji/custom_emoji_provider.dart';
 import '../../shared/crypto/nip_oa.dart';
@@ -611,7 +612,25 @@ final channelCanvasProvider = FutureProvider.family<ChannelCanvas, String>((
   );
 });
 
-/// Channel-scoped kind:5 deletion tags. The `h` tag lets channel-scoped
+/// Whether the active user may moderator-delete other members' messages in
+/// [channelId]: a community owner/admin, or an owner/admin of the channel.
+///
+/// Moderator deletes are sent as NIP-29 kind:9005, which the relay authorizes
+/// for both roles. Unknown roles (loading or failed lookups) fail closed.
+final canModerateChannelMessagesProvider = Provider.autoDispose
+    .family<bool, String>((ref, channelId) {
+      if (ref.watch(canModerateCommunityMessagesProvider)) return true;
+      final self = ref.watch(currentPubkeyProvider);
+      if (self == null) return false;
+      final members = ref.watch(channelMembersProvider(channelId)).value;
+      if (members == null) return false;
+      for (final member in members) {
+        if (member.pubkey.toLowerCase() == self) return member.isElevated;
+      }
+      return false;
+    });
+
+/// Channel-scoped kind:5 / kind:9005 deletion tags. The `h` tag lets channel-scoped
 /// subscriptions observe the delete; the `e` tag points at the target event.
 @visibleForTesting
 List<List<String>> buildDeleteMessageTags({

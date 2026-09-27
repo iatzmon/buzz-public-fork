@@ -47,6 +47,7 @@ import 'package:buzz/features/profile/profile_provider.dart';
 import 'package:buzz/shared/profile/user_cache_provider.dart';
 import 'package:buzz/shared/profile/user_profile.dart';
 import 'package:buzz/features/profile/user_profile_sheet.dart';
+import 'package:buzz/shared/community/community_membership_provider.dart';
 import 'package:buzz/shared/community/community_provider.dart';
 import 'package:buzz/shared/emoji/emoji_burst.dart';
 import 'package:buzz/shared/mentions/agent_identity_provider.dart';
@@ -65,6 +66,9 @@ import 'package:buzz/shared/widgets/masked_avatar_badge.dart';
 import 'package:buzz/shared/widgets/skeleton.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../../helpers/recording_signed_event_relay.dart';
+
+part 'moderator_delete_cases.dart';
 part 'thread_reply_refresh_cases.dart';
 
 const _channelId = '11111111-2222-4333-8444-555555555555';
@@ -246,6 +250,7 @@ Widget _buildTestable({
   List<NostrEvent> huddleLifecycle = const [],
   String? huddleCurrentPubkey,
   http.Client? mediaClient,
+  CommunityMemberRole? communityRole,
   Widget? home,
 }) {
   final resolvedChannel = channel ?? _testChannel;
@@ -317,6 +322,7 @@ Widget _buildTestable({
         relayDirectoryUsersProvider.overrideWith((ref) async => directoryUsers),
       if (createChannelActions != null)
         channelActionsProvider.overrideWith(createChannelActions),
+      currentCommunityRoleProvider.overrideWithValue(AsyncData(communityRole)),
       if (readStateNotifier != null)
         readStateProvider.overrideWith(() => readStateNotifier),
       for (final entry in threadReplies.entries)
@@ -475,6 +481,7 @@ double? effectiveFontSizeForText(
 
 void main() {
   threadReplyRefreshTests();
+  moderatorDeleteTests();
   setUp(() async {
     SharedPreferences.setMockInitialValues({});
     _testPrefs = await SharedPreferences.getInstance();

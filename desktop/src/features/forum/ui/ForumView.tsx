@@ -2,7 +2,9 @@ import { MessageSquareText } from "lucide-react";
 import * as React from "react";
 
 import { useAppShell } from "@/app/AppShellContext";
+import { resolveMessageManagePermissions } from "@/features/messages/lib/messageDeleteAuthority";
 import { handleTimelineMentionCopy } from "@/features/messages/lib/timelineMentionCopy";
+import { useCanModerateChannelMessages } from "@/features/messages/lib/useCanModerateChannelMessages";
 import { useProfileQuery, useUsersBatchQuery } from "@/features/profile/hooks";
 import { mergeCurrentProfileIntoLookup } from "@/features/profile/lib/identity";
 import type { TypingIndicatorEntry } from "@/features/messages/useChannelTyping";
@@ -50,13 +52,6 @@ type ForumViewProps = {
 };
 
 const EMPTY_TYPING_ENTRIES: TypingIndicatorEntry[] = [];
-
-function canDelete(postPubkey: string, currentPubkey?: string): boolean {
-  if (!currentPubkey) return false;
-  // Author can always delete their own posts. Admin check would need
-  // channel member role data — for now, author-only is sufficient.
-  return postPubkey.toLowerCase() === currentPubkey.toLowerCase();
-}
 
 export function ForumView({
   channel,
@@ -195,6 +190,21 @@ export function ForumView({
     [profileQuery.data, profilesQuery.data?.profiles],
   );
 
+  // The relay refuses moderator deletes in an archived channel, so don't
+  // offer one there (the timeline and Inbox hide Delete on archive, too).
+  const canModerate =
+    useCanModerateChannelMessages(channel.id) && channel.archivedAt === null;
+  // Same delete rule as every other message surface: the author path (kind:5)
+  // for your own or your agent's posts, the moderator path (kind:9005) for
+  // anyone else's when you own/admin the community or this forum.
+  const postDeleteAuthority = (post: { kind: number; pubkey: string }) =>
+    resolveMessageManagePermissions(
+      post,
+      effectiveCurrentPubkey,
+      profiles,
+      canModerate,
+    ).deleteAuthority;
+
   const previousChannelIdRef = React.useRef(channel.id);
   React.useEffect(() => {
     if (previousChannelIdRef.current === channel.id) {
@@ -207,25 +217,32 @@ export function ForumView({
 
   if (selectedPostId) {
     const threadPost = threadQuery.data?.post;
-    const canDeleteExpandedPost = threadPost
-      ? canDelete(threadPost.pubkey, effectiveCurrentPubkey)
-      : false;
+    const expandedPostDeleteAuthority = threadPost
+      ? postDeleteAuthority(threadPost)
+      : null;
 
     return (
       <ForumThreadPanel
         key={`${channel.id}:${selectedPostId}`}
         postId={selectedPostId}
-        canDeletePost={canDeleteExpandedPost}
+        canDeletePost={expandedPostDeleteAuthority !== null}
+        canModerate={canModerate}
         currentPubkey={effectiveCurrentPubkey}
         isDeletingPost={deletePostMutation.isPending}
         isLoading={threadQuery.isLoading}
         isSendingReply={createReplyMutation.isPending}
         onBack={onClosePost}
         onDeletePost={(eventId) => {
-          deletePostMutation.mutate({ eventId }, { onSuccess: onClosePost });
+          deletePostMutation.mutate(
+            {
+              eventId,
+              asModerator: expandedPostDeleteAuthority === "moderator",
+            },
+            { onSuccess: onClosePost },
+          );
         }}
-        onDeleteReply={(eventId) => {
-          deleteReplyMutation.mutate({ eventId });
+        onDeleteReply={(eventId, { asModerator }) => {
+          deleteReplyMutation.mutate({ eventId, asModerator });
         }}
         channelId={channel.id}
         onReply={(content, mentionPubkeys, mediaTags) =>
@@ -325,27 +342,33 @@ export function ForumView({
             getItemKey={(post) => post.eventId}
             innerClassName="p-4"
             items={posts}
-            renderItem={(post) => (
-              <div className="pb-3">
-                <ForumPostCard
-                  canDelete={canDelete(post.pubkey, effectiveCurrentPubkey)}
-                  currentPubkey={effectiveCurrentPubkey}
-                  hasUnreadReplies={unreadPostIds.has(post.eventId)}
-                  isActive={selectedPostId === post.eventId}
-                  isDeleting={
-                    deletePostMutation.isPending &&
-                    deletePostMutation.variables?.eventId === post.eventId
-                  }
-                  onClick={() => onSelectPost(post.eventId)}
-                  onDelete={(eventId) => {
-                    deletePostMutation.mutate({ eventId });
-                  }}
-                  post={post}
-                  profiles={profiles}
-                  typingPubkeys={typingGroups.byPostId.get(post.eventId)}
-                />
-              </div>
-            )}
+            renderItem={(post) => {
+              const deleteAuthority = postDeleteAuthority(post);
+              return (
+                <div className="pb-3">
+                  <ForumPostCard
+                    canDelete={deleteAuthority !== null}
+                    currentPubkey={effectiveCurrentPubkey}
+                    hasUnreadReplies={unreadPostIds.has(post.eventId)}
+                    isActive={selectedPostId === post.eventId}
+                    isDeleting={
+                      deletePostMutation.isPending &&
+                      deletePostMutation.variables?.eventId === post.eventId
+                    }
+                    onClick={() => onSelectPost(post.eventId)}
+                    onDelete={(eventId) => {
+                      deletePostMutation.mutate({
+                        eventId,
+                        asModerator: deleteAuthority === "moderator",
+                      });
+                    }}
+                    post={post}
+                    profiles={profiles}
+                    typingPubkeys={typingGroups.byPostId.get(post.eventId)}
+                  />
+                </div>
+              );
+            }}
             scrollRef={postsScrollRef}
           />
         )}

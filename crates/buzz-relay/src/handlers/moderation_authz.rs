@@ -72,7 +72,7 @@ pub enum ModerationAuthority {
 ///
 /// - Community `owner`/`admin` (tenant-scoped `relay_members.role`) are
 ///   authorized for every [`ModerationAction`] in any channel of their
-///   community — this is the bridge `validate_admin_event` is missing today.
+///   community. `validate_admin_event` consults this for kind:9005 deletes.
 /// - Channel owner/admin keep their existing channel-local authority for
 ///   `DeleteMessage`/`Kick` (via `channel_id`).
 /// - Guard rails (plan): an admin cannot ban/timeout the community owner or

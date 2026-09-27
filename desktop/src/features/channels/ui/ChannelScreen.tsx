@@ -51,6 +51,7 @@ import {
 } from "@/features/messages/lib/threading";
 import { hasPersistedHydratedChannel } from "@/features/messages/lib/channelHeadCache";
 import { resolveTimelineQueryLoadingState } from "@/features/messages/lib/timelineLoadingState";
+import { useCanModerateChannelMessages } from "@/features/messages/lib/useCanModerateChannelMessages";
 import { useFetchOlderMessages } from "@/features/messages/useFetchOlderMessages";
 import { useIndependentThreadPanel } from "@/features/messages/useIndependentThreadPanel";
 import { useThreadReplies } from "@/features/messages/useThreadReplies";
@@ -252,6 +253,7 @@ export function ChannelScreen({
   );
   const toggleReactionMutation = useToggleReactionMutation();
   const deleteMessageMutation = useDeleteMessageMutation(activeChannel);
+  const canModerateMessages = useCanModerateChannelMessages(activeChannelId);
   const editMessageMutation = useEditMessageMutation(activeChannel);
   const joinChannelMutation = useJoinChannelMutation(activeChannelId);
   const {
@@ -499,6 +501,8 @@ export function ChannelScreen({
     handleSelectThreadReplyTarget,
     handleToggleReaction,
   } = useChannelPaneHandlers({
+    canModerateMessages,
+    currentPubkey,
     deleteMessageMutation,
     editMessageMutation,
     editTargetId,
@@ -849,6 +853,7 @@ export function ChannelScreen({
                   onAutoSendComplete={clearAutoSend}
                   botTypingEntries={botTypingEntries}
                   channelManagementOpen={channelManagementOpen}
+                  canModerateMessages={canModerateMessages}
                   currentPubkey={currentPubkey}
                   canResetThreadPanelWidth={canResetThreadPanelWidth}
                   fetchOlder={fetchOlder}

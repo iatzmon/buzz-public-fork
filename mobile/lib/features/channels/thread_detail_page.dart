@@ -19,6 +19,7 @@ import '../../shared/profile/user_cache_provider.dart';
 import '../../shared/profile/user_profile.dart';
 import 'android_ime_lift.dart';
 import 'channel_link_navigation.dart';
+import 'channel_management_provider.dart';
 import 'channel_messages_provider.dart';
 import 'channel_typing_provider.dart';
 import 'channel_typing_indicator.dart';

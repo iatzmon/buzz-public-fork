@@ -140,13 +140,37 @@ test("owner can delete their owned agent's message", async ({ page }) => {
 
   // The message row must be removed from the timeline.
   await expect(agentRow).toBeHidden({ timeout: 5_000 });
+
+  // The mock identity also owns #agents, so its own agent's message goes out
+  // as the kind:9005 moderator delete: the relay's kind:5 agent-owner check
+  // uses its own ownership record, which can disagree with the profile.
+  const deletePayloads = await page.evaluate(() =>
+    (
+      (
+        window as Window & {
+          __BUZZ_E2E_COMMAND_PAYLOADS__?: Array<{
+            command: string;
+            payload: unknown;
+          }>;
+        }
+      ).__BUZZ_E2E_COMMAND_PAYLOADS__ ?? []
+    )
+      .filter((entry) => entry.command === "delete_message")
+      .map((entry) => entry.payload),
+  );
+  expect(deletePayloads).toEqual([
+    expect.objectContaining({ eventId: messageId, asModerator: true }),
+  ]);
 });
 
-test("owner does NOT see Edit or Delete for an unowned agent's message", async ({
+test("owner does NOT get Edit for an unowned agent's message; Delete is moderator-only", async ({
   page,
 }) => {
   // "mock-agents-charlie" is seeded in #agents for CHARLIE_PUBKEY.
-  // Charlie is in mockAgentPubkeys but ownerPubkey is NOT the mock identity.
+  // Charlie is in mockAgentPubkeys but ownerPubkey is NOT the mock identity,
+  // so the owner-of-agent path grants nothing: Edit is withheld. The mock
+  // identity owns #agents, though, so Delete is still offered — as a
+  // moderator delete (see moderator-message-delete.spec.ts).
   const charlieMessageId = "mock-agents-charlie";
 
   await page.goto("/");
@@ -168,7 +192,7 @@ test("owner does NOT see Edit or Delete for an unowned agent's message", async (
   ).toHaveCount(0);
   await expect(
     page.getByTestId(`delete-message-${charlieMessageId}`),
-  ).toHaveCount(0);
+  ).toBeVisible();
 });
 
 // ─── Thread-panel gate ────────────────────────────────────────────────────────

@@ -125,3 +125,19 @@ final currentCommunityRoleProvider = Provider<AsyncValue<CommunityMemberRole?>>(
 /// Whether [role] is allowed to create community invitations.
 bool canManageCommunityInvites(CommunityMemberRole? role) =>
     role == CommunityMemberRole.owner || role == CommunityMemberRole.admin;
+
+/// Whether [role] may delete other members' messages as a community moderator.
+///
+/// Moderator deletes are sent as NIP-29 kind:9005 events, which the relay
+/// authorizes for community owners and admins.
+bool canModerateCommunityMessages(CommunityMemberRole? role) =>
+    role == CommunityMemberRole.owner || role == CommunityMemberRole.admin;
+
+/// Whether the active user may delete other members' messages in the current
+/// community. `false` while the membership snapshot is loading or failed, so
+/// the moderator affordance never appears on an unconfirmed role.
+final canModerateCommunityMessagesProvider = Provider<bool>(
+  (ref) => canModerateCommunityMessages(
+    ref.watch(currentCommunityRoleProvider).value,
+  ),
+);

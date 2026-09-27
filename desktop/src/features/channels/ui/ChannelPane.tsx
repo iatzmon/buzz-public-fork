@@ -84,6 +84,7 @@ export const ChannelPane = React.memo(function ChannelPane({
   autoSendDraftKey = null,
   onAutoSendComplete = null,
   botTypingEntries,
+  canModerateMessages = false,
   channelManagementOpen = false,
   currentPubkey,
   editTarget = null,
@@ -628,6 +629,7 @@ export const ChannelPane = React.memo(function ChannelPane({
               channelIntro={channelIntro}
               directMessageIntro={directMessageIntro}
               scrollContainerRef={timelineScrollRef}
+              canModerateMessages={canModerateMessages}
               currentPubkey={currentPubkey}
               fetchOlder={fetchOlder}
               followThreadById={followThreadById}
@@ -840,6 +842,7 @@ export const ChannelPane = React.memo(function ChannelPane({
           (() => {
             const panel = (
               <MessageThreadPanel
+                canModerateMessages={canModerateMessages}
                 channel={activeChannel}
                 channelId={activeChannel?.id ?? null}
                 channelName={activeChannel?.name ?? "channel"}

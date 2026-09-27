@@ -699,7 +699,8 @@ pub async fn validate_admin_event(
             }
         }
         9005 => {
-            // DELETE_EVENT: event author OR channel owner/admin.
+            // DELETE_EVENT: event author, channel owner/admin, owning human of the
+            // agent author, or community owner/admin.
             if let Some(action_id) = extract_tag_value(event, "action_id") {
                 Uuid::parse_str(&action_id)
                     .map_err(|_| anyhow::anyhow!("invalid action_id tag"))?;
@@ -779,9 +780,32 @@ pub async fn validate_admin_event(
                 {
                     Ok(())
                 } else {
-                    Err(anyhow::anyhow!(
-                        "must be event author or channel owner/admin"
-                    ))
+                    // Community owner/admin may delete in every channel of their
+                    // community. The tenant fence and the target-channel check
+                    // above have already run. `channel_id` is `None` because the
+                    // channel role was checked above; only community authority
+                    // is left to grant.
+                    super::moderation_authz::authorize_moderation_action(
+                        tenant,
+                        state,
+                        &actor_bytes,
+                        None,
+                        super::moderation_authz::ModerationTarget::Event(&target_id),
+                        super::moderation_authz::ModerationAction::DeleteMessage,
+                    )
+                    .await
+                    .map(|_| ())
+                    .map_err(|e| {
+                        // A database failure propagates as-is; only a policy
+                        // denial becomes the client-facing authorization error.
+                        if e.downcast_ref::<buzz_db::DbError>().is_some() {
+                            e
+                        } else {
+                            anyhow::anyhow!(
+                                "must be event author, channel owner/admin, or community owner/admin"
+                            )
+                        }
+                    })
                 }
             }
         }
@@ -3948,5 +3972,167 @@ mod tests {
         }];
 
         assert!(actor_is_channel_owner_or_admin(&members, &actor));
+    }
+
+    /// Seed one community with a private channel and one message, for the
+    /// kind:9005 community-moderator tests below.
+    async fn seed_delete_fixture(
+        pool: &sqlx::PgPool,
+    ) -> (TenantContext, Arc<AppState>, Uuid, nostr::Event) {
+        let community = Uuid::new_v4();
+        let host = format!("delete-authz-{}.example", community.simple());
+        sqlx::query("INSERT INTO communities (id, host) VALUES ($1, $2)")
+            .bind(community)
+            .bind(&host)
+            .execute(pool)
+            .await
+            .expect("insert community");
+        let tenant = TenantContext::resolved(buzz_core::CommunityId::from_uuid(community), host);
+        let state = crate::state::tests::test_state_with_database_pool(pool.clone()).await;
+
+        let channel_owner = nostr::Keys::generate();
+        let channel = state
+            .db
+            .create_channel(
+                tenant.community(),
+                "delete-authz",
+                buzz_db::channel::ChannelType::Stream,
+                buzz_db::channel::ChannelVisibility::Private,
+                None,
+                &channel_owner.public_key().to_bytes(),
+                None,
+            )
+            .await
+            .expect("create channel");
+
+        let author = nostr::Keys::generate();
+        let message = EventBuilder::new(Kind::Custom(9), "spam")
+            .tags(vec![
+                Tag::parse(["h", &channel.id.to_string()]).expect("h tag")
+            ])
+            .sign_with_keys(&author)
+            .expect("sign message");
+        state
+            .db
+            .insert_event(tenant.community(), &message, Some(channel.id))
+            .await
+            .expect("insert message");
+        (tenant, state, channel.id, message)
+    }
+
+    async fn set_community_role(
+        pool: &sqlx::PgPool,
+        tenant: &TenantContext,
+        keys: &nostr::Keys,
+        role: &str,
+    ) {
+        sqlx::query("INSERT INTO relay_members (community_id, pubkey, role) VALUES ($1, $2, $3)")
+            .bind(tenant.community().as_uuid())
+            .bind(keys.public_key().to_hex())
+            .bind(role)
+            .execute(pool)
+            .await
+            .expect("insert relay member");
+    }
+
+    fn moderator_delete(keys: &nostr::Keys, channel_id: Uuid, target: &nostr::Event) -> Event {
+        EventBuilder::new(Kind::Custom(9005), "")
+            .tags(vec![
+                Tag::parse(["h", &channel_id.to_string()]).expect("h tag"),
+                Tag::parse(["e", &target.id.to_hex()]).expect("e tag"),
+            ])
+            .sign_with_keys(keys)
+            .expect("sign delete")
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres"]
+    async fn kind_9005_allows_community_owner_and_admin_outside_the_channel() {
+        let pool = sqlx::PgPool::connect(&crate::test_support::database_url())
+            .await
+            .expect("connect to test DB");
+        for role in ["owner", "admin"] {
+            let (tenant, state, channel_id, message) = seed_delete_fixture(&pool).await;
+            // Not a channel member and not the author: only the community
+            // role can authorize this delete.
+            let moderator = nostr::Keys::generate();
+            set_community_role(&pool, &tenant, &moderator, role).await;
+
+            let delete = moderator_delete(&moderator, channel_id, &message);
+            validate_admin_event(&tenant, 9005, &delete, &state)
+                .await
+                .unwrap_or_else(|e| panic!("community {role} delete must be allowed: {e}"));
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres"]
+    async fn kind_9005_denies_community_member_and_foreign_admin() {
+        let pool = sqlx::PgPool::connect(&crate::test_support::database_url())
+            .await
+            .expect("connect to test DB");
+        let (tenant, state, channel_id, message) = seed_delete_fixture(&pool).await;
+
+        let member = nostr::Keys::generate();
+        set_community_role(&pool, &tenant, &member, "member").await;
+        let err = validate_admin_event(
+            &tenant,
+            9005,
+            &moderator_delete(&member, channel_id, &message),
+            &state,
+        )
+        .await
+        .expect_err("a community member must not delete another author's message");
+        assert!(err.to_string().contains("must be event author"), "{err}");
+
+        // An admin of a different community holds no authority here.
+        let (other_tenant, _, _, _) = seed_delete_fixture(&pool).await;
+        let foreign_admin = nostr::Keys::generate();
+        set_community_role(&pool, &other_tenant, &foreign_admin, "admin").await;
+        let err = validate_admin_event(
+            &tenant,
+            9005,
+            &moderator_delete(&foreign_admin, channel_id, &message),
+            &state,
+        )
+        .await
+        .expect_err("another community's admin must not delete here");
+        assert!(err.to_string().contains("must be event author"), "{err}");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres"]
+    async fn kind_9005_community_admin_keeps_target_channel_check() {
+        let pool = sqlx::PgPool::connect(&crate::test_support::database_url())
+            .await
+            .expect("connect to test DB");
+        let (tenant, state, _, message) = seed_delete_fixture(&pool).await;
+        let admin = nostr::Keys::generate();
+        set_community_role(&pool, &tenant, &admin, "admin").await;
+
+        // Same community, but the h tag names a different channel than the
+        // target's: the target-channel check must still reject it.
+        let other_channel = state
+            .db
+            .create_channel(
+                tenant.community(),
+                "delete-authz-other",
+                buzz_db::channel::ChannelType::Stream,
+                buzz_db::channel::ChannelVisibility::Open,
+                None,
+                &admin.public_key().to_bytes(),
+                None,
+            )
+            .await
+            .expect("create other channel");
+        let err = validate_admin_event(
+            &tenant,
+            9005,
+            &moderator_delete(&admin, other_channel.id, &message),
+            &state,
+        )
+        .await
+        .expect_err("a delete must name the target's own channel");
+        assert!(err.to_string().contains("different channel"), "{err}");
     }
 }

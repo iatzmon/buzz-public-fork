@@ -46,6 +46,7 @@ bool _tryShowMessageActionsPopover({
   required TimelineMessage message,
   required String channelId,
   required bool canManageMessage,
+  required bool canModerateMessage,
   required List<TimelineMessage>? allMessages,
   required String? currentPubkey,
   required bool isMember,
@@ -66,6 +67,7 @@ bool _tryShowMessageActionsPopover({
       message: message,
       channelId: channelId,
       canManageMessage: canManageMessage,
+      canModerateMessage: canModerateMessage,
       allMessages: allMessages,
       currentPubkey: currentPubkey,
       isMember: isMember,
@@ -85,6 +87,7 @@ bool _tryShowMessageActionsPopover({
         message: message,
         channelId: channelId,
         canManageMessage: canManageMessage,
+        canModerateMessage: canModerateMessage,
         allMessages: allMessages,
         currentPubkey: currentPubkey,
         isMember: isMember,
@@ -101,6 +104,7 @@ Future<bool> _showMessageActionsPopover({
   required TimelineMessage message,
   required String channelId,
   required bool canManageMessage,
+  required bool canModerateMessage,
   required List<TimelineMessage>? allMessages,
   required String? currentPubkey,
   required bool isMember,
@@ -123,6 +127,7 @@ Future<bool> _showMessageActionsPopover({
       message: message,
       channelId: channelId,
       canManageMessage: canManageMessage,
+      canModerateMessage: canModerateMessage,
       allMessages: allMessages,
       currentPubkey: currentPubkey,
       isMember: isMember,
@@ -225,6 +230,7 @@ List<_PopoverMessageAction> _buildPopoverMessageActions({
   required TimelineMessage message,
   required String channelId,
   required bool canManageMessage,
+  required bool canModerateMessage,
   required List<TimelineMessage>? allMessages,
   required String? currentPubkey,
   required bool isMember,
@@ -383,6 +389,15 @@ List<_PopoverMessageAction> _buildPopoverMessageActions({
         },
       ),
     );
+  }
+
+  final deleteAccess = resolveMessageDeleteAccess(
+    message: message,
+    currentPubkey: currentPubkey,
+    canManageMessage: canManageMessage,
+    canModerateMessage: canModerateMessage,
+  );
+  if (deleteAccess.canDelete) {
     actions.add(
       _PopoverMessageAction(
         id: 'delete',
@@ -397,6 +412,7 @@ List<_PopoverMessageAction> _buildPopoverMessageActions({
             ref: ref,
             channelId: channelId,
             messageId: message.id,
+            asModerator: deleteAccess.asModerator,
           );
         },
       ),

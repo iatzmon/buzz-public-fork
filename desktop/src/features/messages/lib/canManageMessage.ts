@@ -5,7 +5,9 @@ import type { UserProfileLookup } from "@/features/profile/lib/identity";
 import { ownsAuthorAgent } from "@/features/profile/lib/identity";
 
 /**
- * Returns true when the current user may edit or delete `message`.
+ * Returns true when the current user may edit `message`, or delete it on the
+ * author path (NIP-09 kind:5). Moderator deletes of other people's messages
+ * are layered on top in `messageDeleteAuthority.ts`.
  *
  * Two paths grant permission — mirroring the relay's authz:
  *   1. Self-author: the current user pubkey matches the message pubkey.
@@ -15,7 +17,7 @@ import { ownsAuthorAgent } from "@/features/profile/lib/identity";
  * Huddle-started messages are immutable regardless of authorship.
  */
 export function canManageMessageForCurrentUser(
-  message: TimelineMessage,
+  message: Pick<TimelineMessage, "kind" | "pubkey">,
   currentPubkey: string | undefined,
   profiles: UserProfileLookup | undefined,
 ): boolean {

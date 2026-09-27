@@ -798,12 +798,12 @@ export function useToggleReactionMutation() {
 export function useDeleteMessageMutation(channel: Channel | null) {
   const queryClient = useQueryClient();
 
-  return useMutation<void, Error, { eventId: string }>({
-    mutationFn: async ({ eventId }) => {
+  return useMutation<void, Error, { eventId: string; asModerator?: boolean }>({
+    mutationFn: async ({ eventId, asModerator }) => {
       if (!channel) {
         throw new Error("No channel selected.");
       }
-      await deleteMessage(channel.id, eventId);
+      await deleteMessage(channel.id, eventId, { asModerator });
     },
     onSuccess: (_data, { eventId }) => {
       if (!channel) return;

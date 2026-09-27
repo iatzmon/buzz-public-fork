@@ -109,7 +109,7 @@ async function resolveTargetAuthor(
  * leaves the report open (no false DM, no orphan decision row). `escalate` and
  * `dismiss` carry no enforcement — they are pure 9044 decisions.
  */
-async function enforceResolution(
+export async function enforceResolution(
   group: ModerationQueueGroup,
   action: ResolutionAction,
   ban: (input: { pubkey: string; reason?: string }) => Promise<unknown>,
@@ -118,7 +118,11 @@ async function enforceResolution(
     case "delete":
       // Gated to event targets with a channel (resolvableActions).
       if (group.channelId == null) throw new Error("Report has no channel.");
-      await deleteMessage(group.channelId, group.target);
+      // A reported message is someone else's: only the NIP-29 kind:9005
+      // moderator delete is accepted from a community owner/admin.
+      await deleteMessage(group.channelId, group.target, {
+        asModerator: true,
+      });
       return;
     case "ban":
       await ban({ pubkey: await resolveTargetAuthor(group) });

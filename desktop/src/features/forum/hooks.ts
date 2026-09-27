@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
 
 import { getForumPosts, getForumThread } from "@/shared/api/forum";
 import { useFocusedRefetchInterval } from "@/shared/lib/useDocumentVisible";
@@ -117,15 +118,18 @@ export function useCreateForumPostMutation(channel: Channel | null) {
   });
 }
 
+/** A forum delete: `asModerator` selects the kind:9005 moderator path. */
+export type ForumDeleteVariables = { eventId: string; asModerator?: boolean };
+
 export function useDeleteForumPostMutation(channel: Channel | null) {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: async ({ eventId }: { eventId: string }) => {
+    mutationFn: async ({ eventId, asModerator }: ForumDeleteVariables) => {
       if (!channel) {
         throw new Error("No channel selected.");
       }
-      await deleteMessage(channel.id, eventId);
+      await deleteMessage(channel.id, eventId, { asModerator });
     },
     onSuccess: () => {
       if (channel) {
@@ -133,6 +137,9 @@ export function useDeleteForumPostMutation(channel: Channel | null) {
           queryKey: forumPostsQueryKey(channel.id),
         });
       }
+    },
+    onError: (error) => {
+      toast.error(`Failed to delete post: ${error.message}`);
     },
   });
 }
@@ -144,11 +151,11 @@ export function useDeleteForumReplyMutation(
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: async ({ eventId }: { eventId: string }) => {
+    mutationFn: async ({ eventId, asModerator }: ForumDeleteVariables) => {
       if (!channel) {
         throw new Error("No channel selected.");
       }
-      await deleteMessage(channel.id, eventId);
+      await deleteMessage(channel.id, eventId, { asModerator });
     },
     onSuccess: () => {
       if (channel) {
@@ -161,6 +168,9 @@ export function useDeleteForumReplyMutation(
           queryKey: forumPostsQueryKey(channel.id),
         });
       }
+    },
+    onError: (error) => {
+      toast.error(`Failed to delete reply: ${error.message}`);
     },
   });
 }

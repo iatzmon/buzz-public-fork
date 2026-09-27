@@ -518,11 +518,25 @@ export async function uploadMediaBytes(
 
 export { editMessage } from "@/shared/api/editMessage";
 
+export type DeleteMessageOptions = {
+  /**
+   * Send the NIP-29 kind:9005 moderator delete instead of the author's NIP-09
+   * kind:5. Required when a community or channel owner/admin deletes someone
+   * else's message — the relay never accepts kind:5 from a moderator.
+   */
+  asModerator?: boolean;
+};
+
 export async function deleteMessage(
   channelId: string,
   eventId: string,
+  options: DeleteMessageOptions = {},
 ): Promise<void> {
-  await invokeTauri("delete_message", { channelId, eventId });
+  await invokeTauri("delete_message", {
+    channelId,
+    eventId,
+    asModerator: options.asModerator === true,
+  });
 }
 
 export async function addReaction(

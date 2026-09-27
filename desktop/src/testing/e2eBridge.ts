@@ -10475,14 +10475,17 @@ async function handleSendManagedAgentChannelMessage(
 
 /**
  * Mock the `delete_message` Tauri command. Removes the event from the
- * in-memory mock store and records the kind:5 structural event used by Inbox
- * refreshes. Do not emit it live: mock target IDs may fail the production
- * 64-hex deletion filter, letting a live merge restore the flattened row.
+ * in-memory mock store and records the structural deletion event used by Inbox
+ * refreshes: kind:5 on the author path, kind:9005 when `asModerator` is set
+ * (mirroring the Rust command's kind choice). Do not emit it live: mock target
+ * IDs may fail the production 64-hex deletion filter, letting a live merge
+ * restore the flattened row.
  */
 function handleDeleteMessage(
   args: {
     channelId: string;
     eventId: string;
+    asModerator?: boolean | null;
   },
   config: E2eConfig | undefined,
 ): void {
@@ -10493,7 +10496,7 @@ function handleDeleteMessage(
   }
 
   const deletion = createMockEvent(
-    KIND_DELETION,
+    args.asModerator ? KIND_NIP29_DELETION : KIND_DELETION,
     "",
     [
       ["e", args.eventId],

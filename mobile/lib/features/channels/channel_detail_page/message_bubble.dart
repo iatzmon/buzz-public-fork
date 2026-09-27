@@ -56,6 +56,11 @@ class _MessageBubble extends HookConsumerWidget {
         currentPubkey?.toLowerCase() == pk ||
         (profile?.ownerPubkey != null &&
             profile?.ownerPubkey == currentPubkey?.toLowerCase());
+    // Community and channel owners/admins may delete (never edit) others'
+    // messages.
+    final canModerateMessage = ref.watch(
+      canModerateChannelMessagesProvider(currentChannelId),
+    );
 
     // Watch only profiles referenced by this message. A batched profile fetch
     // should not rebuild every visible message just because an unrelated user
@@ -102,6 +107,7 @@ class _MessageBubble extends HookConsumerWidget {
         message: message,
         channelId: currentChannelId,
         canManageMessage: canManageMessage,
+        canModerateMessage: canModerateMessage,
         allMessages: allMessages,
         currentPubkey: currentPubkey,
         isMember: isMember,
@@ -267,6 +273,8 @@ class _MessageBubble extends HookConsumerWidget {
                                       channelId: currentChannelId,
                                       imageUrl: imageUrl,
                                       canManageMessage: canManageMessage,
+                                      canModerateMessage: canModerateMessage,
+                                      currentPubkey: currentPubkey,
                                       onDeleted: () {
                                         if (viewerContext.mounted) {
                                           Navigator.of(

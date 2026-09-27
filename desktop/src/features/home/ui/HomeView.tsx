@@ -1,4 +1,5 @@
 import * as React from "react";
+import { toast } from "sonner";
 import { RefreshCcw } from "lucide-react";
 
 import { useAppShell } from "@/app/AppShellContext";
@@ -475,12 +476,19 @@ export function HomeView({
     selectedItem,
   });
   const deleteInboxMessage = React.useCallback(
-    async (eventId: string) => {
+    async (eventId: string, options: { asModerator?: boolean } = {}) => {
       const channelId = selectedItem?.item.channelId;
       if (!channelId) return;
       setIsDeletingMessage(true);
       try {
-        await deleteMessage(channelId, eventId);
+        try {
+          await deleteMessage(channelId, eventId, options);
+        } catch (error) {
+          toast.error(
+            `Failed to delete message: ${error instanceof Error ? error.message : String(error)}`,
+          );
+          return;
+        }
         await threadContext.refreshStructuralEvents();
         onRefresh();
       } finally {

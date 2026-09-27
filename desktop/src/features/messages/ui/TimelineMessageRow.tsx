@@ -3,7 +3,7 @@ import * as React from "react";
 import type { MainTimelineEntry } from "@/features/messages/lib/threadPanel";
 import { THREAD_REPLY_ROW_MARGIN_INLINE_REM } from "@/features/messages/lib/threadTreeLayout";
 import type { buildVideoReviewContextForMessage } from "@/features/messages/lib/videoReviewContext";
-import { canManageMessageForCurrentUser } from "@/features/messages/lib/canManageMessage";
+import { resolveMessageManagePermissions } from "@/features/messages/lib/messageDeleteAuthority";
 import type { TimelineMessage } from "@/features/messages/types";
 import type { UserProfileLookup } from "@/features/profile/lib/identity";
 import { cn } from "@/shared/lib/cn";
@@ -60,6 +60,9 @@ export function SystemRow({
 }
 
 type MessageRowItemProps = {
+  /** Viewer owns/admins the community or channel: Delete (never Edit) on
+   *  other people's messages, sent as a moderator delete by the handler. */
+  canModerateMessages?: boolean;
   channelId?: string | null;
   currentPubkey?: string;
   entry: MainTimelineEntry;
@@ -92,6 +95,7 @@ type MessageRowItemProps = {
 };
 
 export function MessageRowItem({
+  canModerateMessages = false,
   channelId,
   currentPubkey,
   entry,
@@ -123,13 +127,15 @@ export function MessageRowItem({
   videoReviewContext,
 }: MessageRowItemProps) {
   const { message, summary } = entry;
-  const canManage = canManageMessageForCurrentUser(
+  const permissions = resolveMessageManagePermissions(
     message,
     currentPubkey,
     profiles,
+    canModerateMessages,
   );
-  const canDelete = canManage && onDelete ? onDelete : undefined;
-  const canEdit = canManage && onEdit ? onEdit : undefined;
+  const canDelete =
+    permissions.deleteAuthority !== null && onDelete ? onDelete : undefined;
+  const canEdit = permissions.canEdit && onEdit ? onEdit : undefined;
 
   if (summary && onOpenThread) {
     const isHighlighted = message.id === highlightedMessageId;

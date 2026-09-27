@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 
@@ -6,6 +8,7 @@ import '../channels/channel_management_provider.dart';
 import '../../shared/custom_emoji/custom_emoji.dart';
 import '../../shared/custom_emoji/custom_emoji_provider.dart';
 import 'forum_models.dart';
+import 'forum_thread_history.dart';
 
 /// Fetches forum posts (kind:45001) for a channel from the relay.
 ///
@@ -23,49 +26,54 @@ final forumPostsProvider = FutureProvider.family<ForumPostsResponse, String>((
   return ForumPostsResponse.fromEvents(events);
 });
 
-/// Fetches a forum thread (root post + replies) from the relay.
-///
-/// A forum post also gets the relay's reply summary (see
-/// [fetchForumPostSummary]) so opening it can mark every counted reply read.
-final forumThreadProvider =
-    FutureProvider.family<
-      ForumThreadResponse,
-      ({String channelId, String eventId})
-    >((ref, args) async {
+/// Identifies a thread within the active community.
+typedef ForumThreadKey = ({String channelId, String eventId});
+
+// Keep cache lifetime aligned with the community and signing identity. A late
+// response cannot populate a replacement community's history.
+final _forumThreadHistoryProvider = Provider.autoDispose
+    .family<ForumThreadHistory, ForumThreadKey>((ref, args) {
+      ref.watch(relayConfigProvider);
+      return ForumThreadHistory();
+    });
+
+/// Finite history uses the HTTP bridge so a reconnecting WebSocket cannot
+/// strand thread loading. Refreshes merge only recent replies into cached data.
+final forumThreadProvider = FutureProvider.autoDispose
+    .family<ForumThreadResponse, ForumThreadKey>((ref, args) async {
+      final retention = ref.keepAlive();
+      Timer? expiry;
+      ref.onCancel(() {
+        expiry?.cancel();
+        expiry = Timer(const Duration(minutes: 5), retention.close);
+      });
+      ref.onResume(() {
+        expiry?.cancel();
+      });
+      ref.onDispose(() {
+        expiry?.cancel();
+      });
+      final history = ref.watch(_forumThreadHistoryProvider(args));
       final session = ref.watch(relaySessionProvider.notifier);
+      return history.load(
+        session,
+        channelId: args.channelId,
+        eventId: args.eventId,
+        isCurrent: () => ref.mounted,
+      );
+    });
 
-      final results = await Future.wait([
-        // Root event lookup by id.
-        session.fetchHistory(
-          NostrFilter(
-            kinds: const [9, 40002, 45001, 45003],
-            ids: [args.eventId],
-            limit: 1,
-          ),
-        ),
-        // Replies pointing at this root.
-        session.fetchHistory(
-          NostrFilters.forumThread(args.eventId, args.channelId),
-        ),
-      ]);
-
-      final rootEvents = results[0];
-      final replyEvents = results[1];
-      if (rootEvents.isEmpty) {
-        throw Exception('Forum thread not found: ${args.eventId}');
-      }
-      final root = rootEvents.first;
-      final postSummary = root.kind == EventKind.forumPost
-          ? await fetchForumPostSummary(
-              session,
-              channelId: args.channelId,
-              post: root,
-            )
-          : null;
-      return ForumThreadResponse.fromEvents(
-        root: root,
-        replies: replyEvents,
-        postSummary: postSummary,
+/// Read markers use summary metadata when it arrives; messages never wait for it.
+final forumThreadSummaryProvider = FutureProvider.autoDispose
+    .family<ForumThreadSummary?, ForumThreadKey>((ref, args) async {
+      final thread = await ref.watch(forumThreadProvider(args).future);
+      if (!ref.mounted || thread.post.kind != EventKind.forumPost) return null;
+      final session = ref.read(relaySessionProvider.notifier);
+      return fetchForumPostSummary(
+        session,
+        channelId: args.channelId,
+        postEventId: thread.post.eventId,
+        postCreatedAt: thread.post.createdAt,
       );
     });
 
@@ -79,20 +87,21 @@ final forumThreadProvider =
 Future<ForumThreadSummary?> fetchForumPostSummary(
   RelaySessionNotifier session, {
   required String channelId,
-  required NostrEvent post,
+  required String postEventId,
+  required int postCreatedAt,
 }) async {
   try {
     final events = await session.queryRelay([
       NostrFilters.forumPostSummaryWindow(
         channelId,
-        postCreatedAt: post.createdAt,
+        postCreatedAt: postCreatedAt,
       ),
     ]);
     for (final listed in ForumPostsResponse.fromEvents(events).posts) {
-      if (listed.eventId == post.id) return listed.threadSummary;
+      if (listed.eventId == postEventId) return listed.threadSummary;
     }
   } on Object catch (error) {
-    debugPrint('[forum] post summary fetch failed for ${post.id}: $error');
+    debugPrint('[forum] post summary fetch failed for $postEventId: $error');
   }
   return null;
 }

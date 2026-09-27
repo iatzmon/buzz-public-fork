@@ -1569,7 +1569,9 @@ void main() {
         await tester.tap(find.widgetWithText(FilledButton, 'Delete'));
         await tester.pumpAndSettle();
         expect(relay.submissions.single.kind, EventKind.deletion);
-        expect(find.text('Failed to load thread'), findsOneWidget);
+        expect(find.text('Could not refresh replies.'), findsOneWidget);
+        expect(find.text('Newer reply'), findsOneWidget);
+        expect(find.text('Own notified reply'), findsNothing);
 
         failReload = false;
         await tester.tap(find.text('Retry'));

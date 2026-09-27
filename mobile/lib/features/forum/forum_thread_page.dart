@@ -8,6 +8,7 @@ import 'package:lucide_icons_flutter/lucide_icons.dart';
 import 'package:scrollable_positioned_list/scrollable_positioned_list.dart';
 
 import '../../shared/mentions/agent_identity_provider.dart';
+import '../../shared/relay/relay.dart';
 import '../../shared/read_state/deferred_read_state_update.dart';
 import '../../shared/read_state/read_state_format.dart';
 import '../../shared/read_state/read_state_provider.dart';
@@ -30,6 +31,7 @@ import '../profile/user_profile_sheet.dart';
 import 'forum_activity.dart';
 import 'forum_models.dart';
 import 'forum_provider.dart';
+import 'forum_thread_history.dart';
 import 'forum_working_indicator.dart';
 
 /// Full-screen page showing a forum post and its replies.
@@ -77,15 +79,43 @@ class ForumThreadPage extends HookConsumerWidget {
       }
     }
 
-    // Periodic refresh (every 10s, matching desktop).
+    // Reopening a retained provider must refresh immediately, not after the
+    // first poll. Defer until after build so cached messages render first.
     useEffect(() {
-      final timer = Stream.periodic(const Duration(seconds: 10)).listen((_) {
+      var active = true;
+      void reload() {
+        if (!active || !context.mounted) return;
+        final provider = forumThreadProvider((
+          channelId: channelId,
+          eventId: postEventId,
+        ));
+        if (!ref.read(provider).isLoading) ref.invalidate(provider);
+      }
+
+      WidgetsBinding.instance.addPostFrameCallback((_) => reload());
+      final lifecycle = AppLifecycleListener(onResume: reload);
+      final timer = Timer.periodic(const Duration(seconds: 10), (_) {
+        if (WidgetsBinding.instance.lifecycleState == null ||
+            WidgetsBinding.instance.lifecycleState ==
+                AppLifecycleState.resumed) {
+          reload();
+        }
+      });
+      return () {
+        active = false;
+        timer.cancel();
+        lifecycle.dispose();
+      };
+    }, [channelId, postEventId]);
+    ref.listen(relaySessionProvider.select((s) => s.status), (previous, next) {
+      if (previous != SessionStatus.connected &&
+          next == SessionStatus.connected &&
+          !threadAsync.isLoading) {
         ref.invalidate(
           forumThreadProvider((channelId: channelId, eventId: postEventId)),
         );
-      });
-      return timer.cancel;
-    }, [channelId, postEventId]);
+      }
+    });
 
     final isOwnPost =
         threadAsync
@@ -120,6 +150,9 @@ class ForumThreadPage extends HookConsumerWidget {
         ],
       ),
       body: threadAsync.when(
+        skipError:
+            threadAsync.hasValue &&
+            threadAsync.error is! ForumThreadUnavailable,
         loading: () => Padding(
           padding: EdgeInsets.only(top: frostedAppBarHeight(context)),
           child: const Center(
@@ -146,18 +179,36 @@ class ForumThreadPage extends HookConsumerWidget {
             ),
           ),
         ),
-        data: (thread) => _ThreadContent(
-          thread: thread,
-          channelId: channelId,
-          currentPubkey: currentPubkey,
-          isMember: isMember,
-          isArchived: isArchived,
-          initialMessageId: initialMessageId,
-          initialReply: initialReply,
-          deletedReplyIds: deletedReplyIds.value,
-          onReplyDeleted: (eventId) =>
-              deletedReplyIds.value = {...deletedReplyIds.value, eventId},
-          onRefresh: refresh,
+        data: (thread) => Column(
+          children: [
+            if (threadAsync.hasError)
+              Padding(
+                padding: EdgeInsets.only(top: frostedAppBarHeight(context)),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    const Text('Could not refresh replies.'),
+                    TextButton(onPressed: refresh, child: const Text('Retry')),
+                  ],
+                ),
+              ),
+            Expanded(
+              key: const ValueKey('forum-thread-content'),
+              child: _ThreadContent(
+                thread: thread,
+                channelId: channelId,
+                currentPubkey: currentPubkey,
+                isMember: isMember,
+                isArchived: isArchived,
+                initialMessageId: initialMessageId,
+                initialReply: initialReply,
+                deletedReplyIds: deletedReplyIds.value,
+                onReplyDeleted: (eventId) =>
+                    deletedReplyIds.value = {...deletedReplyIds.value, eventId},
+                onRefresh: refresh,
+              ),
+            ),
+          ],
         ),
       ),
     );
@@ -357,10 +408,18 @@ class _ThreadContent extends HookConsumerWidget {
             ),
           )
         : null;
+    final fetchedSummary = ref
+        .watch(
+          forumThreadSummaryProvider((
+            channelId: channelId,
+            eventId: post.eventId,
+          )),
+        )
+        .value;
     final readAt = forumThreadReadAt(
       post: post,
       replies: replies,
-      listedSummary: listedSummary,
+      listedSummary: fetchedSummary ?? listedSummary,
     );
     useEffect(() {
       if (!readStateReady) return null;

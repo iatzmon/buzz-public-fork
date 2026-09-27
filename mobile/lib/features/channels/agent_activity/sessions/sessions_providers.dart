@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:nostr/nostr.dart' as nostr;
 import 'package:uuid/uuid.dart';
@@ -8,7 +9,9 @@ import 'package:uuid/uuid.dart';
 import '../../../../shared/crypto/nip44.dart';
 import '../../../../shared/relay/observer_control.dart';
 import '../../../../shared/relay/relay.dart';
+import '../observer_models.dart';
 import '../observer_subscription.dart';
+import '../transcript_builder.dart';
 import 'active_turns.dart';
 import 'session_usage.dart';
 
@@ -29,16 +32,110 @@ final sessionsClockProvider = StreamProvider.autoDispose<DateTime>(
   (ref) => Stream.periodic(const Duration(seconds: 1), (_) => DateTime.now()),
 );
 
-/// Every running turn across the owner's agents, oldest first.
+/// How long after the activity subscription opens a missing turn can still
+/// be a turn that has not sent its next liveness frame (about every 10 s).
+const sessionsDiscoveryWindow = Duration(seconds: 15);
+
+/// Every turn across the owner's agents that started and has not reported
+/// an end, oldest first. Includes quiet turns ([ActiveTurn.isQuietAt]).
 final activeTurnsProvider = Provider.autoDispose<List<ActiveTurn>>((ref) {
-  final frames = ref.watch(observerRelayProvider).framesByAgent;
-  final now = ref.watch(sessionsClockProvider).value ?? DateTime.now();
-  return deriveActiveTurns(frames, now);
+  final frames = ref.watch(
+    observerRelayProvider.select((state) => state.framesByAgent),
+  );
+  return deriveActiveTurns(frames);
 });
+
+/// How much the Sessions page can know about running turns right now.
+enum SessionsDiscovery {
+  /// No relay connection or signing key: no activity can arrive.
+  notConnected,
+
+  /// The activity subscription is opening.
+  connecting,
+
+  /// The activity subscription failed or closed.
+  unavailable,
+
+  /// Open, but running turns may not have sent their next liveness frame.
+  discovering,
+
+  /// Open for longer than [sessionsDiscoveryWindow].
+  listening,
+}
+
+/// The activity subscription's state, with any error text.
+typedef SessionsStatus = ({SessionsDiscovery discovery, String? errorMessage});
+
+final sessionsStatusProvider = Provider.autoDispose<SessionsStatus>((ref) {
+  final relay = ref.watch(observerRelayProvider);
+  final now = ref.watch(sessionsClockProvider).value ?? DateTime.now();
+  return (
+    discovery: sessionsDiscoveryFor(relay, now),
+    errorMessage: relay.errorMessage,
+  );
+});
+
+/// Maps the activity subscription to what the page may claim. Missing frames
+/// never prove that no turn is running, so only [SessionsDiscovery.listening]
+/// allows an empty list to read as "none reported".
+SessionsDiscovery sessionsDiscoveryFor(ObserverRelayState relay, DateTime now) {
+  switch (relay.connection) {
+    case ObserverConnectionState.idle:
+      return SessionsDiscovery.notConnected;
+    case ObserverConnectionState.connecting:
+      return SessionsDiscovery.connecting;
+    case ObserverConnectionState.error:
+      return SessionsDiscovery.unavailable;
+    case ObserverConnectionState.open:
+      final since = relay.openSince;
+      return since == null || now.difference(since) < sessionsDiscoveryWindow
+          ? SessionsDiscovery.discovering
+          : SessionsDiscovery.listening;
+  }
+}
+
+/// A short description of what one turn is doing now, from its latest
+/// transcript item, or null when its frames say nothing yet.
+final turnActivityProvider = Provider.autoDispose
+    .family<String?, ({String agentPubkey, String turnId})>((ref, key) {
+      final frames = ref.watch(
+        observerRelayProvider.select(
+          (state) => state.framesByAgent[key.agentPubkey.toLowerCase()],
+        ),
+      );
+      if (frames == null) return null;
+      return describeTurnActivity(
+        buildTranscript([
+          for (final frame in frames)
+            if (frame.turnId == key.turnId) frame,
+        ]),
+      );
+    });
+
+/// The latest transcript item as a few plain words.
+String? describeTurnActivity(List<TranscriptItem> items) {
+  for (final item in items.reversed) {
+    switch (item) {
+      case ToolItem(:final title, :final toolName):
+        final label = title.trim().isNotEmpty ? title.trim() : toolName.trim();
+        if (label.isNotEmpty) return label;
+      case ThoughtItem():
+        return 'Thinking';
+      case MessageItem(:final role):
+        return role == 'assistant' ? 'Writing a reply' : 'Reading the request';
+      case LifecycleItem(:final title):
+        if (title.trim().isNotEmpty) return title.trim();
+      case MetadataItem():
+        continue;
+    }
+  }
+  return null;
+}
 
 /// Usage per session id for one agent, from the agent's NIP-AM reports of
 /// the last [sessionUsageLookback]. Refreshes every [sessionUsageRefresh].
-/// A failed read is an error state, never an empty result.
+/// A failed read is an error state, never an empty result. Verifying and
+/// decrypting the reports runs on a worker isolate ([decodeSessionUsage]).
 final agentSessionUsageProvider = FutureProvider.autoDispose
     .family<Map<String, SessionUsage>, String>((ref, agentPubkey) async {
       final timer = Timer(sessionUsageRefresh, ref.invalidateSelf);
@@ -60,27 +157,62 @@ final agentSessionUsageProvider = FutureProvider.autoDispose
         ),
       ]);
 
-      final seen = <String>{};
-      final metrics = <TurnMetric>[];
-      for (final event in events) {
-        if (!seen.add(event.id)) continue;
-        final metric = decodeTurnMetric(
-          event,
+      return compute(
+        decodeSessionUsage,
+        SessionUsageBatch(
           ownerPrivkeyHex: privHex,
           ownerPubkey: owner,
           agentPubkey: agent,
-        );
-        if (metric != null) metrics.add(metric);
-      }
-      return sumSessionUsage(metrics);
+          events: events,
+        ),
+      );
     });
+
+/// One agent's usage reports to decode, with the owner's key.
+@immutable
+class SessionUsageBatch {
+  final String ownerPrivkeyHex;
+  final String ownerPubkey;
+  final String agentPubkey;
+  final List<NostrEvent> events;
+
+  const SessionUsageBatch({
+    required this.ownerPrivkeyHex,
+    required this.ownerPubkey,
+    required this.agentPubkey,
+    required this.events,
+  });
+}
+
+/// Verifies, decrypts, and sums [batch]'s reports per session. Derives the
+/// conversation key once for the batch. CPU heavy for large batches: run it
+/// with `compute`, not on the UI isolate.
+Map<String, SessionUsage> decodeSessionUsage(SessionUsageBatch batch) {
+  final conversationKey = getConversationKey(
+    batch.ownerPrivkeyHex,
+    batch.agentPubkey,
+  );
+  final seen = <String>{};
+  final metrics = <TurnMetric>[];
+  for (final event in batch.events) {
+    if (!seen.add(event.id)) continue;
+    final metric = decodeTurnMetric(
+      event,
+      conversationKey: conversationKey,
+      ownerPubkey: batch.ownerPubkey,
+      agentPubkey: batch.agentPubkey,
+    );
+    if (metric != null) metrics.add(metric);
+  }
+  return sumSessionUsage(metrics);
+}
 
 /// Verifies and decrypts one kind 44200 event from [agentPubkey] to the
 /// owner. Returns null for anything that fails a check (NIP-AM: ignore
 /// events that fail to verify, decrypt, or parse).
 TurnMetric? decodeTurnMetric(
   NostrEvent event, {
-  required String ownerPrivkeyHex,
+  required Uint8List conversationKey,
   required String ownerPubkey,
   required String agentPubkey,
 }) {
@@ -100,8 +232,7 @@ TurnMetric? decodeTurnMetric(
       event.content,
       event.sig,
     );
-    final key = getConversationKey(ownerPrivkeyHex, agentPubkey);
-    final json = jsonDecode(nip44Decrypt(key, event.content));
+    final json = jsonDecode(nip44Decrypt(conversationKey, event.content));
     return json is Map<String, dynamic> ? TurnMetric.fromJson(json) : null;
   } catch (_) {
     return null;
@@ -113,7 +244,9 @@ enum StopOutcome {
   /// The runtime signalled the turn to stop.
   sent,
 
-  /// The turn had already ended.
+  /// The runtime found no running turn with this ID. The turn may have
+  /// ended, or an earlier Stop may still be finishing it (NIP-AO). Only an
+  /// ending frame confirms the end.
   noActiveTurn,
 
   /// The runtime answered with a status this app does not know.

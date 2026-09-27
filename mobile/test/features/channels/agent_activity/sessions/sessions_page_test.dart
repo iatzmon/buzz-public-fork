@@ -4,6 +4,8 @@ import 'package:buzz/features/channels/agent_activity/sessions/sessions_page.dar
 import 'package:buzz/features/channels/agent_activity/sessions/sessions_providers.dart';
 import 'package:buzz/features/channels/channel.dart';
 import 'package:buzz/features/channels/channels_provider.dart';
+import 'package:buzz/features/channels/notification_destination.dart';
+import 'package:buzz/shared/relay/relay.dart';
 import 'package:buzz/shared/profile/user_cache_provider.dart';
 import 'package:buzz/shared/profile/user_profile.dart';
 import 'package:buzz/shared/theme/theme.dart';
@@ -22,15 +24,35 @@ ActiveTurn _turn(
   String turnId, {
   String? sessionId,
   bool cancelByTurnId = true,
+  List<String> triggeringEventIds = const [],
+  Duration quietFor = Duration.zero,
 }) => ActiveTurn(
   agentPubkey: agent,
   turnId: turnId,
   channelId: 'chan-1',
   sessionId: sessionId,
   startedAt: _now.subtract(const Duration(minutes: 3, seconds: 5)),
-  lastSeenAt: _now,
+  lastSeenAt: _now.subtract(quietFor),
   cancelByTurnId: cancelByTurnId,
+  triggeringEventIds: triggeringEventIds,
 );
+
+NostrEvent _message(String id, String content, {String? threadRoot}) =>
+    NostrEvent(
+      id: id,
+      pubkey: 'cccc',
+      createdAt: 0,
+      kind: 9,
+      tags: [
+        ['h', 'chan-1'],
+        if (threadRoot != null) ...[
+          ['e', threadRoot, '', 'root'],
+          ['e', threadRoot, '', 'reply'],
+        ],
+      ],
+      content: content,
+      sig: '',
+    );
 
 Channel _channel() => Channel(
   id: 'chan-1',
@@ -49,12 +71,25 @@ Future<List<ActiveTurn>> _pump(
   required List<ActiveTurn> turns,
   Map<String, AsyncValue<Map<String, SessionUsage>>> usage = const {},
   StopOutcome stopOutcome = StopOutcome.sent,
+  SessionsStatus status = (
+    discovery: SessionsDiscovery.listening,
+    errorMessage: null,
+  ),
+  Map<String, String> activity = const {},
+  Map<String, NostrEvent> messages = const {},
 }) async {
   final stopped = <ActiveTurn>[];
   await tester.pumpWidget(
     ProviderScope(
       overrides: [
         activeTurnsProvider.overrideWithValue(turns),
+        sessionsStatusProvider.overrideWithValue(status),
+        turnActivityProvider.overrideWith((ref, key) => activity[key.turnId]),
+        notificationEventProvider.overrideWith((ref, target) async {
+          final message = messages[target.eventId];
+          if (message == null) throw StateError('missing');
+          return message;
+        }),
         sessionsClockProvider.overrideWithValue(AsyncData(_now)),
         channelsProvider.overrideWith(() => _FakeChannels([_channel()])),
         userCacheProvider.overrideWith(
@@ -89,9 +124,149 @@ Finder _inRow(String agent, String turnId, Finder finder) => find.descendant(
 );
 
 void main() {
-  testWidgets('shows an empty state when no agent is working', (tester) async {
+  testWidgets('shows an empty state only once the page is listening', (
+    tester,
+  ) async {
     await _pump(tester, turns: const []);
     expect(find.byKey(const Key('sessions-empty')), findsOneWidget);
+    expect(find.byKey(const Key('sessions-status')), findsNothing);
+  });
+
+  for (final (discovery, text) in [
+    (SessionsDiscovery.notConnected, 'Not connected.'),
+    (SessionsDiscovery.connecting, 'Connecting to agent activity'),
+    (SessionsDiscovery.unavailable, 'Agent activity is unavailable (offline)'),
+    (SessionsDiscovery.discovering, 'Looking for running turns.'),
+  ]) {
+    testWidgets('never claims no agent is working while ${discovery.name}', (
+      tester,
+    ) async {
+      await _pump(
+        tester,
+        turns: const [],
+        status: (discovery: discovery, errorMessage: 'offline'),
+      );
+      expect(find.byKey(const Key('sessions-empty')), findsNothing);
+      expect(find.textContaining(text), findsOneWidget);
+    });
+  }
+
+  testWidgets('keeps a quiet turn listed apart, not as ended', (tester) async {
+    await _pump(
+      tester,
+      turns: [
+        _turn(_agentA, 't1'),
+        _turn(_agentA, 't2', quietFor: const Duration(minutes: 2)),
+      ],
+    );
+    expect(find.byKey(const Key('sessions-quiet-header')), findsOneWidget);
+    expect(
+      _inRow(_agentA, 't1', find.byKey(const Key('session-row-quiet'))),
+      findsNothing,
+    );
+    expect(
+      _inRow(_agentA, 't2', find.text('No signal for 2m 0s')),
+      findsOneWidget,
+    );
+    expect(find.byKey(const Key('sessions-empty')), findsNothing);
+  });
+
+  testWidgets('tells two runs of one agent in one channel apart', (
+    tester,
+  ) async {
+    await _pump(
+      tester,
+      turns: [
+        _turn(_agentA, 't1', triggeringEventIds: ['e1']),
+        _turn(_agentA, 't2', triggeringEventIds: ['e0', 'e2']),
+        _turn(_agentA, 't3'),
+      ],
+      activity: {'t1': 'Read file'},
+      messages: {
+        'e1': _message('e1', 'Fix the\n login   bug'),
+        'e2': _message('e2', 'Write the release notes', threadRoot: 'r1'),
+      },
+    );
+
+    expect(
+      _inRow(_agentA, 't1', find.text('Request: "Fix the login bug"')),
+      findsOneWidget,
+    );
+    expect(
+      _inRow(
+        _agentA,
+        't2',
+        find.text('Request (in a thread): "Write the release notes"'),
+      ),
+      findsOneWidget,
+    );
+    expect(_inRow(_agentA, 't1', find.text('Read file')), findsOneWidget);
+    expect(
+      _inRow(_agentA, 't1', find.byKey(const Key('session-row-open'))),
+      findsOneWidget,
+    );
+    expect(
+      _inRow(
+        _agentA,
+        't3',
+        find.text(
+          'Request not known: this turn started before the app connected.',
+        ),
+      ),
+      findsOneWidget,
+    );
+    expect(
+      _inRow(_agentA, 't3', find.byKey(const Key('session-row-open'))),
+      findsNothing,
+    );
+  });
+
+  testWidgets('Open shows the conversation that started the turn', (
+    tester,
+  ) async {
+    // The request fails to load here, so the destination stops at its own
+    // error screen instead of building the full channel page.
+    await _pump(
+      tester,
+      turns: [
+        _turn(_agentA, 't1', triggeringEventIds: ['e1']),
+      ],
+    );
+    expect(
+      _inRow(_agentA, 't1', find.text('Request could not be loaded.')),
+      findsOneWidget,
+    );
+    await tester.tap(
+      _inRow(_agentA, 't1', find.byKey(const Key('session-row-open'))),
+    );
+    await tester.pumpAndSettle();
+    final destination = tester.widget<NotificationDestination>(
+      find.byType(NotificationDestination),
+    );
+    expect(destination.channel.id, 'chan-1');
+    expect(destination.link.messageId, 'e1');
+  });
+
+  testWidgets('a Stop with no running turn does not claim it ended', (
+    tester,
+  ) async {
+    await _pump(
+      tester,
+      turns: [_turn(_agentA, 't1')],
+      stopOutcome: StopOutcome.noActiveTurn,
+    );
+    await tester.tap(
+      _inRow(_agentA, 't1', find.byKey(const Key('session-row-stop'))),
+    );
+    await tester.pump();
+    expect(find.textContaining('already ended'), findsNothing);
+    expect(
+      find.text(
+        'Forge has no running turn with this ID. It may have ended, or an '
+        'earlier Stop may still be finishing.',
+      ),
+      findsOneWidget,
+    );
   });
 
   testWidgets('lists each turn with run time and session usage', (

@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:buzz/features/channels/agent_activity/observer_models.dart';
 import 'package:buzz/features/channels/agent_activity/observer_subscription.dart';
 import 'package:buzz/features/channels/agent_activity/sessions/active_turns.dart';
 import 'package:buzz/features/channels/agent_activity/sessions/session_usage.dart';
@@ -182,10 +183,108 @@ void main() {
     });
   });
 
+  group('decodeSessionUsage', () {
+    test('counts a repeated report once and skips unreadable ones', () {
+      final report = _metricEvent();
+      final usage = decodeSessionUsage(
+        SessionUsageBatch(
+          ownerPrivkeyHex: _owner.secret,
+          ownerPubkey: _owner.public,
+          agentPubkey: _agent.public,
+          events: [
+            report,
+            report,
+            _metricEvent(pTag: nostr.Keys.generate().public),
+          ],
+        ),
+      );
+      expect(usage['sess-1']!.inputTokens, const UsageTotal<int>(1200));
+    });
+  });
+
+  group('sessionsDiscoveryFor', () {
+    final now = DateTime.utc(2026, 9, 27, 12);
+    ObserverRelayState relay(
+      ObserverConnectionState connection, {
+      DateTime? openSince,
+    }) => ObserverRelayState(
+      connection: connection,
+      framesByAgent: const {},
+      openSince: openSince,
+    );
+
+    test('only a subscription open past the window is listening', () {
+      expect(
+        sessionsDiscoveryFor(relay(ObserverConnectionState.idle), now),
+        SessionsDiscovery.notConnected,
+      );
+      expect(
+        sessionsDiscoveryFor(relay(ObserverConnectionState.connecting), now),
+        SessionsDiscovery.connecting,
+      );
+      expect(
+        sessionsDiscoveryFor(relay(ObserverConnectionState.error), now),
+        SessionsDiscovery.unavailable,
+      );
+      expect(
+        sessionsDiscoveryFor(
+          relay(
+            ObserverConnectionState.open,
+            openSince: now.subtract(const Duration(seconds: 14)),
+          ),
+          now,
+        ),
+        SessionsDiscovery.discovering,
+      );
+      expect(
+        sessionsDiscoveryFor(
+          relay(
+            ObserverConnectionState.open,
+            openSince: now.subtract(sessionsDiscoveryWindow),
+          ),
+          now,
+        ),
+        SessionsDiscovery.listening,
+      );
+    });
+  });
+
+  group('describeTurnActivity', () {
+    ToolItem tool(String title, String name) => ToolItem(
+      id: title,
+      title: title,
+      toolName: name,
+      status: ToolStatus.values.first,
+      args: const {},
+      result: '',
+      isError: false,
+      timestamp: '',
+    );
+
+    test('names the latest tool, falling back to its tool name', () {
+      expect(
+        describeTurnActivity([
+          ThoughtItem(id: 'th', title: '', text: 'x', timestamp: ''),
+          tool('Read file', 'read'),
+        ]),
+        'Read file',
+      );
+      expect(describeTurnActivity([tool(' ', 'bash')]), 'bash');
+      expect(
+        describeTurnActivity([
+          tool('Read file', 'read'),
+          ThoughtItem(id: 'th', title: '', text: 'x', timestamp: ''),
+        ]),
+        'Thinking',
+      );
+      expect(describeTurnActivity(const []), isNull);
+    });
+  });
+
   group('decodeTurnMetric', () {
     TurnMetric? decode(NostrEvent event) => decodeTurnMetric(
       event,
-      ownerPrivkeyHex: _owner.secret,
+      conversationKey: getConversationKey(_owner.secret, _agent.public),
       ownerPubkey: _owner.public,
       agentPubkey: _agent.public,
     );

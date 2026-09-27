@@ -41,16 +41,23 @@ class ObserverRelayState {
   final Map<String, List<ObserverFrame>> framesByAgent;
   final String? errorMessage;
 
+  /// When the subscription last became open, on this device's clock. Null
+  /// while not open. Frames are live only, so a turn already running is
+  /// learned from its next liveness frame after this time.
+  final DateTime? openSince;
+
   const ObserverRelayState({
     required this.connection,
     required this.framesByAgent,
     this.errorMessage,
+    this.openSince,
   });
 
   const ObserverRelayState.initial()
     : connection = ObserverConnectionState.idle,
       framesByAgent = const {},
-      errorMessage = null;
+      errorMessage = null,
+      openSince = null;
 }
 
 class ObserverRelayNotifier extends Notifier<ObserverRelayState> {
@@ -64,6 +71,7 @@ class ObserverRelayNotifier extends Notifier<ObserverRelayState> {
   String? _ownerPubkey;
   String? _identityKey;
   String? _errorMessage;
+  DateTime? _openSince;
   int _subscriptionEpoch = 0;
   bool _disposed = false;
 
@@ -89,12 +97,10 @@ class ObserverRelayNotifier extends Notifier<ObserverRelayState> {
     }
 
     final hasSigningKey = config.nsec?.isNotEmpty == true;
-    return ObserverRelayState(
-      connection: hasSigningKey
+    return _stateFor(
+      hasSigningKey
           ? _connectionForSession(sessionState.status)
           : ObserverConnectionState.idle,
-      framesByAgent: _snapshotFrames(),
-      errorMessage: _errorMessage,
     );
   }
 
@@ -272,10 +278,19 @@ class ObserverRelayNotifier extends Notifier<ObserverRelayState> {
 
   void _emit({required ObserverConnectionState connection}) {
     if (_disposed) return;
-    state = ObserverRelayState(
+    state = _stateFor(connection);
+  }
+
+  ObserverRelayState _stateFor(ObserverConnectionState connection) {
+    // Any interruption can drop frames, so a reopen restarts discovery.
+    _openSince = connection == ObserverConnectionState.open
+        ? (_openSince ?? DateTime.now())
+        : null;
+    return ObserverRelayState(
       connection: connection,
       framesByAgent: _snapshotFrames(),
       errorMessage: _errorMessage,
+      openSince: _openSince,
     );
   }
 
@@ -294,6 +309,7 @@ class ObserverRelayNotifier extends Notifier<ObserverRelayState> {
     _privHex = null;
     _ownerPubkey = null;
     _errorMessage = null;
+    _openSince = null;
     _framesByAgent.clear();
     _dedupeKeysByAgent.clear();
     _conversationKeysByAgent.clear();

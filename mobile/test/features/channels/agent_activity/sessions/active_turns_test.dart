@@ -25,10 +25,8 @@ ObserverFrame _frame(
   payload: payload,
 );
 
-List<ActiveTurn> _derive(
-  List<ObserverFrame> frames, {
-  Duration now = Duration.zero,
-}) => deriveActiveTurns({_agent: frames}, _t0.add(now));
+List<ActiveTurn> _derive(List<ObserverFrame> frames) =>
+    deriveActiveTurns({_agent: frames});
 
 void main() {
   test('keeps sibling turns in one channel as separate rows', () {
@@ -78,7 +76,7 @@ void main() {
         payload: {'cancelByTurnId': true},
         at: const Duration(seconds: 40),
       ),
-    ], now: const Duration(seconds: 60));
+    ]);
     expect(turns, hasLength(1));
     expect(turns.single.sessionId, 's1');
     expect(turns.single.cancelByTurnId, isTrue);
@@ -133,20 +131,44 @@ void main() {
     expect(turns, isEmpty);
   });
 
-  test('drops a turn with no frame for longer than the stale limit', () {
-    final frames = [_frame(1, 'turn_started', turnId: 't1')];
-    expect(_derive(frames, now: activeTurnStaleAfter), hasLength(1));
+  test('keeps a turn with no recent frame and marks it quiet', () {
+    final turn = _derive([_frame(1, 'turn_started', turnId: 't1')]).single;
+    expect(turn.isQuietAt(_t0.add(activeTurnStaleAfter)), isFalse);
     expect(
-      _derive(frames, now: activeTurnStaleAfter + const Duration(seconds: 1)),
-      isEmpty,
+      turn.isQuietAt(
+        _t0.add(activeTurnStaleAfter + const Duration(seconds: 1)),
+      ),
+      isTrue,
     );
   });
 
-  test('stream activity keeps a quiet turn alive', () {
+  test('keeps the messages that started a turn, in order', () {
+    final turns = _derive([
+      _frame(
+        1,
+        'turn_started',
+        turnId: 't1',
+        payload: {
+          'triggeringEventIds': ['e1', '', 7, 'e2'],
+        },
+      ),
+      _frame(2, 'turn_liveness', turnId: 't1', at: const Duration(seconds: 10)),
+      _frame(3, 'turn_liveness', turnId: 't2'),
+    ]);
+    expect(turns.map((t) => t.triggeringEventIds), [
+      ['e1', 'e2'],
+      isEmpty,
+    ]);
+  });
+
+  test('stream activity keeps a turn from going quiet', () {
     final turns = _derive([
       _frame(1, 'turn_started', turnId: 't1'),
       _frame(2, 'acp_write', turnId: 't1', at: const Duration(seconds: 50)),
-    ], now: const Duration(seconds: 60));
-    expect(turns, hasLength(1));
+    ]);
+    expect(
+      turns.single.isQuietAt(_t0.add(const Duration(seconds: 60))),
+      isFalse,
+    );
   });
 }

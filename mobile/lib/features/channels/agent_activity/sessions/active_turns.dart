@@ -2,12 +2,13 @@ import 'package:flutter/foundation.dart';
 
 import '../observer_models.dart';
 
-/// A turn with no frame for this long is treated as ended. The harness sends
+/// A turn with no frame for this long has lost its signal. The harness sends
 /// `turn_liveness` about every 10 s; the margin also absorbs clock skew
-/// between the agent host and this device.
+/// between the agent host and this device. A lost signal does not prove the
+/// turn ended, so such a turn stays listed and is shown as quiet.
 const activeTurnStaleAfter = Duration(seconds: 45);
 
-/// One agent turn that is running now.
+/// One agent turn that has started and has not reported an end.
 @immutable
 class ActiveTurn {
   final String agentPubkey;
@@ -26,6 +27,11 @@ class ActiveTurn {
   /// The runtime honors `cancel_turn` with this exact `turnId`.
   final bool cancelByTurnId;
 
+  /// Channel messages that started this turn, oldest first, from
+  /// `turn_started`. Empty when only liveness was seen (the app connected
+  /// mid-turn), because liveness does not carry them.
+  final List<String> triggeringEventIds;
+
   const ActiveTurn({
     required this.agentPubkey,
     required this.turnId,
@@ -34,7 +40,12 @@ class ActiveTurn {
     required this.startedAt,
     required this.lastSeenAt,
     required this.cancelByTurnId,
+    this.triggeringEventIds = const [],
   });
+
+  /// No frame for this turn arrived within [activeTurnStaleAfter] of [now].
+  bool isQuietAt(DateTime now) =>
+      now.difference(lastSeenAt) > activeTurnStaleAfter;
 
   ActiveTurn copyWith({
     String? sessionId,
@@ -48,6 +59,7 @@ class ActiveTurn {
     startedAt: startedAt,
     lastSeenAt: lastSeenAt ?? this.lastSeenAt,
     cancelByTurnId: cancelByTurnId ?? this.cancelByTurnId,
+    triggeringEventIds: triggeringEventIds,
   );
 
   @override
@@ -59,7 +71,8 @@ class ActiveTurn {
       other.sessionId == sessionId &&
       other.startedAt == startedAt &&
       other.lastSeenAt == lastSeenAt &&
-      other.cancelByTurnId == cancelByTurnId;
+      other.cancelByTurnId == cancelByTurnId &&
+      listEquals(other.triggeringEventIds, triggeringEventIds);
 
   @override
   int get hashCode => Object.hash(
@@ -70,11 +83,14 @@ class ActiveTurn {
     startedAt,
     lastSeenAt,
     cancelByTurnId,
+    Object.hashAll(triggeringEventIds),
   );
 }
 
 /// Every running turn across agents, oldest first, derived from each agent's
 /// time-ordered observer frames. Sibling turns in one channel stay separate.
+/// Quiet turns ([ActiveTurn.isQuietAt]) are kept: only an ending frame
+/// removes a turn.
 ///
 /// Mirrors desktop `activeAgentTurnsStore.ts`: `turn_started` opens a turn,
 /// `turn_completed` / `turn_error` / `agent_panic` end it, and
@@ -83,17 +99,11 @@ class ActiveTurn {
 /// recreated by an older or same-time frame.
 List<ActiveTurn> deriveActiveTurns(
   Map<String, List<ObserverFrame>> framesByAgent,
-  DateTime now,
 ) {
-  final result = <ActiveTurn>[];
-  for (final entry in framesByAgent.entries) {
-    final turns = _foldAgentFrames(entry.key, entry.value);
-    for (final turn in turns) {
-      if (now.difference(turn.lastSeenAt) <= activeTurnStaleAfter) {
-        result.add(turn);
-      }
-    }
-  }
+  final result = <ActiveTurn>[
+    for (final entry in framesByAgent.entries)
+      ..._foldAgentFrames(entry.key, entry.value),
+  ];
   result.sort((a, b) {
     final byStart = a.startedAt.compareTo(b.startedAt);
     return byStart != 0 ? byStart : a.turnId.compareTo(b.turnId);
@@ -127,6 +137,7 @@ Iterable<ActiveTurn> _foldAgentFrames(
           startedAt: at,
           lastSeenAt: at,
           cancelByTurnId: _cancelByTurnId(frame),
+          triggeringEventIds: _triggeringEventIds(frame),
         );
       case 'turn_completed' || 'turn_error' || 'agent_panic':
         if (turnId != null) {
@@ -181,6 +192,15 @@ Iterable<ActiveTurn> _foldAgentFrames(
     }
   }
   return turns.values;
+}
+
+List<String> _triggeringEventIds(ObserverFrame frame) {
+  final payload = frame.payload;
+  final ids = payload is Map ? payload['triggeringEventIds'] : null;
+  if (ids is! List) return const [];
+  return List.unmodifiable(
+    ids.whereType<String>().where((id) => id.isNotEmpty),
+  );
 }
 
 bool _cancelByTurnId(ObserverFrame frame) {

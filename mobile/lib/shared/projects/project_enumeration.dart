@@ -2,6 +2,7 @@ import 'dart:math';
 
 import '../relay/nostr_models.dart';
 import 'project_event_set.dart';
+import 'project_event_verification.dart';
 import 'project_read_models.dart' show eventCoordinate;
 
 /// Fetches one relay page for [filter].
@@ -113,17 +114,26 @@ Future<List<NostrEvent>> enumerateProjectEvents(
 /// Fetches projects (kind:30621), repositories (kind:30617), and the kind:5
 /// tombstones that address them.
 ///
+/// Every event passes [verifyEvents] after enumeration and before it is used:
+/// announcements before they choose the tombstone authors, and tombstones
+/// before they are returned. Verification runs on the complete enumeration,
+/// never per page, so a dropped event cannot shorten a page and end the
+/// enumeration early. Production passes [verifyProjectEvents].
+///
 /// Tombstones are fetched after the announcements, fail closed (a failure
 /// fails the whole load), and are scoped with SQL-pushable constraints only:
 /// the authors who may delete an announced coordinate (its signer, or the
 /// NIP-OA owner named in its `auth` tag) since the oldest such announcement.
-/// Coordinates are matched locally. Desktop scopes with `#a` instead, which
-/// the relay applies after its limit and can therefore miss tombstones.
+/// This query only narrows the fetch: the fold authorizes each tombstone
+/// against the exact coordinate it names (`buildDeletionThresholds`).
+/// Desktop scopes with `#a` instead, which the relay applies after its limit
+/// and can therefore miss tombstones.
 Future<ProjectEventSet> fetchProjectEvents(
   ProjectEventPageFetcher fetchPage, {
+  required ProjectEventVerifier verifyEvents,
   bool Function()? isCancelled,
 }) async {
-  final announcements = await Future.wait([
+  final enumerated = await Future.wait([
     enumerateProjectEvents(fetchPage, [
       EventKind.projectAnnouncement,
     ], isCancelled: isCancelled),
@@ -131,15 +141,19 @@ Future<ProjectEventSet> fetchProjectEvents(
       EventKind.repoAnnouncement,
     ], isCancelled: isCancelled),
   ]);
-  final projectEvents = announcements[0];
-  final repositoryEvents = announcements[1];
+  _throwIfCancelled(isCancelled);
+  final projectEvents = await verifyEvents(enumerated[0]);
+  final repositoryEvents = await verifyEvents(enumerated[1]);
+  _throwIfCancelled(isCancelled);
 
   final List<NostrEvent> deletionEvents;
   try {
-    deletionEvents = await _fetchTombstones(fetchPage, [
-      ...projectEvents,
-      ...repositoryEvents,
-    ], isCancelled);
+    deletionEvents = await verifyEvents(
+      await _fetchTombstones(fetchPage, [
+        ...projectEvents,
+        ...repositoryEvents,
+      ], isCancelled),
+    );
   } on ProjectsCancelledException {
     rethrow;
   } catch (error) {

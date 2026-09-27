@@ -8,6 +8,7 @@ import '../relay/relay.dart';
 import '../theme/theme_provider.dart';
 import 'project_clone_url.dart';
 import 'project_enumeration.dart';
+import 'project_event_verification.dart';
 import 'project_models.dart';
 import 'project_snapshot.dart';
 
@@ -69,7 +70,14 @@ class ProjectsNotifier extends StreamNotifier<ProjectsSnapshot> {
         yield cached;
       }
     }
-    final fresh = await _load();
+    final ProjectsSnapshot fresh;
+    try {
+      fresh = await _load();
+    } on ProjectsCancelledException {
+      // A disposed collection has no listener left to report to.
+      if (!ref.mounted) return;
+      rethrow;
+    }
     _emitted = true;
     yield fresh;
   }
@@ -112,6 +120,7 @@ class ProjectsNotifier extends StreamNotifier<ProjectsSnapshot> {
     final session = ref.read(relaySessionProvider.notifier);
     final events = await fetchProjectEvents(
       (filter) => session.queryRelay([filter]),
+      verifyEvents: verifyProjectEvents,
       isCancelled: cancelled,
     );
     if (cancelled()) throw const ProjectsCancelledException();

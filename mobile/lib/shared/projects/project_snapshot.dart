@@ -76,7 +76,10 @@ class ProjectsSnapshot {
 }
 
 const _cacheKeyBase = 'buzz.projects.snapshot.v1';
-const _cacheVersion = 1;
+
+/// Version 1 held events cached before signature verification; they are
+/// ignored. Only verified events are written.
+const _cacheVersion = 2;
 
 /// Collections larger than this stay in memory only.
 const maxCachedProjectEvents = 5000;

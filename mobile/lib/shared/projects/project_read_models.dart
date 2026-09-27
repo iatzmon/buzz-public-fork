@@ -1,3 +1,4 @@
+import '../crypto/nip_oa.dart';
 import '../relay/nostr_models.dart';
 import 'project_event_parsing.dart';
 import 'project_models.dart';
@@ -8,7 +9,8 @@ import 'project_models.dart';
 /// `absorbStandaloneProjectRepositories`:
 /// - addressable events are deduplicated to the newest head per coordinate;
 /// - a kind:5 tombstone `a`-tagging a coordinate hides every head of that
-///   coordinate created at or before the tombstone;
+///   coordinate created at or before the tombstone, when its signer may delete
+///   that coordinate (see [buildDeletionThresholds]);
 /// - unlisted projects are only kept for their owner ([viewerPubkey]);
 /// - a repository is *claimed* by an explicit project that lists it when the
 ///   project owner signs the repository or is one of its maintainers;
@@ -25,7 +27,12 @@ List<Project> buildProjectReadModels({
   Set<String> hiddenAddresses = const {},
   String? viewerPubkey,
 }) {
-  final thresholds = buildDeletionThresholds(deletionEvents);
+  final projectHeads = latestAddressableHeads(projectEvents);
+  final repositoryHeads = latestAddressableHeads(repositoryEvents);
+  final thresholds = buildDeletionThresholds(deletionEvents, [
+    ...projectHeads,
+    ...repositoryHeads,
+  ]);
   bool isDeleted(NostrEvent event) {
     final coordinate = eventCoordinate(event);
     if (coordinate == null) return false;
@@ -34,7 +41,7 @@ List<Project> buildProjectReadModels({
   }
 
   final repositories = [
-    for (final event in latestAddressableHeads(repositoryEvents))
+    for (final event in repositoryHeads)
       if (!isDeleted(event)) ?repositoryFromEvent(event, relayOrigin),
   ];
   final repositoriesByAddress = {
@@ -51,7 +58,7 @@ List<Project> buildProjectReadModels({
 
   final viewer = viewerPubkey?.trim().toLowerCase();
   final explicitProjects = <Project>[];
-  for (final event in latestAddressableHeads(projectEvents)) {
+  for (final event in projectHeads) {
     if (isDeleted(event)) continue;
     final project = explicitProjectFromEvent(
       event,
@@ -89,16 +96,41 @@ List<Project> buildProjectReadModels({
   );
 }
 
-/// Maps each `a`-tagged coordinate to its newest kind:5 tombstone time.
+/// Maps each `a`-tagged coordinate to its newest authorized kind:5 tombstone
+/// time.
 ///
-/// The relay has already verified that each tombstone's signer controls the
-/// coordinate (including NIP-OA owner delegation), as Desktop assumes.
-Map<String, int> buildDeletionThresholds(List<NostrEvent> deletionEvents) {
+/// Relays are not trusted to have checked who may delete what. A tombstone
+/// counts for a coordinate `kind:<author>:<d>` only when its signer is that
+/// author, or the author's NIP-OA owner as attested by the `auth` tag of one
+/// of the author's announcement [heads] ([attestedOaOwnerPubkey]). Every event
+/// must already have a verified id and signature. The relay authorizes owner
+/// deletions from the agent's live profile instead; an owner the
+/// announcement still attests after a profile change is accepted here.
+Map<String, int> buildDeletionThresholds(
+  List<NostrEvent> deletionEvents,
+  List<NostrEvent> heads,
+) {
+  final attestedOwners = <String, Set<String>>{};
+  for (final head in heads) {
+    final owner = attestedOaOwnerPubkey(head);
+    if (owner == null) continue;
+    attestedOwners.putIfAbsent(head.pubkey.toLowerCase(), () => {}).add(owner);
+  }
+  bool mayDelete(String signer, String coordinate) {
+    final parts = coordinate.split(':');
+    if (parts.length < 3) return false;
+    final author = parts[1].toLowerCase();
+    return signer == author ||
+        (attestedOwners[author]?.contains(signer) ?? false);
+  }
+
   final thresholds = <String, int>{};
   for (final event in deletionEvents) {
     if (event.kind != EventKind.deletion) continue;
+    final signer = event.pubkey.toLowerCase();
     for (final tag in event.tags) {
       if (tag.length < 2 || tag[0] != 'a' || tag[1].isEmpty) continue;
+      if (!mayDelete(signer, tag[1])) continue;
       final existing = thresholds[tag[1]];
       if (existing == null || event.createdAt > existing) {
         thresholds[tag[1]] = event.createdAt;

@@ -1,17 +1,60 @@
+import 'dart:convert';
+
 import 'package:buzz/shared/relay/nostr_models.dart';
+import 'package:nostr/nostr.dart' as nostr;
+import 'package:pointycastle/digests/sha256.dart';
 
 /// Real-shaped relay fixtures for the project data layer tests.
 ///
 /// Pubkeys are 64-char lowercase hex, channel ids are v4 UUIDs, and clone
 /// URLs follow the Buzz relay (`<origin>/git/<owner>/<repo>`) and GitHub
 /// shapes that `buzz repos create` and `buzz projects create` publish.
+///
+/// Events by a key from [testKey] (and alice, bob, carol, and agent) carry a
+/// real id and signature, so they pass verification on receipt. Other authors
+/// get a placeholder signature that fails it.
 const relayOrigin = 'https://buzz.example.com';
 
+// Public test-only secrets: `a` * 63 + n.
 const alice =
-    '3bf0c63fcb93463407af97a5e5ee64fa883d107ef9e558472c4eb9aaaefa459d';
-const bob = '82341f882b6eabcd2ba7f1ef90aad961cf074af15b9ef44a09f9d2a8fbfbe6a2';
+    'f2dafe376020f5c6d5a6a2429eb0b646e587e7296a8a308e1db9ddfe568a2f8e';
+const bob = 'cef96df569ac9c6a6f182a64aaa1eae76e65127e363414f0419e7c7e572eb18a';
 const carol =
-    'e88a691e98d9987c964521dff60025f60700378a4879180dcbbb4a5027850411';
+    'c70be00355d81b1c9893a62c61c26060dc9e1da374c91e2570974cc918cbc433';
+
+/// An agent key whose NIP-OA owner is established per test with [oaAuthTag].
+const agent =
+    '8c1a47dcde1648404a6b830041e912c1e703cd96f4eeb026de78ad052f9625e6';
+
+final Map<String, String> _secrets = {
+  for (var n = 1; n <= 4; n++) nostr.Keys(_secret(n)).public: _secret(n),
+};
+
+String _secret(int n) => n.toRadixString(16).padLeft(64, 'a');
+
+/// A signable test pubkey for any positive [n]; 1–4 are alice, bob, carol,
+/// and agent.
+String testKey(int n) {
+  final secret = _secret(n);
+  final pubkey = nostr.Keys(secret).public;
+  _secrets[pubkey] = secret;
+  return pubkey;
+}
+
+/// A NIP-OA `auth` tag in which [owner] attests [agentPubkey].
+List<String> oaAuthTag(
+  String owner,
+  String agentPubkey, {
+  String conditions = '',
+}) {
+  final preimage = utf8.encode('nostr:agent-auth:$agentPubkey:$conditions');
+  final digest = SHA256Digest()
+      .process(preimage)
+      .map((b) => b.toRadixString(16).padLeft(2, '0'))
+      .join();
+  final sig = nostr.Schnorr.sign(secretKey: _secrets[owner]!, message: digest);
+  return ['auth', owner, conditions, sig];
+}
 
 /// A stream (chat) channel used as a project home.
 const streamHomeChannel = '0f8e5b1c-3a2d-4c6e-9b7a-1d2e3f4a5b6c';
@@ -22,6 +65,58 @@ const forumHomeChannel = '7c1d2e3f-4a5b-4c6d-8e9f-0a1b2c3d4e5f';
 int _nextId = 0;
 
 String _eventId() => (++_nextId).toRadixString(16).padLeft(64, '0');
+
+/// A signed event by [pubkey] when its secret is known; otherwise an event
+/// with a placeholder id and signature.
+NostrEvent signedEvent({
+  required String pubkey,
+  required int kind,
+  required int createdAt,
+  required List<List<String>> tags,
+  String content = '',
+}) {
+  final secret = _secrets[pubkey.toLowerCase()];
+  if (secret == null) {
+    return NostrEvent(
+      id: _eventId(),
+      pubkey: pubkey,
+      createdAt: createdAt,
+      kind: kind,
+      content: content,
+      sig: 'f' * 128,
+      tags: tags,
+    );
+  }
+  final event = nostr.Event.from(
+    secretKey: secret,
+    kind: kind,
+    createdAt: createdAt,
+    tags: tags,
+    content: content,
+  );
+  return NostrEvent(
+    id: event.id,
+    pubkey: event.pubkey,
+    createdAt: event.createdAt,
+    kind: event.kind,
+    content: event.content,
+    sig: event.sig,
+    tags: tags,
+  );
+}
+
+/// [event] with [content] changed and its original id and signature, as a
+/// relay forging content would serve it.
+NostrEvent tampered(NostrEvent event, {String content = 'tampered'}) =>
+    NostrEvent(
+      id: event.id,
+      pubkey: event.pubkey,
+      createdAt: event.createdAt,
+      kind: event.kind,
+      content: content,
+      sig: event.sig,
+      tags: event.tags,
+    );
 
 NostrEvent repoEvent({
   required String owner,
@@ -34,14 +129,10 @@ NostrEvent repoEvent({
   String? channel,
   List<String> maintainers = const [],
   List<List<String>> extraTags = const [],
-  String? id,
-}) => NostrEvent(
-  id: id ?? _eventId(),
+}) => signedEvent(
   pubkey: owner,
   createdAt: createdAt,
   kind: EventKind.repoAnnouncement,
-  content: '',
-  sig: 'f' * 128,
   tags: [
     ['d', dtag],
     if (name != null) ['name', name],
@@ -65,13 +156,10 @@ NostrEvent projectEvent({
   String? channel,
   String? visibility,
   List<List<String>> extraTags = const [],
-}) => NostrEvent(
-  id: _eventId(),
+}) => signedEvent(
   pubkey: owner,
   createdAt: createdAt,
   kind: EventKind.projectAnnouncement,
-  content: '',
-  sig: 'f' * 128,
   tags: [
     ['d', dtag],
     if (name != null) ['name', name],
@@ -87,13 +175,11 @@ NostrEvent deletionEvent({
   required String author,
   required List<String> coordinates,
   required int createdAt,
-}) => NostrEvent(
-  id: _eventId(),
+}) => signedEvent(
   pubkey: author,
   createdAt: createdAt,
   kind: EventKind.deletion,
   content: 'deleted',
-  sig: 'f' * 128,
   tags: [
     for (final coordinate in coordinates) ['a', coordinate],
     ['k', '${coordinate0Kind(coordinates)}'],

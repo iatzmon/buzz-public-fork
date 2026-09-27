@@ -1,4 +1,5 @@
 import 'package:buzz/shared/projects/project_enumeration.dart';
+import 'package:buzz/shared/projects/project_event_verification.dart';
 import 'package:buzz/shared/projects/project_models.dart';
 import 'package:buzz/shared/relay/relay.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -9,6 +10,7 @@ import 'project_fixtures.dart';
 Future<List<Project>> loadVia(FakeProjectRelaySession relay) async {
   final events = await fetchProjectEvents(
     (filter) => relay.queryRelay([filter]),
+    verifyEvents: verifyProjectEvents,
   );
   return events.buildProjects(relayOrigin: relayOrigin, viewerPubkey: alice);
 }
@@ -168,14 +170,10 @@ void main() {
     });
 
     test('honors a tombstone from the NIP-OA owner of an agent repo', () async {
-      const agent =
-          'a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90';
       final agentRepo = repoEvent(
         owner: agent,
         dtag: 'agent-scratch',
-        extraTags: [
-          ['auth', carol, 'kind=30617', 'e' * 128],
-        ],
+        extraTags: [oaAuthTag(carol, agent, conditions: 'kind=30617')],
       );
       final tombstone = deletionEvent(
         author: carol,
@@ -189,13 +187,64 @@ void main() {
       );
     });
 
+    test('drops announcements whose signature does not verify', () async {
+      final fixture = CommunityFixture();
+      final forged = tampered(
+        projectEvent(
+          owner: bob,
+          dtag: 'forged',
+          name: 'Forged',
+          createdAt: 1_700_000_900,
+          repoAddresses: [],
+        ),
+      );
+      final projects = await loadVia(
+        FakeProjectRelaySession([...fixture.allEvents, forged]),
+      );
+      expect(
+        projects.map((p) => p.projectAddress),
+        isNot(contains(projectAddress(bob, 'forged'))),
+      );
+      expect(projects, hasLength(4));
+    });
+
+    test('a tombstone whose signature does not verify hides nothing', () async {
+      final fixture = CommunityFixture();
+      final relay = FakeProjectRelaySession([
+        ...fixture.projectEvents,
+        ...fixture.repositoryEvents,
+        tampered(fixture.retiredTombstone),
+      ]);
+      final projects = await loadVia(relay);
+      expect(
+        projects.map((p) => p.projectAddress),
+        contains(projectAddress(alice, 'retired')),
+      );
+    });
+
+    test('a verified tombstone from another author hides nothing', () async {
+      // All three events verify; Alice may not delete Bob's coordinate.
+      final bobProject = projectEvent(
+        owner: bob,
+        dtag: 'bob-project',
+        name: 'Bob',
+        repoAddresses: [],
+      );
+      final aliceDeletion = deletionEvent(
+        author: alice,
+        coordinates: [projectAddress(bob, 'bob-project')],
+        createdAt: 1_800_000_000,
+      );
+      final projects = await loadVia(
+        FakeProjectRelaySession([bobProject, aliceDeletion]),
+      );
+      expect(projects.map((p) => p.name), ['Bob']);
+    });
+
     test('chunks tombstone authors to at most 100 per query', () async {
       final relay = FakeProjectRelaySession([
         for (var i = 0; i < 150; i++)
-          repoEvent(
-            owner: (i + 1).toRadixString(16).padLeft(64, '0'),
-            dtag: 'r$i',
-          ),
+          repoEvent(owner: testKey(i + 10), dtag: 'r$i'),
       ]);
       await loadVia(relay);
       final chunks = relay.queries

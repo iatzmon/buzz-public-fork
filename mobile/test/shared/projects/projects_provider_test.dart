@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:async';
 
 import 'package:buzz/shared/projects/projects.dart';
@@ -67,6 +68,16 @@ void main() {
   Future<ProjectsSnapshot> loaded() async {
     final scope = container.read(projectScopeProvider)!;
     return container.read(projectsProvider(scope).future);
+  }
+
+  /// Lets a triggered reload finish, including its background verification.
+  Future<void> settle() async {
+    await pumpEventQueue();
+    try {
+      await loaded();
+    } on Object {
+      // The state under test carries the error.
+    }
   }
 
   test('loads the active community and resolves project homes', () async {
@@ -204,7 +215,7 @@ void main() {
     relay.failingKinds.clear();
     relay.state = const SessionState(status: SessionStatus.reconnecting);
     relay.state = const SessionState(status: SessionStatus.connected);
-    await pumpEventQueue();
+    await settle();
 
     expect(
       container.read(activeProjectsProvider).value?.projects,
@@ -240,6 +251,12 @@ void main() {
 
   group('offline-first snapshot cache', () {
     const aliceKey = 'buzz.projects.snapshot.v1:$relayOrigin:$alice';
+
+    Future<void> startOffline(String raw) => start(
+      const [],
+      prefsValues: {aliceKey: raw},
+      failingKinds: {EventKind.projectAnnouncement, EventKind.repoAnnouncement},
+    );
 
     /// Loads once online and returns the persisted cache entry.
     Future<String> cachedEntry() async {
@@ -308,7 +325,13 @@ void main() {
       );
 
       gate.complete();
-      await pumpEventQueue();
+      // The first value came from the cache; wait for the verified reload.
+      for (var i = 0; i < 300; i++) {
+        if (container.read(activeProjectsProvider).value?.fromCache == false) {
+          break;
+        }
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+      }
       final fresh = container.read(activeProjectsProvider).value!;
       expect(fresh.fromCache, isFalse);
       expect(fresh.projectByAddress(projectAddress(alice, 'docs')), isNull);
@@ -343,6 +366,37 @@ void main() {
         );
       },
     );
+
+    test('an unverified version 1 cache entry is ignored', () async {
+      final raw = await cachedEntry();
+      final entry = jsonDecode(raw) as Map<String, dynamic>;
+      expect(entry['version'], 2);
+      await startOffline(jsonEncode({...entry, 'version': 1}));
+      await settle();
+      final state = container.read(activeProjectsProvider);
+      expect(state.hasError, isTrue);
+      expect(state.value, isNull);
+    });
+
+    test('a forged event is neither shown nor cached', () async {
+      final forged = tampered(
+        projectEvent(
+          owner: bob,
+          dtag: 'forged',
+          name: 'Forged',
+          createdAt: 1_700_000_900,
+          repoAddresses: [],
+        ),
+      );
+      await start([...CommunityFixture().allEvents, forged]);
+      final snapshot = await loaded();
+      await pumpEventQueue();
+      expect(snapshot.projects, hasLength(4));
+      expect(snapshot.projectByAddress(projectAddress(bob, 'forged')), isNull);
+      final raw = container.read(savedPrefsProvider).getString(aliceKey)!;
+      expect(raw, isNot(contains(forged.id)));
+      expect(raw, contains(CommunityFixture().platformProject.pubkey));
+    });
 
     test('a corrupt cache entry is ignored', () async {
       await start(

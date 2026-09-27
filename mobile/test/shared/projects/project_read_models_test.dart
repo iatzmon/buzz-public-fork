@@ -1,6 +1,7 @@
 import 'package:buzz/shared/projects/project_event_parsing.dart';
 import 'package:buzz/shared/projects/project_read_models.dart';
 import 'package:buzz/shared/projects/projects.dart';
+import 'package:buzz/shared/relay/nostr_models.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'project_fixtures.dart';
@@ -221,6 +222,65 @@ void main() {
       );
     });
 
+    group('tombstone authorization', () {
+      List<String> visible(
+        List<NostrEvent> repositories,
+        List<NostrEvent> deletions,
+      ) => [
+        for (final project in buildProjectReadModels(
+          projectEvents: const [],
+          repositoryEvents: repositories,
+          deletionEvents: deletions,
+          relayOrigin: relayOrigin,
+        ))
+          project.projectAddress,
+      ];
+
+      NostrEvent deletionOf(String author, String address) => deletionEvent(
+        author: author,
+        coordinates: [address],
+        createdAt: 1_800_000_000,
+      );
+
+      test('ignores a tombstone signed by another author', () {
+        final bobRepo = repoEvent(owner: bob, dtag: 'notes');
+        final address = repoAddress(bob, 'notes');
+        expect(visible([bobRepo], [deletionOf(alice, address)]), [address]);
+        expect(visible([bobRepo], [deletionOf(bob, address)]), isEmpty);
+      });
+
+      test('honors the attested NIP-OA owner of the author', () {
+        final agentRepo = repoEvent(
+          owner: agent,
+          dtag: 'scratch',
+          extraTags: [oaAuthTag(carol, agent)],
+        );
+        final address = repoAddress(agent, 'scratch');
+        expect(visible([agentRepo], [deletionOf(carol, address)]), isEmpty);
+        expect(visible([agentRepo], [deletionOf(bob, address)]), [address]);
+      });
+
+      test('ignores an owner the auth tag does not validly attest', () {
+        final address = repoAddress(agent, 'scratch');
+        final tombstone = deletionOf(carol, address);
+        // Signed by bob, naming carol as owner.
+        final forged = oaAuthTag(bob, agent);
+        forged[1] = carol;
+        // Carol attests a different agent key.
+        final otherAgent = oaAuthTag(carol, bob);
+        // Carol attests the agent only for another kind.
+        final wrongKind = oaAuthTag(carol, agent, conditions: 'kind=30621');
+        for (final tag in [forged, otherAgent, wrongKind]) {
+          final agentRepo = repoEvent(
+            owner: agent,
+            dtag: 'scratch',
+            extraTags: [tag],
+          );
+          expect(visible([agentRepo], [tombstone]), [address]);
+        }
+      });
+    });
+
     test('an unclaimed repository becomes a legacy project', () {
       final legacy = byAddress(
         build(CommunityFixture()),
@@ -271,12 +331,17 @@ void main() {
       expect(platform.owner, alice);
       expect(platform.projectChannelId, streamHomeChannel);
       expect(platform.visibility, ProjectVisibility.listed);
+      // Sorted by address, as Desktop does.
       expect(platform.repositoryAddresses, [
+        repoAddress(bob, 'private-notes'),
         repoAddress(alice, 'buzz'),
         repoAddress(alice, 'buzz-infra'),
-        repoAddress(bob, 'private-notes'),
       ]);
-      expect(platform.primaryRepositoryAddress, repoAddress(alice, 'buzz'));
+      // No member shares the project's d-tag: the first visible one wins.
+      expect(
+        platform.primaryRepositoryAddress,
+        repoAddress(bob, 'private-notes'),
+      );
       expect(platform.unavailableRepositoryAddresses, isEmpty);
     });
 

@@ -365,6 +365,15 @@ pub struct CliArgs {
     #[arg(long, env = "BUZZ_ACP_NO_MENTION_FILTER")]
     pub no_mention_filter: bool,
 
+    /// Opt-in conversation recipients for stream/forum agent wakes.
+    #[arg(
+        long,
+        env = "BUZZ_ACP_RECIPIENT_POLICY",
+        default_value = "legacy",
+        value_enum
+    )]
+    pub recipient_policy: crate::recipient_routing::RecipientPolicy,
+
     #[arg(long, env = "BUZZ_ACP_CONFIG", default_value = "./buzz-acp.toml")]
     pub config: PathBuf,
 
@@ -586,6 +595,7 @@ pub struct Config {
     pub kinds_override: Option<Vec<u32>>,
     pub channels_override: Option<Vec<String>>,
     pub no_mention_filter: bool,
+    pub recipient_policy: crate::recipient_routing::RecipientPolicy,
     pub config_path: PathBuf,
     pub context_message_limit: u32,
     /// Maximum turns per session before proactive rotation. 0 = disabled.
@@ -1199,6 +1209,7 @@ impl Config {
             kinds_override: args.kinds,
             channels_override: args.channels,
             no_mention_filter: args.no_mention_filter,
+            recipient_policy: args.recipient_policy,
             config_path: args.config,
             context_message_limit: args.context_message_limit,
             max_turns_per_session: args.max_turns_per_session,
@@ -1437,6 +1448,11 @@ pub fn resolve_channel_filters(
         }
     }
 
+    if config.recipient_policy == crate::recipient_routing::RecipientPolicy::Conversation {
+        for filter in result.values_mut() {
+            filter.require_mention = false;
+        }
+    }
     result
 }
 
@@ -1469,7 +1485,7 @@ pub fn resolve_dynamic_channel_filter(
         }
     }
 
-    match config.subscribe_mode {
+    let mut resolved = match config.subscribe_mode {
         SubscribeMode::Mentions => Some(ChannelFilter {
             kinds: Some(
                 config
@@ -1521,7 +1537,13 @@ pub fn resolve_dynamic_channel_filter(
                 require_mention,
             })
         }
+    };
+    if config.recipient_policy == crate::recipient_routing::RecipientPolicy::Conversation {
+        if let Some(filter) = resolved.as_mut() {
+            filter.require_mention = false;
+        }
     }
+    resolved
 }
 
 fn rule_applies_to_channel(rule: &SubscriptionRule, channel_id: Uuid) -> bool {
@@ -1566,6 +1588,7 @@ mod tests {
             kinds_override: None,
             channels_override: None,
             no_mention_filter: false,
+            recipient_policy: crate::recipient_routing::RecipientPolicy::Legacy,
             config_path: PathBuf::from("./buzz-acp.toml"),
             context_message_limit: 12,
             max_turns_per_session: 0,
@@ -1590,6 +1613,69 @@ mod tests {
             no_base_prompt: false,
             base_prompt_content: None,
         }
+    }
+
+    #[test]
+    fn conversation_policy_broadens_transport_but_preserves_channel_and_kind_scope() {
+        for mode in [
+            SubscribeMode::Mentions,
+            SubscribeMode::All,
+            SubscribeMode::Config,
+        ] {
+            let channel = Uuid::new_v4();
+            let excluded = Uuid::new_v4();
+            let mut config = test_config(mode);
+            config.channels_override = Some(vec![channel.to_string()]);
+            config.kinds_override = Some(vec![9]);
+            config.recipient_policy = crate::recipient_routing::RecipientPolicy::Conversation;
+            let rules = vec![make_rule(
+                "scoped",
+                ChannelScope::List(vec![channel.to_string()]),
+                vec![9],
+                true,
+            )];
+            let filters = resolve_channel_filters(&config, &[channel, excluded], &rules);
+            assert_eq!(filters.len(), 1);
+            assert!(!filters[&channel].require_mention);
+            assert_eq!(filters[&channel].kinds, Some(vec![9]));
+            let dynamic = resolve_dynamic_channel_filter(&config, channel, &rules).unwrap();
+            assert!(!dynamic.require_mention);
+            assert_eq!(dynamic.kinds, Some(vec![9]));
+            assert!(resolve_dynamic_channel_filter(&config, excluded, &rules).is_none());
+            assert!(
+                rules[0].require_mention,
+                "original rules must remain unchanged"
+            );
+        }
+    }
+
+    #[test]
+    fn recipient_policy_cli_is_explicit_opt_in() {
+        let key = nostr::Keys::generate().secret_key().to_secret_hex();
+        let args = CliArgs::try_parse_from([
+            "buzz-acp",
+            "--private-key",
+            &key,
+            "--recipient-policy",
+            "conversation",
+        ])
+        .unwrap();
+        assert_eq!(
+            args.recipient_policy,
+            crate::recipient_routing::RecipientPolicy::Conversation
+        );
+        assert!(CliArgs::try_parse_from([
+            "buzz-acp",
+            "--private-key",
+            &key,
+            "--recipient-policy",
+            "broadcast"
+        ])
+        .is_err());
+        assert_eq!(
+            crate::recipient_routing::RecipientPolicy::default(),
+            crate::recipient_routing::RecipientPolicy::Legacy
+        );
     }
 
     fn make_rule(

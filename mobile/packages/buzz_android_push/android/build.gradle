@@ -32,9 +32,17 @@ android {
     defaultConfig {
         minSdk 24
     }
+
+    testOptions {
+        unitTests {
+            // Robolectric resolves the notification icon from merged resources.
+            includeAndroidResources = true
+        }
+    }
 }
 
 dependencies {
     implementation "org.jetbrains.kotlin:kotlin-stdlib:$kotlin_version"
     testImplementation "org.jetbrains.kotlin:kotlin-test:$kotlin_version"
+    testImplementation "org.robolectric:robolectric:4.16.1"
 }

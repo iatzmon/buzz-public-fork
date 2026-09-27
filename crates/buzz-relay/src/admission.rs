@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-use buzz_auth::{LimitType, RateLimitResult, RateLimiter};
+use buzz_auth::{LimitType, RateLimiter};
 use buzz_core::TenantContext;
 use nostr::PublicKey;
 
@@ -25,13 +25,16 @@ pub(crate) enum AdmissionError {
     Unavailable,
 }
 
-/// Process-local fixed-window counters used only when the shared Redis counter
-/// cannot answer.
+/// Process-local fixed-window counters that decide admission when the shared
+/// Redis counter cannot answer.
 ///
-/// Opt-in via `BUZZ_ADMISSION_LOCAL_FALLBACK` for single-instance relays. It
-/// enforces the same limits and windows as the shared counter, so a slow Redis
-/// no longer rejects well-behaved clients. With several relay instances each
-/// would count separately, which is why the default is to reject instead.
+/// Opt-in via `BUZZ_ADMISSION_LOCAL_FALLBACK` for single-instance relays. Every
+/// attempt is counted here once, before Redis is asked, with the same limits
+/// and windows as the shared counter. So the local window holds the same total
+/// whether Redis answers, fails, or recovers, and the count does not depend on
+/// the order in which concurrent Redis replies complete. With several relay
+/// instances each would count separately, which is why the default is to
+/// reject instead.
 pub(crate) struct LocalAdmissionFallback {
     windows: moka::sync::Cache<String, Arc<Mutex<(Instant, u64)>>>,
 }
@@ -46,40 +49,7 @@ impl LocalAdmissionFallback {
         }
     }
 
-    /// Mirrors a shared-counter answer into the local window, so a later Redis
-    /// failure continues from the shared count and admissions made while Redis
-    /// was down still count after it recovers.
-    ///
-    /// A shared denial stays authoritative. A shared allowance is still refused
-    /// when the local window, which also holds fallback admissions Redis never
-    /// saw, is over the limit.
-    fn record_shared(
-        &self,
-        key: String,
-        window_secs: u64,
-        limit: u64,
-        shared: &RateLimitResult,
-        now: Instant,
-    ) -> Result<(), AdmissionError> {
-        let window = Duration::from_secs(window_secs.max(1));
-        let shared_age = window.saturating_sub(Duration::from_secs(shared.reset_in_secs));
-        let shared_start = now.checked_sub(shared_age).unwrap_or(now);
-        let entry = self.entry(key, now);
-        let mut guard = entry.lock().unwrap_or_else(PoisonError::into_inner);
-        if guard.1 == 0 || now.saturating_duration_since(guard.0) >= window {
-            *guard = (shared_start, shared.current);
-        } else {
-            guard.1 = guard.1.saturating_add(1).max(shared.current);
-        }
-        if !shared.allowed {
-            return Err(AdmissionError::Exceeded {
-                reset_in_secs: shared.reset_in_secs,
-            });
-        }
-        Self::verdict(*guard, window, limit, now)
-    }
-
-    /// Counts one admission in the local window when Redis cannot answer.
+    /// Counts one attempt in the local window and returns the local verdict.
     fn check(
         &self,
         key: String,
@@ -88,30 +58,18 @@ impl LocalAdmissionFallback {
         now: Instant,
     ) -> Result<(), AdmissionError> {
         let window = Duration::from_secs(window_secs.max(1));
-        let entry = self.entry(key, now);
+        let entry = self
+            .windows
+            .get_with(key, || Arc::new(Mutex::new((now, 0))));
         let mut guard = entry.lock().unwrap_or_else(PoisonError::into_inner);
         if now.saturating_duration_since(guard.0) >= window {
             *guard = (now, 0);
         }
         guard.1 = guard.1.saturating_add(1);
-        Self::verdict(*guard, window, limit, now)
-    }
-
-    fn entry(&self, key: String, now: Instant) -> Arc<Mutex<(Instant, u64)>> {
-        self.windows
-            .get_with(key, || Arc::new(Mutex::new((now, 0))))
-    }
-
-    fn verdict(
-        (start, count): (Instant, u64),
-        window: Duration,
-        limit: u64,
-        now: Instant,
-    ) -> Result<(), AdmissionError> {
-        if count <= limit {
+        if guard.1 <= limit {
             return Ok(());
         }
-        let remaining = window.saturating_sub(now.saturating_duration_since(start));
+        let remaining = window.saturating_sub(now.saturating_duration_since(guard.0));
         Err(AdmissionError::Exceeded {
             reset_in_secs: remaining.as_secs().max(1),
         })
@@ -127,26 +85,25 @@ pub(crate) async fn check_principal<L: RateLimiter>(
     window_secs: u64,
     limit: u64,
 ) -> Result<(), AdmissionError> {
+    let local_verdict = fallback.map(|fallback| {
+        let key = buzz_auth::rate_limit::rate_limit_key(tenant, pubkey, &limit_type);
+        fallback.check(key, window_secs, limit, Instant::now())
+    });
     match limiter
-        .check_and_increment(tenant, pubkey, limit_type.clone(), window_secs, limit)
+        .check_and_increment(tenant, pubkey, limit_type, window_secs, limit)
         .await
     {
-        Ok(result) => match fallback {
-            Some(fallback) => {
-                let key = buzz_auth::rate_limit::rate_limit_key(tenant, pubkey, &limit_type);
-                fallback.record_shared(key, window_secs, limit, &result, Instant::now())
-            }
-            None if result.allowed => Ok(()),
-            None => Err(AdmissionError::Exceeded {
-                reset_in_secs: result.reset_in_secs,
-            }),
-        },
-        Err(error) => match fallback {
-            Some(fallback) => {
+        Ok(result) if !result.allowed => Err(AdmissionError::Exceeded {
+            reset_in_secs: result.reset_in_secs,
+        }),
+        // Admissions made while Redis was down are only in the local window,
+        // so a recovered Redis cannot grant what the local window has spent.
+        Ok(_) => local_verdict.unwrap_or(Ok(())),
+        Err(error) => match local_verdict {
+            Some(verdict) => {
                 tracing::warn!(error = %error, "shared rate-limit admission unavailable; using local fallback");
                 metrics::counter!("buzz_admission_local_fallback_total").increment(1);
-                let key = buzz_auth::rate_limit::rate_limit_key(tenant, pubkey, &limit_type);
-                fallback.check(key, window_secs, limit, Instant::now())
+                verdict
             }
             None => {
                 tracing::warn!(error = %error, "shared rate-limit admission unavailable");
@@ -459,6 +416,20 @@ mod tests {
             matches!(results[3], Err(AdmissionError::Exceeded { .. })),
             "recovery must not grant a fourth admission: {results:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn out_of_order_shared_replies_do_not_double_count() {
+        // Concurrent requests can complete out of order, so the shared counts
+        // arrive as 3, 2, 1. All three are within the limit of three.
+        let results = run_script(vec![
+            shared_allowed(3),
+            shared_allowed(2),
+            shared_allowed(1),
+        ])
+        .await;
+
+        assert_eq!(results, [Ok(()), Ok(()), Ok(())]);
     }
 
     #[tokio::test]

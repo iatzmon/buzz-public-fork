@@ -46,9 +46,6 @@ const ChannelScreenView = React.lazy(async () => {
   return { default: module.ChannelScreen };
 });
 
-function ignoreForumPost() {}
-function ignoreForumPostSelect() {}
-
 function ProjectHomeHeaderToggle({
   children,
   label,
@@ -89,6 +86,10 @@ export function ProjectChannelHome({
   autoSendDraftKey,
   project,
   projects,
+  selectedForumPostId = null,
+  targetForumReplyId = null,
+  targetSearchMessageId,
+  targetSearchQuery,
   targetMessageEvents = EMPTY_TARGET_MESSAGE_EVENTS,
   targetMessageId,
 }: {
@@ -96,10 +97,15 @@ export function ProjectChannelHome({
   autoSendDraftKey?: string | null;
   project: Project;
   projects: Project[];
+  selectedForumPostId?: string | null;
+  targetForumReplyId?: string | null;
+  targetSearchMessageId?: string;
+  targetSearchQuery?: string;
   targetMessageEvents?: RelayEvent[];
   targetMessageId?: string | null;
 }) {
-  const { goChannel, goProject, goProjects } = useAppNavigation();
+  const { closeForumPost, goChannel, goForumPost, goProject, goProjects } =
+    useAppNavigation();
   const sidebar = useOptionalSidebar();
   const identityQuery = useIdentityQuery();
   const profileQuery = useProfileQuery();
@@ -373,10 +379,16 @@ export function ProjectChannelHome({
                 }
                 onAddFiles={handleAddFiles}
                 onCloseIdleAuxiliaryPanel={closeWorkspaceSheet}
-                onCloseForumPost={ignoreForumPost}
-                onSelectForumPost={ignoreForumPostSelect}
-                selectedForumPostId={null}
-                targetForumReplyId={null}
+                onCloseForumPost={() => {
+                  void closeForumPost(homeChannel.id);
+                }}
+                onSelectForumPost={(postId) => {
+                  void goForumPost(homeChannel.id, postId);
+                }}
+                selectedForumPostId={selectedForumPostId}
+                targetForumReplyId={targetForumReplyId}
+                targetSearchMessageId={targetSearchMessageId}
+                targetSearchQuery={targetSearchQuery}
                 targetMessageEvents={targetMessageEvents}
                 targetMessageId={
                   targetMessageId === undefined

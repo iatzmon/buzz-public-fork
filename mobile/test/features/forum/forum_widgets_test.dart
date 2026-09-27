@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
@@ -137,6 +139,19 @@ Widget _buildPostsView({
 /// [main].
 late SharedPreferences _testPrefs;
 
+ThreadReply reply(String eventId, String content) => ThreadReply(
+  eventId: eventId,
+  pubkey: 'bob',
+  content: content,
+  kind: 45003,
+  createdAt: 2000,
+  channelId: _channelId,
+  tags: const [
+    ['h', _channelId],
+  ],
+  depth: 1,
+);
+
 Widget _buildThreadPage({
   required ForumThreadResponse threadResponse,
   String postEventId = 'post1',
@@ -148,7 +163,7 @@ Widget _buildThreadPage({
   Set<String> knownAgentPubkeys = const {},
   Set<String> channelBotPubkeys = const {},
   TextScaler textScaler = TextScaler.noScaling,
-  ForumThreadResponse Function()? loadThread,
+  FutureOr<ForumThreadResponse> Function()? loadThread,
   CommunityMemberRole? communityRole,
   RecordingSignedEventRelay? signedEventRelay,
 }) {

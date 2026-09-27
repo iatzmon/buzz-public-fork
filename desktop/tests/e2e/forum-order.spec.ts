@@ -2,9 +2,9 @@ import { expect, test, type Locator, type Page } from "@playwright/test";
 
 import { installMockBridge } from "../helpers/bridge";
 
-// Desktop forums read like a conversation: the post list (by latest reply)
-// and a post's replies run oldest first, open at the bottom, and follow new
-// entries there. The mock
+// Desktop forum order: the post list runs newest activity first and opens at
+// the top. A post's replies read like a conversation: oldest first, open at
+// the bottom, and follow new entries there. The mock
 // bridge returns posts and replies newest first, as the relay does.
 
 const FORUM = "watercooler";
@@ -106,7 +106,7 @@ test.beforeEach(async ({ page }) => {
   await installMockBridge(page);
 });
 
-test("the post list runs by latest activity with the new-post box below it", async ({
+test("the post list runs newest activity first, below the new-post box", async ({
   page,
 }) => {
   await openForum(page, { olderPosts: 10 });
@@ -117,17 +117,19 @@ test("the post list runs by latest activity with the new-post box below it", asy
     els.map((el) => el.getAttribute("data-testid")),
   );
   // The release post is older than the offsite post, but its newest reply is
-  // newer than both, so it sits last.
-  expect(cardIds.slice(-2)).toEqual([
-    `forum-post-card-${OFFSITE_POST}`,
+  // newer than both, so it comes first.
+  expect(cardIds.slice(0, 2)).toEqual([
     `forum-post-card-${RELEASE_POST}`,
+    `forum-post-card-${OFFSITE_POST}`,
   ]);
-  await expect(cards.first()).toContainText("Older seeded post 1.");
+  await expect(cards.last()).toContainText("Older seeded post 1.");
 
-  // Twelve cards overflow the list, so being at the bottom is a real scroll.
+  // Twelve cards overflow the list; it opens at the top.
   const list = page.getByTestId("forum-post-list");
-  await expectPinnedToBottom(list);
-  expect(await list.evaluate((el) => el.scrollTop)).toBeGreaterThan(0);
+  expect(await list.evaluate((el) => el.scrollHeight > el.clientHeight)).toBe(
+    true,
+  );
+  expect(await list.evaluate((el) => el.scrollTop)).toBe(0);
 
   const newest = await page
     .getByTestId(`forum-post-card-${RELEASE_POST}`)
@@ -136,34 +138,39 @@ test("the post list runs by latest activity with the new-post box below it", asy
     .getByRole("button", { name: "Start a new post..." })
     .boundingBox();
   if (!newest || !startPost) throw new Error("forum list not laid out");
-  expect(startPost.y).toBeGreaterThan(newest.y + newest.height);
+  expect(newest.y).toBeGreaterThan(startPost.y + startPost.height);
 });
 
-test("a new post lands last and the list follows it to the bottom", async ({
+test("a new post lands first and the list scrolls up to it", async ({
   page,
 }) => {
   await openForum(page, { olderPosts: 10 });
   const list = page.getByTestId("forum-post-list");
-  await expectPinnedToBottom(list);
-  await scrollToTop(list);
+  await list.hover();
+  await list.evaluate((el) => {
+    el.scrollTop = el.scrollHeight;
+    el.dispatchEvent(new Event("scroll"));
+  });
+  await expect
+    .poll(() => list.evaluate((el) => el.scrollTop))
+    .toBeGreaterThan(0);
 
   await page.getByRole("button", { name: "Start a new post..." }).click();
-  await submitForumComposer(page, "Newest post goes at the bottom.");
+  await submitForumComposer(page, "Newest post goes at the top.");
 
   const cards = page.locator('[data-testid^="forum-post-card-"]');
   await expect(cards).toHaveCount(13);
-  await expect(cards.last()).toContainText("Newest post goes at the bottom.");
-  await expectPinnedToBottom(list);
-  expect(await list.evaluate((el) => el.scrollTop)).toBeGreaterThan(0);
+  await expect(cards.first()).toContainText("Newest post goes at the top.");
+  await expect.poll(() => list.evaluate((el) => el.scrollTop)).toBe(0);
 });
 
-test("a new reply moves an older post to the bottom of the list", async ({
+test("a new reply moves an older post to the top of the list", async ({
   page,
 }) => {
   test.setTimeout(60_000);
   await openForum(page);
   const cards = page.locator('[data-testid^="forum-post-card-"]');
-  await expect(cards.last()).toHaveAttribute(
+  await expect(cards.first()).toHaveAttribute(
     "data-testid",
     `forum-post-card-${RELEASE_POST}`,
   );
@@ -180,7 +187,7 @@ test("a new reply moves an older post to the bottom of the list", async ({
     { channelName: FORUM, parentEventId: OFFSITE_POST, pubkey: ALICE_PUBKEY },
   );
 
-  await expect(cards.last()).toHaveAttribute(
+  await expect(cards.first()).toHaveAttribute(
     "data-testid",
     `forum-post-card-${OFFSITE_POST}`,
     { timeout: THREAD_POLL_TIMEOUT_MS },

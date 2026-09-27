@@ -46,7 +46,7 @@ test("the input array is not changed", () => {
   );
 });
 
-test("posts order by their newest reply, the most recent at the bottom", () => {
+test("posts order by their newest reply, the most recent first", () => {
   const relayOrder = [
     { eventId: "new-quiet", createdAt: 300, threadSummary: null },
     {
@@ -63,11 +63,11 @@ test("posts order by their newest reply, the most recent at the bottom", () => {
 
   assert.deepEqual(
     sortForumPostsByActivity(relayOrder).map((post) => post.eventId),
-    ["middle-replied", "new-quiet", "old-active"],
+    ["old-active", "new-quiet", "middle-replied"],
   );
 });
 
-test("equal activity falls back to post time, then event id", () => {
+test("equal activity falls back to the newer post, then event id", () => {
   const posts = [
     { eventId: "b", createdAt: 100, threadSummary: { lastReplyAt: 400 } },
     { eventId: "a", createdAt: 100, threadSummary: { lastReplyAt: 400 } },
@@ -76,10 +76,10 @@ test("equal activity falls back to post time, then event id", () => {
 
   assert.deepEqual(
     sortForumPostsByActivity(posts).map((post) => post.eventId),
-    ["c", "a", "b"],
+    ["a", "b", "c"],
   );
   assert.deepEqual(
     sortForumPostsByActivity([...posts].reverse()).map((post) => post.eventId),
-    ["c", "a", "b"],
+    ["a", "b", "c"],
   );
 });

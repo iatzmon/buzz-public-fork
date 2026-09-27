@@ -1,6 +1,6 @@
 /**
- * Orders forum posts or replies oldest first, so the newest sits at the
- * bottom next to the composer, as in a conversation.
+ * Orders a post's replies oldest first, so the newest sits at the bottom
+ * next to the reply composer, as in a conversation.
  *
  * The relay returns forum events newest first. The sort is stable, so events
  * that share a `createdAt` second keep the relay's order.
@@ -23,10 +23,9 @@ export function forumPostActivityAt(post: {
 }
 
 /**
- * Orders forum posts by latest activity, least recent first, so the post with
- * the newest reply sits at the bottom next to the composer, where the list
- * opens. Ties fall back to post time, then event id, so refreshes do not
- * shuffle the list.
+ * Orders forum posts by latest activity, newest first, so the post with the
+ * newest reply sits at the top. Ties fall back to the newer post, then event
+ * id, so refreshes do not shuffle the list.
  */
 export function sortForumPostsByActivity<
   T extends {
@@ -37,8 +36,8 @@ export function sortForumPostsByActivity<
 >(posts: readonly T[]): T[] {
   return [...posts].sort(
     (a, b) =>
-      forumPostActivityAt(a) - forumPostActivityAt(b) ||
-      a.createdAt - b.createdAt ||
+      forumPostActivityAt(b) - forumPostActivityAt(a) ||
+      b.createdAt - a.createdAt ||
       (a.eventId < b.eventId ? -1 : a.eventId > b.eventId ? 1 : 0),
   );
 }

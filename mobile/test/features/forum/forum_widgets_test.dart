@@ -156,6 +156,7 @@ Widget _buildThreadPage({
   required ForumThreadResponse threadResponse,
   String postEventId = 'post1',
   String? initialMessageId,
+  ThreadReply? initialReply,
   String? currentPubkey = 'self',
   bool isMember = true,
   bool isArchived = false,
@@ -198,6 +199,7 @@ Widget _buildThreadPage({
             channelId: _channelId,
             postEventId: postEventId,
             initialMessageId: initialMessageId,
+            initialReply: initialReply,
             currentPubkey: currentPubkey,
             isMember: isMember,
             isArchived: isArchived,
@@ -1416,6 +1418,155 @@ void main() {
         ['e', 'bob-reply'],
       ]);
       expect(find.text('Bob reply'), findsNothing);
+    });
+
+    group('reply opened from a notification', () {
+      ThreadReply timedReply(
+        String eventId,
+        String content,
+        int createdAt, {
+        String pubkey = 'bob',
+      }) => ThreadReply(
+        eventId: eventId,
+        pubkey: pubkey,
+        content: content,
+        kind: 45003,
+        createdAt: createdAt,
+        channelId: _channelId,
+        tags: const [
+          ['h', _channelId],
+        ],
+        depth: 1,
+      );
+
+      ForumThreadResponse threadOf(List<ThreadReply> replies) =>
+          ForumThreadResponse(
+            post: _makePost(pubkey: 'alice'),
+            replies: replies,
+            totalReplies: replies.length,
+          );
+
+      testWidgets('shows a notified reply older than the loaded replies', (
+        tester,
+      ) async {
+        final loaded = [timedReply('newer', 'Newer reply', 3000)];
+        await tester.pumpWidget(
+          _buildThreadPage(
+            threadResponse: threadOf(loaded),
+            initialMessageId: 'older',
+            initialReply: timedReply('older', 'Older notified reply', 1500),
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        expect(find.text('Older notified reply'), findsOneWidget);
+        expect(find.text('Newer reply'), findsOneWidget);
+      });
+
+      testWidgets('hides a notified reply missing from the loaded replies', (
+        tester,
+      ) async {
+        final loaded = [
+          timedReply('first', 'First reply', 1500),
+          timedReply('last', 'Last reply', 3000),
+        ];
+        await tester.pumpWidget(
+          _buildThreadPage(
+            threadResponse: threadOf(loaded),
+            initialMessageId: 'deleted',
+            initialReply: timedReply('deleted', 'Deleted reply', 2000),
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        expect(find.text('Deleted reply'), findsNothing);
+        expect(find.text('First reply'), findsOneWidget);
+      });
+
+      testWidgets('community admin deletes the notified reply with kind 9005 '
+          'and it disappears', (tester) async {
+        final notified = timedReply('bob-reply', 'Bob reply', 2000);
+        var replies = [notified];
+        final relay = RecordingSignedEventRelay(
+          onSubmit: (submission) {
+            final target = submission.tags.firstWhere((t) => t[0] == 'e')[1];
+            replies = [
+              for (final r in replies)
+                if (r.eventId != target) r,
+            ];
+          },
+        );
+        await tester.pumpWidget(
+          _buildThreadPage(
+            threadResponse: threadOf(replies),
+            loadThread: () async => threadOf(replies),
+            initialMessageId: 'bob-reply',
+            initialReply: notified,
+            currentPubkey: 'self',
+            communityRole: CommunityMemberRole.admin,
+            signedEventRelay: relay,
+          ),
+        );
+        await tester.pumpAndSettle();
+        expect(find.text('Bob reply'), findsOneWidget);
+
+        await openReplyActions(tester);
+        await tester.tap(find.text('Delete reply'));
+        await tester.pumpAndSettle();
+        await tester.tap(find.widgetWithText(FilledButton, 'Delete'));
+        await tester.pumpAndSettle();
+
+        expect(relay.submissions.single.kind, EventKind.nip29DeleteEvent);
+        expect(relay.submissions.single.tags, [
+          ['h', _channelId],
+          ['e', 'bob-reply'],
+        ]);
+        expect(find.text('Bob reply'), findsNothing);
+      });
+
+      testWidgets('author deletes an older notified reply with kind 5 and it '
+          'disappears', (tester) async {
+        final notified = timedReply(
+          'own-reply',
+          'Own notified reply',
+          1500,
+          pubkey: 'self',
+        );
+        final newer = timedReply('newer', 'Newer reply', 3000);
+        final relay = RecordingSignedEventRelay();
+        await tester.pumpWidget(
+          _buildThreadPage(
+            threadResponse: threadOf([newer]),
+            initialMessageId: 'own-reply',
+            initialReply: notified,
+            currentPubkey: 'self',
+            signedEventRelay: relay,
+          ),
+        );
+        await tester.pumpAndSettle();
+        expect(find.text('Own notified reply'), findsOneWidget);
+
+        await tester.tap(
+          find.descendant(
+            of: find.ancestor(
+              of: find.text('Own notified reply'),
+              matching: find.byWidgetPredicate(
+                (widget) => widget.runtimeType.toString() == '_ReplyRow',
+              ),
+            ),
+            matching: find.byType(IconButton),
+          ),
+        );
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Delete reply'));
+        await tester.pumpAndSettle();
+        await tester.tap(find.widgetWithText(FilledButton, 'Delete'));
+        await tester.pumpAndSettle();
+
+        expect(relay.submissions.single.kind, EventKind.deletion);
+        expect(find.text('Own notified reply'), findsNothing);
+        expect(find.text('Newer reply'), findsOneWidget);
+      });
     });
 
     testWidgets('plain member does not see Delete reply on others\' replies', (

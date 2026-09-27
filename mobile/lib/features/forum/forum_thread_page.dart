@@ -289,15 +289,24 @@ class _ThreadContent extends HookConsumerWidget {
     final providerContainer = ProviderScope.containerOf(context, listen: false);
     final forumDelivery = ForumEventDelivery.capture(providerContainer);
     final post = thread.post;
-    // The notification may point outside the relay's newest reply window.
+    // The notification may point outside the relay's newest reply window, so
+    // its reply is kept as a seed. Keep the seed only while it is older than
+    // every loaded reply: inside the loaded window, its absence means it was
+    // deleted. A reply deleted from this page is dropped at once.
+    final deletedReplyIds = useState<Set<String>>(const {});
+    final seed = initialReply;
+    final keepSeed =
+        seed != null &&
+        !deletedReplyIds.value.contains(seed.eventId) &&
+        thread.replies.isNotEmpty &&
+        !thread.replies.any((reply) => reply.eventId == seed.eventId) &&
+        thread.replies.every((reply) => seed.createdAt < reply.createdAt);
     final replies =
         [
-          ...thread.replies,
-          if (initialReply != null &&
-              !thread.replies.any(
-                (reply) => reply.eventId == initialReply!.eventId,
-              ))
-            initialReply!,
+          ...thread.replies.where(
+            (reply) => !deletedReplyIds.value.contains(reply.eventId),
+          ),
+          if (keepSeed) seed,
         ]..sort((a, b) {
           final byTime = a.createdAt.compareTo(b.createdAt);
           return byTime == 0 ? a.eventId.compareTo(b.eventId) : byTime;
@@ -452,6 +461,8 @@ class _ThreadContent extends HookConsumerWidget {
               channelId: channelId,
               rootEventId: post.eventId,
               isArchived: isArchived,
+              onDeleted: (eventId) =>
+                  deletedReplyIds.value = {...deletedReplyIds.value, eventId},
             ),
           ),
       // Zero-height end marker: jumping to it with alignment 1.0 puts the
@@ -668,12 +679,16 @@ class _ReplyRow extends ConsumerWidget {
   final String rootEventId;
   final bool isArchived;
 
+  /// Called after this reply is deleted, so the page can drop it at once.
+  final ValueChanged<String>? onDeleted;
+
   const _ReplyRow({
     required this.reply,
     required this.currentPubkey,
     required this.channelId,
     required this.rootEventId,
     required this.isArchived,
+    this.onDeleted,
   });
 
   @override
@@ -877,7 +892,9 @@ class _ReplyRow extends ConsumerWidget {
                 messenger?.showSnackBar(
                   SnackBar(content: Text('Failed to delete reply: $error')),
                 );
+                return;
               }
+              if (context.mounted) onDeleted?.call(reply.eventId);
             },
             style: FilledButton.styleFrom(
               backgroundColor: dialogContext.colors.error,

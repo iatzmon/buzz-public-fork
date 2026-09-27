@@ -633,6 +633,56 @@ void main() {
       expect(refreshed.mentions, isEmpty);
     });
 
+    test(
+      'a late lookup from an older fetch cannot restore a removed owner',
+      () async {
+        // Reproduces Codex Forge's review sequence on PR #16.
+        final agent = nostr.Keys.generate();
+        final session = _GatedProfileSession()
+          ..seed(_profile(agent, [_authTag(me, agent.public)]))
+          ..seed(_request('mine', agent.public, me.public));
+        final channels = _MutableChannelsNotifier();
+        final container = ProviderContainer(
+          overrides: [
+            relayConfigProvider.overrideWith(_FixedRelayConfigNotifier.new),
+            myPubkeyProvider.overrideWithValue(me.public),
+            relaySessionProvider.overrideWith(() => session),
+            channelsProvider.overrideWith(() => channels),
+          ],
+        );
+        addTearDown(container.dispose);
+        await container.read(channelsProvider.future);
+        final initial = await container.read(activityProvider.future);
+        expect(initial.needsAction.map((item) => item.id), ['mine']);
+        final notifier = container.read(activityProvider.notifier);
+
+        // 1. An older refresh holds a profile response that still names me.
+        session.holdNextProfile = true;
+        final staleRefresh = notifier.refresh();
+        await session.profileHeld.future;
+
+        // 2. The agent drops its owner attestation; a DM change rebuilds.
+        session._history.removeWhere((event) => event.kind == 0);
+        session.seed(_profile(agent, const []));
+        channels.addDm();
+        final current = await container.read(activityProvider.future);
+        expect(current.needsAction, isEmpty);
+        expect(current.mentions.map((item) => item.id), ['mine']);
+
+        // 3. The stale response lands, then the next lookup fails.
+        session.releaseProfile.complete();
+        await staleRefresh;
+        session
+          ..failProfileHttp = true
+          ..failProfileWs = true;
+        await notifier.refresh();
+
+        final afterFailure = container.read(activityProvider).value!;
+        expect(afterFailure.needsAction, isEmpty);
+        expect(afterFailure.mentions.map((item) => item.id), ['mine']);
+      },
+    );
+
     test('retries stop after a bounded number of failed lookups', () async {
       final session = _RecordingSessionNotifier()
         ..failProfileHttp = true
@@ -1498,5 +1548,35 @@ class _DeferredChannelsNotifier extends ChannelsNotifier {
   void complete(List<Channel> channels) {
     _hasLoaded = true;
     _gate.complete(channels);
+  }
+}
+
+/// Channels whose DM set can change mid-test, which rebuilds Activity.
+class _MutableChannelsNotifier extends ChannelsNotifier {
+  @override
+  Future<List<Channel>> build() async => const [];
+
+  void addDm() => state = AsyncData([_dmChannel('new-dm')]);
+}
+
+/// Holds the next HTTP profile response (already read from history) until
+/// [releaseProfile] completes, so a newer fetch can overtake it.
+class _GatedProfileSession extends _RecordingSessionNotifier {
+  bool holdNextProfile = false;
+  final profileHeld = Completer<void>();
+  final releaseProfile = Completer<void>();
+
+  @override
+  Future<List<NostrEvent>> queryRelay(
+    List<NostrFilter> filters, {
+    Duration timeout = const Duration(seconds: 8),
+  }) async {
+    final snapshot = await super.queryRelay(filters, timeout: timeout);
+    if (holdNextProfile && filters.any((filter) => filter.kinds.contains(0))) {
+      holdNextProfile = false;
+      profileHeld.complete();
+      await releaseProfile.future;
+    }
+    return snapshot;
   }
 }

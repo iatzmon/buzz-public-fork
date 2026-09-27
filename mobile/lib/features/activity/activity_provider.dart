@@ -64,6 +64,10 @@ class ActivityNotifier extends AsyncNotifier<HomeFeedResponse> {
   // relay + account (cleared with `_dmResurfaceScope`).
   final Map<String, String> _requestAuthorOwners = {};
   bool _ownerLookupFailed = false;
+  // Increments per owner lookup; a lookup that is no longer the latest (or
+  // belongs to an old generation) must not touch the kept owners or the
+  // failure/retry state.
+  int _ownerLookupSequence = 0;
   int _ownerLookupRetryAttempt = 0;
   Timer? _ownerLookupRetryTimer;
   final List<void Function()> _unsubscribeDms = [];
@@ -107,7 +111,7 @@ class ActivityNotifier extends AsyncNotifier<HomeFeedResponse> {
       _clearLiveSubscriptions();
     });
 
-    final response = await _fetch();
+    final response = await _fetch(generation);
     if (sessionState.status == SessionStatus.connected &&
         generation == _subscriptionGeneration) {
       unawaited(_subscribeLive(generation));
@@ -409,7 +413,7 @@ class ActivityNotifier extends AsyncNotifier<HomeFeedResponse> {
       do {
         _refreshQueued = false;
         try {
-          final next = await _fetch();
+          final next = await _fetch(generation);
           if (generation != _subscriptionGeneration) return;
           state = AsyncData(next);
           _scheduleOwnerLookupRetryIfNeeded(generation);
@@ -462,7 +466,7 @@ class ActivityNotifier extends AsyncNotifier<HomeFeedResponse> {
     return ids.join(',');
   }
 
-  Future<HomeFeedResponse> _fetch() async {
+  Future<HomeFeedResponse> _fetch(int generation) async {
     final myPk = ref.read(myPubkeyProvider);
     if (myPk == null) {
       return HomeFeedResponse(
@@ -536,6 +540,7 @@ class ActivityNotifier extends AsyncNotifier<HomeFeedResponse> {
         isFromOther(event);
     final ownerByAgent = await _fetchRequestAuthorOwners(
       session,
+      generation,
       events.where((event) => isMention(event) && hasNeedsActionMarker(event)),
     );
 
@@ -657,15 +662,27 @@ class ActivityNotifier extends AsyncNotifier<HomeFeedResponse> {
   /// both fail) keeps the owners verified earlier and sets
   /// `_ownerLookupFailed`, so the caller schedules a bounded retry instead
   /// of treating the failure as "no owners".
+  ///
+  /// Only the latest lookup of the current `generation` may change the kept
+  /// owners or `_ownerLookupFailed`. An older lookup that completes late
+  /// returns the kept owners unchanged, so it cannot restore an owner that a
+  /// newer lookup removed.
   Future<Map<String, String>> _fetchRequestAuthorOwners(
     RelaySessionNotifier session,
+    int generation,
     Iterable<NostrEvent> requests,
   ) async {
-    _ownerLookupFailed = false;
+    final lookup = ++_ownerLookupSequence;
+    bool isLatest() =>
+        generation == _subscriptionGeneration && lookup == _ownerLookupSequence;
+
     final authors = {
       for (final event in requests) event.pubkey.toLowerCase(),
     }.toList();
-    if (authors.isEmpty) return const {};
+    if (authors.isEmpty) {
+      if (isLatest()) _ownerLookupFailed = false;
+      return const {};
+    }
 
     final filter = NostrFilters.profilesBatch(authors);
     List<NostrEvent> profiles;
@@ -675,6 +692,7 @@ class ActivityNotifier extends AsyncNotifier<HomeFeedResponse> {
       try {
         profiles = await session.fetchHistory(filter);
       } catch (error) {
+        if (!isLatest()) return Map.of(_requestAuthorOwners);
         debugPrint(
           '[ActivityNotifier] request author lookup failed '
           '(http: $httpError; websocket: $error); keeping verified owners '
@@ -685,6 +703,8 @@ class ActivityNotifier extends AsyncNotifier<HomeFeedResponse> {
       }
     }
 
+    if (!isLatest()) return Map.of(_requestAuthorOwners);
+    _ownerLookupFailed = false;
     final verified = agentOwnersFromProfiles(profiles);
     for (final author in authors) {
       final owner = verified[author];

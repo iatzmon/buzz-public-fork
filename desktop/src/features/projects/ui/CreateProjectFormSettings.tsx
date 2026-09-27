@@ -1,4 +1,4 @@
-import { ChevronDown, Plus } from "lucide-react";
+import { ChevronDown, FileText, Hash, Plus } from "lucide-react";
 import * as React from "react";
 
 import { ChannelPermissionsSettings } from "@/features/channels/ui/ChannelPermissionsSettings";
@@ -14,11 +14,18 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/shared/ui/dropdown-menu";
+import { useFeatureEnabled } from "@/shared/features/useFeatureEnabled";
 import { cn } from "@/shared/lib/cn";
+import { SegmentedControl } from "@/shared/ui/segmented-control";
 
 const NONE_AGENT_VALUE = "__none__";
 const NONE_TEAM_VALUE = "__no-team__";
 const NO_TEMPLATE_VALUE = "__no-template__";
+
+const HOME_CHANNEL_TYPE_OPTIONS = [
+  { value: "stream", label: "Chat", Icon: Hash },
+  { value: "forum", label: "Forum", Icon: FileText },
+] as const;
 
 const SETTINGS_ROW_CLASS =
   "flex min-h-12 items-center justify-between gap-4 rounded-xl border border-input bg-background px-3 py-3";
@@ -28,11 +35,13 @@ export function CreateProjectFormSettings({
   disabled,
   handleTemplateChange,
   handleTemplateCreated,
+  homeChannelType,
   personas,
   projectVisibility,
   runtimesAvailable,
   setAgentPersonaId,
   setChannelVisibility,
+  setHomeChannelType,
   setProjectVisibility,
   setTeamId,
   teamId,
@@ -42,6 +51,7 @@ export function CreateProjectFormSettings({
   channelVisibility,
 }: CreateProjectFormSettingsState & { disabled: boolean }) {
   const [isCreateTemplateOpen, setIsCreateTemplateOpen] = React.useState(false);
+  const forumsEnabled = useFeatureEnabled("forum");
   const selectedPersona = personas.find(
     (persona) => persona.id === agentPersonaId,
   );
@@ -62,6 +72,32 @@ export function CreateProjectFormSettings({
         testIdPrefix="create-project-channel"
         visibility={channelVisibility}
       />
+
+      {forumsEnabled ? (
+        <div
+          className={SETTINGS_ROW_CLASS}
+          data-testid="create-project-home-type-row"
+        >
+          <span
+            className={cn(
+              "text-sm font-medium text-foreground",
+              disabled && "opacity-50",
+            )}
+          >
+            Conversations
+          </span>
+          <SegmentedControl
+            disabled={disabled}
+            legend="Conversations"
+            onValueChange={setHomeChannelType}
+            optionTestIdPrefix="create-project-home-type-option"
+            options={HOME_CHANNEL_TYPE_OPTIONS}
+            size="compact"
+            testId="create-project-home-type"
+            value={homeChannelType}
+          />
+        </div>
+      ) : null}
 
       <div className={cn(SETTINGS_ROW_CLASS, disabled && "opacity-50")}>
         <span className="text-sm font-medium text-foreground">

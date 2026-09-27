@@ -27,10 +27,14 @@ import {
 } from "@/shared/constants/kinds";
 import { getCachedRelayOrigin } from "@/shared/lib/mediaUrl";
 
+export type ProjectHomeChannelType = "stream" | "forum";
+
 export type CreateProjectInput = {
   name: string;
   description?: string;
   channelVisibility?: ChannelVisibility;
+  /** Conversation type of the new home channel; defaults to chat. */
+  homeChannelType?: ProjectHomeChannelType;
   projectVisibility?: ProjectListingVisibility;
   agents?: readonly CreateChannelManagedAgentInput[];
   templateId?: string;
@@ -266,7 +270,7 @@ export async function createProject(
   let channel = resume.channels.get(projectId);
   if (!channel) {
     channel = await createChannel({
-      channelType: "stream",
+      channelType: input.homeChannelType ?? "stream",
       description: input.description,
       name: input.name.trim(),
       visibility: input.channelVisibility ?? "open",

@@ -329,7 +329,10 @@ class _FloatingTabBar extends StatelessWidget {
         HomePage._tabBarBottomGap,
       ),
       child: Align(
-        alignment: Alignment.bottomCenter,
+        // Leave room for the Home quick action in narrow workspace panes.
+        alignment: MediaQuery.sizeOf(context).width < 400
+            ? Alignment.bottomLeft
+            : Alignment.bottomCenter,
         heightFactor: 1,
         child: DecoratedBox(
           decoration: BoxDecoration(

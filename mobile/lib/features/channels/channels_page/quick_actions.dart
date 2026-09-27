@@ -7,7 +7,7 @@ const _kMorphCloseCurve = Cubic(0.22, 1, 0.36, 1);
 const double _kMorphOpenBounce = 0.14;
 const double _kMorphCloseBounce = 0.06;
 const double _kMorphClosedSize = 56;
-const double _kMorphOpenHeight = 216;
+const double _kMorphOpenHeight = 288;
 const double _kMorphOpenRadius = 20;
 const double _kMorphSlide = 40;
 const double _kMorphScale = 0.97;
@@ -266,6 +266,13 @@ class _QuickActionsMenu extends StatelessWidget {
             title: 'Create channel',
             key: const Key('quick-action-create-channel-card'),
             onTap: () => onSelected(_QuickAction.createChannel),
+          ),
+          const SizedBox(height: Grid.xxs),
+          _QuickActionItem(
+            icon: LucideIcons.messageSquare,
+            title: 'Create forum',
+            key: const Key('quick-action-create-forum-card'),
+            onTap: () => onSelected(_QuickAction.createForum),
           ),
           const SizedBox(height: Grid.xxs),
           _QuickActionItem(

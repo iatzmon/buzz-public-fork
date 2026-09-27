@@ -11,6 +11,7 @@ import '../../shared/mentions/agent_identity_provider.dart';
 import '../../shared/mentions/mention_tags.dart';
 import '../../shared/relay/relay.dart';
 import '../../shared/theme/theme.dart';
+import '../../shared/widgets/adaptive_workspace.dart';
 import '../../shared/utils/string_utils.dart';
 import '../../shared/widgets/avatar_image.dart';
 import '../../shared/widgets/anchored_popover_menu.dart';
@@ -257,7 +258,8 @@ class ActivityPage extends HookConsumerWidget {
           : thread.parentId;
 
       if (!context.mounted) return;
-      Navigator.of(context).push(
+      AdaptiveWorkspace.open(
+        context,
         MaterialPageRoute<void>(
           builder: (_) => ChannelDetailPage(
             channel: resolvedChannel,
@@ -280,7 +282,8 @@ class ActivityPage extends HookConsumerWidget {
         );
         return;
       }
-      Navigator.of(context).push(
+      AdaptiveWorkspace.open(
+        context,
         MaterialPageRoute<void>(
           builder: (_) => ChannelDetailPage(
             channel: channel,
@@ -311,7 +314,8 @@ class ActivityPage extends HookConsumerWidget {
         );
         return;
       }
-      Navigator.of(context).push(
+      AdaptiveWorkspace.open(
+        context,
         MaterialPageRoute<void>(
           builder: (_) => ChannelDetailPage(
             channel: channel,

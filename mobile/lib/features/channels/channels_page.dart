@@ -15,6 +15,7 @@ import '../../shared/auth/auth.dart';
 import '../../shared/community/community_icon_provider.dart';
 import '../../shared/relay/relay.dart';
 import '../../shared/theme/theme.dart';
+import '../../shared/widgets/adaptive_workspace.dart';
 import '../../shared/widgets/avatar_image.dart';
 import '../../shared/widgets/anchored_popover_menu.dart';
 import '../../shared/widgets/bee_refresh_indicator.dart';
@@ -63,7 +64,7 @@ part 'channels_page/community.dart';
 part 'channels_page/quick_actions.dart';
 part 'channels_page/quick_actions_launcher.dart';
 
-enum _QuickAction { createChannel, newDm, browseChannels }
+enum _QuickAction { createChannel, createForum, newDm, browseChannels }
 
 const double _kChannelSectionInset = Grid.gutter;
 const double _kChannelLeadingWidth = 22.0;
@@ -257,7 +258,8 @@ class ChannelsPage extends HookConsumerWidget {
     final channels = cachedChannels.value;
     Future<void> openChannel(Channel channel) async {
       if (!context.mounted) return;
-      await Navigator.of(context).push(
+      await AdaptiveWorkspace.open(
+        context,
         MaterialPageRoute<void>(
           builder: (_) => ChannelDetailPage(channel: channel),
         ),

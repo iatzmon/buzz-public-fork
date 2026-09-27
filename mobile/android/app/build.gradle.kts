@@ -79,6 +79,31 @@ val appOverrides =
     Properties().apply {
         if (appOverridesFile.isFile) appOverridesFile.inputStream().use { load(it) }
     }
+// Optional local distribution identity for private release APKs. This keeps
+// the release package separate from upstream Buzz while leaving the default
+// release identity unchanged when no override file is present.
+val releaseOverridesFile = rootProject.file("ReleaseOverrides.properties")
+val releaseOverrides =
+    Properties().apply {
+        if (releaseOverridesFile.isFile) releaseOverridesFile.inputStream().use { load(it) }
+    }
+val releaseIdSuffix =
+    releaseOverrides.getProperty("applicationIdSuffix")?.takeIf { it.isNotBlank() }
+val releaseAppName = releaseOverrides.getProperty("appName")?.takeIf { it.isNotBlank() }
+if (releaseIdSuffix != null && !releaseIdSuffix.matches(Regex("""\.[a-z][a-z0-9_]*"""))) {
+    throw GradleException(
+        "release applicationIdSuffix must match \\.[a-z][a-z0-9_]*, got: " +
+            releaseIdSuffix,
+    )
+}
+if (
+    releaseAppName != null &&
+        !releaseAppName.matches(Regex("""[A-Za-z0-9][A-Za-z0-9 ._()\-]{0,39}"""))
+) {
+    throw GradleException(
+        "release appName must be 1-40 resource-safe characters, got: " + releaseAppName,
+    )
+}
 val worktreeLabel = worktreeProps.getProperty("label")?.takeIf { it.isNotBlank() }
 if (worktreeLabel != null && !worktreeLabel.matches(Regex("""[A-Za-z0-9._-]+"""))) {
     throw GradleException(
@@ -189,6 +214,12 @@ android {
             }
         }
         release {
+            if (releaseIdSuffix != null) {
+                applicationIdSuffix = releaseIdSuffix
+            }
+            if (releaseAppName != null) {
+                resValue("string", "app_name", releaseAppName)
+            }
             if (hasUploadSigning) {
                 signingConfig = signingConfigs.getByName("upload")
             }

@@ -218,3 +218,79 @@ lib/
 - **Spacing:** `Grid` tokens for consistent spacing
 - **Linting:** `flutter_lints` + `riverpod_lint` via `custom_lint`
 - **Feature isolation:** No cross-feature imports except `shared/`
+
+## Creating channels and forums
+
+On Home, tap **+**, then **Create channel** or **Create forum**. Enter a name,
+choose Public or Private visibility, optionally set an expiry, and submit with
+the keyboard's Done action. The app opens the created channel or forum.
+
+## Foldables and larger windows
+
+The authenticated workspace uses two panes at 720 logical pixels of available
+width: Home, Activity, or Search starts in a 320–360 pixel sidebar, while the
+selected conversation and its thread navigation occupy the remaining space.
+At 600–719 pixels, the channel menu is a 320-pixel overlay that closes when a
+conversation is selected. The conversation keeps its width underneath; tap the
+exposed conversation, Hide sidebar, or Back to dismiss the menu. A 48-pixel
+Show sidebar control remains available. Below 600 pixels, only the active pane
+is visible. Layout follows the current
+window constraints, including multi-window resizing, rather than device model
+or orientation. Both widget trees and the detail navigator stay mounted across
+these changes, preserving drafts, cursor selection, and scroll controllers.
+Drag the divider to resize the sidebar between 320 and 560 logical pixels,
+subject to leaving at least 320 pixels for the conversation. The 48-pixel
+control strip contains a Hide/Show sidebar button and a large drag target.
+Double-tap the drag target (or press Home when it has keyboard focus) to reset
+its width; Left/Right arrows adjust it in 24-pixel steps. Assistive technologies
+can also increase or decrease its width. Width and collapse choices are retained
+while this workspace is mounted, including across folding and orientation
+changes; they are not persisted across app restarts. A physical separating
+hinge fixes pane boundaries, so resizing is disabled there but the toggle stays
+available on the unobstructed detail screen.
+
+System Back unwinds the detail stack before returning to the list and respects
+page dismissal guards. Switching communities clears the old detail stack.
+
+A separating vertical hinge becomes the pane gap when both sides are usable;
+otherwise the larger unobstructed region is used. Horizontal half-open folds
+also use the larger region. Flat, non-occluding folds do not divide the UI.
+
+Before shipping an Android build, verify on a physical foldable:
+
+- Open a channel or DM, type an unsent draft, scroll, and open a thread. Fold,
+  unfold, and rotate repeatedly; check the draft, selection, and Back behavior.
+- Repeat with the keyboard open and in Android split-screen mode.
+- Open conversations from Activity, Search, and notification links; verify they
+  use the detail pane and that Home's quick actions remain tappable.
+- Exercise attachment menus, media viewers, and Huddle minimize/restore while
+  changing the window size. Verify voice-note cancellation when a route covers
+  the recorder.
+
+Widget regressions cover the shell geometry, real Home/channel composer,
+deep-link dispatch, hinge gaps, RTL pane ordering, keyboard insets, dismissal
+guards, and community changes. These tests do not replace physical-device
+validation of Android's display handoff or process recreation.
+
+### Android emulator regression
+
+`integration_test/adaptive_workspace_test.dart` drives the production Home and
+channel composer with synthetic local data. It verifies divider dragging,
+collapse/restore, draft/widget retention, and actual Android display-size changes
+between inner-screen, cover-screen, and portrait dimensions. It uses no live relay.
+
+Start a dedicated Android emulator, then run from `mobile/`:
+
+```sh
+BUZZ_TEST_DEVICE=emulator-5582 flutter drive --no-pub -d emulator-5582 \
+  --driver=test_driver/adaptive_workspace_driver.dart \
+  --target=integration_test/adaptive_workspace_test.dart
+```
+
+Use the actual dedicated emulator serial in both places. The driver refuses
+physical devices, changes its display size/density, saves screenshots under
+`build/adaptive-workspace-screenshots` (override with `BUZZ_TEST_SCREENSHOTS`),
+and clears the emulator's size/density overrides when the test reports its
+result. Use a disposable emulator without display overrides you need to keep.
+The dimensions simulate window/aspect changes; this does not certify Samsung
+hardware's cover-display handoff behavior.

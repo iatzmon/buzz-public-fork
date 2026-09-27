@@ -55,7 +55,9 @@ class ChannelQuickActionsLauncher extends HookConsumerWidget {
         ((navigationBarHeight - _kMorphClosedSize) / 2);
     final effectiveOpen = visible && quickActionsOpen.value;
     final screenWidth = MediaQuery.sizeOf(context).width;
-    final navigationBarRight = (screenWidth + navigationBarWidth) / 2;
+    final navigationBarRight = screenWidth < 400
+        ? Grid.gutter + navigationBarWidth
+        : (screenWidth + navigationBarWidth) / 2;
     final launcherRight = screenWidth - rightInset;
     final hiddenHorizontalOffset =
         navigationBarRight - launcherRight - _kQuickActionsHiddenOverlap;
@@ -69,7 +71,8 @@ class ChannelQuickActionsLauncher extends HookConsumerWidget {
 
     Future<void> openChannel(Channel channel) async {
       if (!context.mounted) return;
-      await Navigator.of(context).push(
+      await AdaptiveWorkspace.open(
+        context,
         MaterialPageRoute<void>(
           builder: (_) => ChannelDetailPage(channel: channel),
         ),
@@ -85,13 +88,16 @@ class ChannelQuickActionsLauncher extends HookConsumerWidget {
 
       switch (action) {
         case _QuickAction.createChannel:
+        case _QuickAction.createForum:
+          final isForum = action == _QuickAction.createForum;
           final created = await showBuzzModalBottomSheet<Channel>(
             context: context,
-            title: 'Create a new channel',
+            title: isForum ? 'Create a new forum' : 'Create a new channel',
             constraints: _quickActionSheetConstraints(context),
             isScrollControlled: true,
             showDragHandle: true,
-            builder: (_) => const _CreateChannelSheet(channelType: 'stream'),
+            builder: (_) =>
+                _CreateChannelSheet(channelType: isForum ? 'forum' : 'stream'),
           );
           if (created != null && context.mounted) {
             await openChannel(created);

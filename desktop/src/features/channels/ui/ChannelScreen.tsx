@@ -821,6 +821,7 @@ export function ChannelScreen({
                 canResetPanelWidth={canResetThreadPanelWidth} channel={activeChannel}
                 currentPubkey={currentPubkey}
                 header={channelHeader}
+                {...{ idleAuxiliaryHeaderActions, idleAuxiliaryPanel, idleAuxiliaryTitle, onCloseIdleAuxiliaryPanel }}
                 onClosePost={onCloseForumPost} onCloseProfilePanel={handleCloseProfilePanel}
                 onOpenDm={handleOpenDm}
                 onOpenProfilePanel={handleOpenProfilePanel}

@@ -4,6 +4,10 @@ import {
   ForumView,
   UserProfilePanel,
 } from "@/features/channels/ui/ChannelScreenLazyViews";
+import {
+  IdleAuxiliaryPanel,
+  type IdleAuxiliaryHeaderControls,
+} from "@/features/channels/ui/IdleAuxiliaryPanel";
 import { RightAuxiliaryPane } from "@/features/channels/ui/RightAuxiliaryPane";
 import type {
   ProfilePanelTab,
@@ -21,6 +25,11 @@ type ForumChannelContentProps = {
   channelOpenReadAt?: number | null;
   currentPubkey?: string;
   header: React.ReactNode;
+  /** Host-owned side panel, such as a project home's Tasks or Files sheet. */
+  idleAuxiliaryPanel?: React.ReactNode;
+  idleAuxiliaryHeaderActions?: IdleAuxiliaryHeaderControls;
+  idleAuxiliaryTitle?: string;
+  onCloseIdleAuxiliaryPanel?: () => void;
   onClosePost: () => void;
   onCloseProfilePanel: () => void;
   onOpenDm?: (pubkeys: string[]) => Promise<void> | void;
@@ -55,7 +64,8 @@ type ForumChannelContentProps = {
  * user-profile auxiliary pane. Forums replace ChannelPane (which hosts the
  * profile panel for message channels), so without this host, opening a
  * profile from a mention chip, avatar, or the members sidebar would set
- * state that never renders.
+ * state that never renders. The same applies to a project home's side
+ * panel (Tasks, Files, and so on), which ChannelPane hosts for chat channels.
  */
 export function ForumChannelContent({
   canResetPanelWidth,
@@ -63,6 +73,10 @@ export function ForumChannelContent({
   channelOpenReadAt,
   currentPubkey,
   header,
+  idleAuxiliaryPanel = null,
+  idleAuxiliaryHeaderActions,
+  idleAuxiliaryTitle = "",
+  onCloseIdleAuxiliaryPanel,
   onClosePost,
   onCloseProfilePanel,
   onOpenDm,
@@ -84,12 +98,12 @@ export function ForumChannelContent({
 }: ForumChannelContentProps) {
   return (
     <>
-      {header}
       <div className="flex min-h-0 min-w-0 flex-1 flex-row overflow-hidden">
         <section
           aria-label="Forum posts"
           className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden"
         >
+          {header}
           <React.Suspense fallback={<ViewLoadingFallback kind="forum" />}>
             <ForumView
               channel={channel}
@@ -130,6 +144,28 @@ export function ForumChannelContent({
                 widthPx={panelWidthPx}
               />
             </React.Suspense>
+          </RightAuxiliaryPane>
+        ) : idleAuxiliaryPanel && onCloseIdleAuxiliaryPanel ? (
+          <RightAuxiliaryPane
+            canResetWidth={canResetPanelWidth}
+            onResetWidth={onResetPanelWidth}
+            onResizeStart={onPanelResizeStart}
+            testId="idle-auxiliary-panel"
+            widthPx={panelWidthPx}
+          >
+            <IdleAuxiliaryPanel
+              canResetWidth={canResetPanelWidth}
+              headerControls={idleAuxiliaryHeaderActions}
+              isSinglePanelView={false}
+              onClose={onCloseIdleAuxiliaryPanel}
+              onResetWidth={onResetPanelWidth}
+              onResizeStart={onPanelResizeStart}
+              title={idleAuxiliaryTitle}
+              useSplitAuxiliaryPane
+              widthPx={panelWidthPx}
+            >
+              {idleAuxiliaryPanel}
+            </IdleAuxiliaryPanel>
           </RightAuxiliaryPane>
         ) : null}
       </div>

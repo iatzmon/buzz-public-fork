@@ -26,6 +26,7 @@ import type {
   ChannelTemplate,
   ChannelVisibility,
 } from "@/shared/api/types";
+import { useFeatureEnabled } from "@/shared/features/useFeatureEnabled";
 
 /** Expand the selected team and persona into deduplicated channel agents. */
 export function buildCreateProjectAgents(input: {
@@ -92,6 +93,7 @@ export function useCreateProjectFormSettings(
   const runtimesQuery = useAvailableAcpRuntimes({ enabled: active });
   const teamsQuery = useTeamsQuery();
   const templatesQuery = useChannelTemplatesQuery();
+  const forumsEnabled = useFeatureEnabled("forum");
   const [channelVisibility, setChannelVisibility] =
     React.useState<ChannelVisibility>("open");
   const [projectVisibility, setProjectVisibility] =
@@ -114,10 +116,12 @@ export function useCreateProjectFormSettings(
     () => [
       PROJECT_HOME_CHANNEL_TEMPLATE,
       ...(templatesQuery.data ?? []).filter(
-        (template) => template.id !== PROJECT_HOME_TEMPLATE_ID,
+        (template) =>
+          template.id !== PROJECT_HOME_TEMPLATE_ID &&
+          (forumsEnabled || template.channelType !== "forum"),
       ),
     ],
-    [templatesQuery.data],
+    [forumsEnabled, templatesQuery.data],
   );
 
   React.useEffect(() => {
@@ -196,7 +200,8 @@ export function useCreateProjectFormSettings(
     channelVisibility,
     handleTemplateCreated: applyTemplate,
     handleTemplateChange,
-    homeChannelType,
+    // Without forums the selector is hidden, so every project home is chat.
+    homeChannelType: forumsEnabled ? homeChannelType : "stream",
     personas,
     projectVisibility,
     runtimesAvailable: runtimesQuery.data.length > 0,

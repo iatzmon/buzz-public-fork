@@ -1467,8 +1467,8 @@ void main() {
     }
     await tester.pumpAndSettle();
 
-    expect(largestHeight, greaterThan(216));
-    expect(tester.getSize(surface).height, closeTo(216, 0.01));
+    expect(largestHeight, greaterThan(288));
+    expect(tester.getSize(surface).height, closeTo(288, 0.01));
     final screenWidth = MediaQuery.sizeOf(tester.element(surface)).width;
     final surfaceRect = tester.getRect(surface);
     expect(surfaceRect.left, closeTo(20, 0.01));
@@ -1485,6 +1485,9 @@ void main() {
       const Key('quick-action-browse-channels-card'),
     );
     final createRect = tester.getRect(createCard);
+    final forumRect = tester.getRect(
+      find.byKey(const Key('quick-action-create-forum-card')),
+    );
     final dmRect = tester.getRect(dmCard);
     final browseRect = tester.getRect(browseCard);
 
@@ -1494,7 +1497,8 @@ void main() {
     expect(menuRect.right - dmRect.right, closeTo(8, 0.01));
     expect(browseRect.left - menuRect.left, closeTo(8, 0.01));
     expect(menuRect.right - browseRect.right, closeTo(8, 0.01));
-    expect(dmRect.top - createRect.bottom, closeTo(8, 0.01));
+    expect(forumRect.top - createRect.bottom, closeTo(8, 0.01));
+    expect(dmRect.top - forumRect.bottom, closeTo(8, 0.01));
     expect(browseRect.top - dmRect.bottom, closeTo(8, 0.01));
     expect(dmRect.width, createRect.width);
     expect(browseRect.width, createRect.width);
@@ -1825,6 +1829,78 @@ void main() {
     expect(actions.joinedChannelIds, ['directory-499']);
     expect(find.byType(BottomSheet), findsNothing);
   });
+
+  for (final type in ['stream', 'forum']) {
+    testWidgets(
+      'quick action submits $type with chosen visibility and retains rejected input',
+      (tester) async {
+        tester.view.devicePixelRatio = 1;
+        tester.view.physicalSize = const Size(320, 640);
+        addTearDown(tester.view.reset);
+        late _RecordingChannelActions actions;
+        await tester.pumpWidget(
+          buildTestable(
+            overrides: [
+              channelsProvider.overrideWith(() => _FakeNotifier(testChannels)),
+              channelActionsProvider.overrideWith(
+                (ref) => actions = _RecordingChannelActions(ref),
+              ),
+            ],
+          ),
+        );
+        await tester.pumpAndSettle();
+        await tester.tap(find.byTooltip('Create or start conversation'));
+        await tester.pumpAndSettle();
+        final action = find.byKey(
+          Key(
+            type == 'forum'
+                ? 'quick-action-create-forum-card'
+                : 'quick-action-create-channel-card',
+          ),
+        );
+        expect(tester.getRect(action).top, greaterThanOrEqualTo(0));
+        expect(tester.getSize(action).height, greaterThanOrEqualTo(48));
+        await tester.tap(action);
+        await tester.pumpAndSettle();
+        expect(
+          find.text(
+            type == 'forum' ? 'Create a new forum' : 'Create a new channel',
+          ),
+          findsOneWidget,
+        );
+        final name = find.byKey(const Key('create-channel-name'));
+        await tester.enterText(name, '  design-discussions  ');
+        tester.testTextInput.hide();
+        await tester.pumpAndSettle();
+        final privateOption = find.byKey(
+          const Key('create-channel-visibility-private'),
+        );
+        await tester.ensureVisible(privateOption);
+        await tester.tap(privateOption);
+        await tester.pumpAndSettle();
+        // The form submits through the keyboard Done action.
+        await tester.showKeyboard(name);
+        await tester.testTextInput.receiveAction(TextInputAction.done);
+        await tester.pumpAndSettle();
+        expect(actions.createdChannels.single, {
+          'name': 'design-discussions',
+          'channelType': type,
+          'visibility': 'private',
+          'description': '',
+          'ttlSeconds': null,
+        });
+        expect(
+          find.text('Exception: Test relay rejected creation'),
+          findsOneWidget,
+        );
+        expect(
+          tester.widget<TextField>(name).controller!.text,
+          '  design-discussions  ',
+        );
+        expect(tester.takeException(), isNull);
+      },
+    );
+  }
 
   testWidgets('create channel sheet lists type and visibility radio options', (
     tester,
@@ -2621,6 +2697,26 @@ class _RecordingChannelActions extends ChannelActions {
       );
 
   final List<String> joinedChannelIds = [];
+  final List<Map<String, Object?>> createdChannels = [];
+
+  @override
+  Future<Channel> createChannel({
+    String? channelId,
+    required String name,
+    required String channelType,
+    required String visibility,
+    String? description,
+    int? ttlSeconds,
+  }) async {
+    createdChannels.add({
+      'name': name,
+      'channelType': channelType,
+      'visibility': visibility,
+      'description': description,
+      'ttlSeconds': ttlSeconds,
+    });
+    throw Exception('Test relay rejected creation');
+  }
 
   @override
   Future<void> joinChannel(String channelId) async {

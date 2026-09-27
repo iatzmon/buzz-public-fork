@@ -1,3 +1,13 @@
+import 'package:buzz/features/forum/forum_thread_page.dart';
+import 'package:buzz/features/forum/forum_models.dart';
+import 'package:buzz/features/forum/forum_provider.dart';
+import 'package:buzz/features/channels/deep_link_dispatcher.dart';
+import 'package:buzz/features/channels/notification_destination.dart';
+import 'package:buzz/shared/deeplink/deep_link.dart';
+import 'package:buzz/shared/deeplink/pending_deep_link_provider.dart';
+import 'package:buzz/shared/push/push_bridge.dart';
+import 'package:buzz/shared/widgets/adaptive_workspace.dart';
+import 'package:buzz/features/home/home_page.dart';
 import 'dart:async';
 import 'dart:collection';
 import 'dart:convert';
@@ -32,7 +42,7 @@ import 'package:buzz/features/channels/day_divider.dart';
 import 'package:buzz/features/channels/emoji_picker.dart';
 import 'package:buzz/features/channels/ime_metrics_settle_observer.dart';
 import 'package:buzz/features/channels/local_message_send_animation_provider.dart';
-import 'package:buzz/features/channels/message_action_backdrop_state.dart';
+import 'package:buzz/shared/widgets/message_action_backdrop_state.dart';
 import 'package:buzz/features/channels/message_actions.dart';
 import 'package:buzz/features/channels/mobile_huddle_controller.dart';
 import 'package:buzz/features/channels/reaction_row.dart';
@@ -70,6 +80,7 @@ import '../../helpers/recording_signed_event_relay.dart';
 
 part 'moderator_delete_cases.dart';
 part 'thread_reply_refresh_cases.dart';
+part 'notification_navigation_cases.dart';
 
 const _channelId = '11111111-2222-4333-8444-555555555555';
 const _huddleChannelId = '8d764100-fd8f-44cf-9c98-6d8fbd739b8c';
@@ -479,12 +490,108 @@ double? effectiveFontSizeForText(
   return null;
 }
 
+/// Shared production Home/channel fixture for on-device layout regression tests.
+Widget buildAdaptiveWorkspaceTestApp(SharedPreferences prefs) {
+  _testPrefs = prefs;
+  return _buildTestable(
+    messages: [
+      for (var i = 0; i < 30; i++)
+        _textMsg(
+          id: 'layout-message-$i',
+          pubkey: 'alice',
+          content:
+              'Message $i: keep the conversation in place while adjusting the workspace.',
+          createdAt: 1788948000 + i * 60,
+        ),
+    ],
+    users: const {'alice': UserProfile(pubkey: 'alice', displayName: 'Alice')},
+    home: AdaptiveWorkspace(
+      child: HomePage(
+        settingsPageBuilder: (_) => const Scaffold(),
+        hasUnreadInbox: false,
+      ),
+    ),
+  );
+}
+
 void main() {
+  registerNotificationNavigationCases();
   threadReplyRefreshTests();
   moderatorDeleteTests();
   setUp(() async {
     SharedPreferences.setMockInitialValues({});
     _testPrefs = await SharedPreferences.getInstance();
+  });
+
+  testWidgets('adaptive workspace preserves the real composer across folding', (
+    tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(390, 844);
+    addTearDown(tester.view.reset);
+    await tester.pumpWidget(
+      _buildTestable(
+        messages: [],
+        home: AdaptiveWorkspace(
+          child: HomePage(
+            settingsPageBuilder: (_) => const Scaffold(),
+            hasUnreadInbox: false,
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('general'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Message #general'));
+    await tester.pumpAndSettle();
+    final editor = find.byType(EditableText).last;
+    await tester.enterText(editor, 'Unsent foldable draft');
+    final controller = tester.widget<EditableText>(editor).controller;
+    controller.selection = const TextSelection.collapsed(offset: 6);
+    final pageElement = tester.element(find.byType(ChannelDetailPage));
+    for (final size in [
+      const Size(673, 841),
+      const Size(800, 900),
+      const Size(1100, 700),
+      const Size(844, 390),
+      const Size(390, 844),
+    ]) {
+      tester.view.physicalSize = size;
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+      expect(tester.element(find.byType(ChannelDetailPage)), same(pageElement));
+      expect(tester.widget<EditableText>(editor).controller, same(controller));
+      expect(controller.text, 'Unsent foldable draft');
+      if (size.width >= 720) {
+        final action = tester.getRect(
+          find.byTooltip('Create or start conversation'),
+        );
+        final lastTab = tester.getRect(find.bySemanticsLabel('Search'));
+        expect(action.left, greaterThan(lastTab.right));
+      }
+      expect(controller.selection, const TextSelection.collapsed(offset: 6));
+      expect(
+        find.byKey(const ValueKey('workspace-list')),
+        size.width >= 720 ? findsOneWidget : findsNothing,
+      );
+    }
+    tester.view.viewInsets = const FakeViewPadding(bottom: 300);
+    for (final size in [
+      const Size(390, 844),
+      const Size(673, 841),
+      const Size(800, 900),
+    ]) {
+      tester.view.physicalSize = size;
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+      expect(
+        tester.getRect(editor).bottom,
+        lessThanOrEqualTo(size.height - 300),
+      );
+      expect(tester.widget<EditableText>(editor).controller, same(controller));
+      expect(controller.text, 'Unsent foldable draft');
+    }
   });
 
   for (final thread in [false, true]) {

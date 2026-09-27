@@ -9,6 +9,7 @@ import 'package:lucide_icons_flutter/lucide_icons.dart';
 
 import '../../shared/relay/app_lifecycle_provider.dart';
 import '../../shared/theme/theme.dart';
+import '../../shared/widgets/adaptive_workspace.dart';
 import 'voice_note_recording.dart';
 import 'voice_note_waveform.dart';
 
@@ -65,10 +66,21 @@ class VoiceNoteComposerRecorder extends HookConsumerWidget {
     }, [recorder, onCancel]);
 
     final route = ModalRoute.of(context);
+    final routeObserver =
+        AdaptiveWorkspace.routeObserverOf(context) ?? voiceNoteRouteObserver;
+    final rootRoute = AdaptiveWorkspace.rootRouteOf(context);
     useEffect(() {
-      if (route != null) voiceNoteRouteObserver.subscribe(routeAware, route);
-      return () => voiceNoteRouteObserver.unsubscribe(routeAware);
-    }, [routeAware, route]);
+      if (route != null) routeObserver.subscribe(routeAware, route);
+      if (rootRoute != null && rootRoute != route) {
+        voiceNoteRouteObserver.subscribe(routeAware, rootRoute);
+      }
+      return () {
+        routeObserver.unsubscribe(routeAware);
+        if (rootRoute != null && rootRoute != route) {
+          voiceNoteRouteObserver.unsubscribe(routeAware);
+        }
+      };
+    }, [routeAware, route, routeObserver, rootRoute]);
 
     Future<void> finish() async {
       if (!isStarted.value || isStopping.value || error.value != null) return;

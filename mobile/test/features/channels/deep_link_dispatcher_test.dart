@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:buzz/features/channels/channel.dart';
+import 'package:buzz/shared/widgets/adaptive_workspace.dart';
 import 'package:buzz/features/channels/channels_provider.dart';
 import 'package:buzz/features/channels/deep_link_dispatcher.dart';
 import 'package:buzz/features/invites/invite_join_provider.dart';
@@ -82,6 +83,189 @@ void main() {
     );
     expect(destination.channel.id, 'channel-1');
     expect(destination.link, same(next));
+  });
+
+  testWidgets('notification opens in front of a root Settings page', (
+    tester,
+  ) async {
+    final pending = _DeliverablePendingDeepLinkNotifier();
+    final rootNavigator = GlobalKey<NavigatorState>();
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          pendingDeepLinkProvider.overrideWith(() => pending),
+          channelsProvider.overrideWith(
+            () => _FakeChannelsNotifier(Future.value([_channel])),
+          ),
+        ],
+        child: MaterialApp(
+          navigatorKey: rootNavigator,
+          home: AdaptiveWorkspace(
+            child: DeepLinkDispatcher(
+              destinationBuilder: (channel, link) =>
+                  _CapturedDestination(channel: channel, link: link),
+              child: const Scaffold(body: Text('Workspace')),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    unawaited(
+      rootNavigator.currentState!.push(
+        MaterialPageRoute<void>(
+          builder: (_) => const Scaffold(body: Text('Settings page')),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('Settings page'), findsOneWidget);
+
+    pending.deliver(
+      const MessageDeepLink(
+        channelId: 'channel-1',
+        messageId: 'message-2',
+        communityId: 'same-community',
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(pending.consumeCalls, 1);
+    expect(find.text('Settings page'), findsNothing);
+    expect(find.byType(_CapturedDestination), findsOneWidget);
+  });
+
+  testWidgets('notification waits behind a root page that refuses to close', (
+    tester,
+  ) async {
+    final pending = _DeliverablePendingDeepLinkNotifier();
+    final rootNavigator = GlobalKey<NavigatorState>();
+    final canClose = ValueNotifier(false);
+    addTearDown(canClose.dispose);
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          pendingDeepLinkProvider.overrideWith(() => pending),
+          channelsProvider.overrideWith(
+            () => _FakeChannelsNotifier(Future.value([_channel])),
+          ),
+        ],
+        child: MaterialApp(
+          navigatorKey: rootNavigator,
+          home: AdaptiveWorkspace(
+            child: DeepLinkDispatcher(
+              destinationBuilder: (channel, link) =>
+                  _CapturedDestination(channel: channel, link: link),
+              child: const Scaffold(body: Text('Workspace')),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    unawaited(
+      rootNavigator.currentState!.push(
+        MaterialPageRoute<void>(
+          builder: (_) => const Scaffold(body: Text('Settings page')),
+        ),
+      ),
+    );
+    // Like a profile edit that is saving: it blocks back navigation.
+    unawaited(
+      rootNavigator.currentState!.push(
+        MaterialPageRoute<void>(
+          builder: (_) => ValueListenableBuilder<bool>(
+            valueListenable: canClose,
+            builder: (_, canPop, _) => PopScope(
+              canPop: canPop,
+              child: const Scaffold(body: Text('Saving profile')),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    const link = MessageDeepLink(
+      channelId: 'channel-1',
+      messageId: 'message-2',
+      communityId: 'same-community',
+    );
+    pending.deliver(link);
+    await tester.pumpAndSettle();
+
+    expect(find.text('Saving profile'), findsOneWidget);
+    expect(
+      find.byType(_CapturedDestination, skipOffstage: false),
+      findsNothing,
+    );
+    expect(pending.consumeCalls, 0);
+
+    // The save finishes and the page closes itself; Settings is closed next.
+    canClose.value = true;
+    await tester.pumpAndSettle();
+    rootNavigator.currentState!.pop();
+    await tester.pumpAndSettle();
+    expect(find.byType(_CapturedDestination), findsNothing);
+    rootNavigator.currentState!.pop();
+    await tester.pumpAndSettle();
+
+    expect(pending.consumeCalls, 1);
+    expect(find.text('Settings page'), findsNothing);
+    expect(find.byType(_CapturedDestination), findsOneWidget);
+  });
+
+  testWidgets('deep link opens in adaptive pane and survives folding', (
+    tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(900, 800);
+    addTearDown(tester.view.reset);
+    const link = MessageDeepLink(
+      channelId: 'channel-1',
+      messageId: 'message-2',
+      threadRootId: 'message-1',
+    );
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          pendingDeepLinkProvider.overrideWith(
+            () => _FakePendingDeepLinkNotifier(link),
+          ),
+          channelsProvider.overrideWith(
+            () => _FakeChannelsNotifier(Future.value([_channel])),
+          ),
+        ],
+        child: MaterialApp(
+          home: AdaptiveWorkspace(
+            child: DeepLinkDispatcher(
+              destinationBuilder: (channel, link) =>
+                  _CapturedDestination(channel: channel, link: link),
+              child: const Scaffold(body: SizedBox()),
+            ),
+          ),
+        ),
+      ),
+    );
+
+    await tester.pumpAndSettle();
+
+    final destination = tester.widget<_CapturedDestination>(
+      find.byType(_CapturedDestination),
+    );
+    final messageLink = destination.link as MessageDeepLink;
+    expect(destination.channel.id, 'channel-1');
+    expect(messageLink.messageId, 'message-2');
+    expect(messageLink.threadRootId, 'message-1');
+    expect(find.byKey(const ValueKey('workspace-list')), findsOneWidget);
+    final element = tester.element(find.byType(_CapturedDestination));
+    tester.view.physicalSize = const Size(390, 844);
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('workspace-list')), findsNothing);
+    expect(tester.element(find.byType(_CapturedDestination)), same(element));
   });
 
   testWidgets('dispatches a link that is already ready on mount', (
@@ -804,6 +988,27 @@ class _RecordingPendingDeepLinkNotifier extends PendingDeepLinkNotifier {
   void consume() {
     consumeCalls++;
     super.consume();
+  }
+}
+
+/// Starts empty; [deliver] parks a link as if a notification was tapped.
+class _DeliverablePendingDeepLinkNotifier extends PendingDeepLinkNotifier {
+  int consumeCalls = 0;
+
+  @override
+  BuzzDeepLink? build() => null;
+
+  void deliver(BuzzDeepLink link) => state = link;
+
+  @override
+  Future<DeepLinkCommunityPreparation> prepareCommunity(
+    BuzzDeepLink link,
+  ) async => DeepLinkCommunityPreparation.ready;
+
+  @override
+  void consume() {
+    consumeCalls++;
+    state = null;
   }
 }
 

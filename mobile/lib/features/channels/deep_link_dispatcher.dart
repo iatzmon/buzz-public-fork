@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 
+import '../../shared/widgets/adaptive_workspace.dart';
 import '../../shared/deeplink/deep_link.dart';
 import '../../shared/deeplink/pending_deep_link_provider.dart';
 import '../invites/invite_join_provider.dart';
@@ -10,6 +11,7 @@ import '../invites/invite_join_sheet.dart';
 import 'channel.dart';
 import 'channel_detail_page.dart';
 import 'channels_provider.dart';
+import 'notification_destination.dart';
 
 /// Routes pending `buzz://message` deep links into the channel view.
 ///
@@ -39,6 +41,7 @@ class DeepLinkDispatcher extends ConsumerStatefulWidget {
 
 class _DeepLinkDispatcherState extends ConsumerState<DeepLinkDispatcher> {
   bool _preparingInvite = false;
+  Animation<double>? _workspaceCover;
 
   @override
   void initState() {
@@ -47,6 +50,12 @@ class _DeepLinkDispatcherState extends ConsumerState<DeepLinkDispatcher> {
       if (!mounted) return;
       _maybeDispatch(ref.read(pendingDeepLinkProvider));
     });
+  }
+
+  @override
+  void dispose() {
+    _workspaceCover?.removeStatusListener(_onWorkspaceCoverStatus);
+    super.dispose();
   }
 
   @override
@@ -137,22 +146,59 @@ class _DeepLinkDispatcherState extends ConsumerState<DeepLinkDispatcher> {
     }
     if (!context.mounted) return;
 
+    if (!_uncoverWorkspace()) return;
     _pushChannel(channel, link);
     ref.read(pendingDeepLinkProvider.notifier).consume();
   }
 
+  /// Closes root pages above the workspace, such as Settings, so the
+  /// destination opens in front and not behind them.
+  ///
+  /// Returns false when a page refuses to close, for example a profile edit
+  /// that is saving. The link then stays parked, and dispatch runs again when
+  /// the workspace is no longer covered.
+  bool _uncoverWorkspace() {
+    final rootRoute = AdaptiveWorkspace.rootRouteOf(context);
+    if (rootRoute == null || rootRoute.isCurrent) return true;
+    var blocked = false;
+    rootRoute.navigator?.popUntil((route) {
+      if (route == rootRoute) return true;
+      blocked = route.popDisposition == RoutePopDisposition.doNotPop;
+      return blocked;
+    });
+    if (!blocked) return true;
+    final cover = rootRoute.secondaryAnimation;
+    if (cover != null && !identical(cover, _workspaceCover)) {
+      _workspaceCover?.removeStatusListener(_onWorkspaceCoverStatus);
+      _workspaceCover = cover..addStatusListener(_onWorkspaceCoverStatus);
+    }
+    return false;
+  }
+
+  void _onWorkspaceCoverStatus(AnimationStatus status) {
+    if (status != AnimationStatus.dismissed || !mounted) return;
+    _workspaceCover?.removeStatusListener(_onWorkspaceCoverStatus);
+    _workspaceCover = null;
+    _maybeDispatch(ref.read(pendingDeepLinkProvider));
+  }
+
   void _pushChannel(Channel channel, BuzzDeepLink link) {
-    Navigator.of(context).push(
+    AdaptiveWorkspace.open(
+      context,
       MaterialPageRoute<void>(
         builder: (_) =>
             widget.destinationBuilder?.call(channel, link) ??
-            ChannelDetailPage(
-              channel: channel,
-              initialMessageId: link is MessageDeepLink ? link.messageId : null,
-              initialThreadRootId: link is MessageDeepLink
-                  ? link.threadRootId
-                  : null,
-            ),
+            (link is MessageDeepLink && link.communityId != null
+                ? NotificationDestination(channel: channel, link: link)
+                : ChannelDetailPage(
+                    channel: channel,
+                    initialMessageId: link is MessageDeepLink
+                        ? link.messageId
+                        : null,
+                    initialThreadRootId: link is MessageDeepLink
+                        ? link.threadRootId
+                        : null,
+                  )),
       ),
     );
   }

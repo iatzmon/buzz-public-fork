@@ -6,6 +6,7 @@ import 'package:lucide_icons_flutter/lucide_icons.dart';
 import '../../shared/mentions/agent_identity_provider.dart';
 import '../../shared/mentions/mention_tags.dart';
 import '../../shared/theme/theme.dart';
+import '../../shared/widgets/adaptive_workspace.dart';
 import '../../shared/widgets/avatar_image.dart';
 import '../../shared/widgets/buzz_loading_indicator.dart';
 import '../../shared/widgets/buzz_search_field.dart';
@@ -696,7 +697,8 @@ class _ChannelsSection extends StatelessWidget {
                 : null,
             onTap: () {
               onResultSelected();
-              Navigator.of(context).push(
+              AdaptiveWorkspace.open(
+                context,
                 MaterialPageRoute<void>(
                   builder: (_) => ChannelDetailPage(channel: channel),
                 ),
@@ -748,7 +750,8 @@ class _PeopleSection extends ConsumerWidget {
                   .read(channelActionsProvider)
                   .openDm(pubkeys: [user.pubkey]);
               if (!context.mounted) return;
-              await Navigator.of(context).push(
+              await AdaptiveWorkspace.open(
+                context,
                 MaterialPageRoute<void>(
                   builder: (_) => ChannelDetailPage(channel: channel),
                 ),
@@ -943,7 +946,8 @@ class _MessageTile extends ConsumerWidget {
     if (channel == null) return;
 
     if (hit.kind == 45001) {
-      Navigator.of(context).push(
+      AdaptiveWorkspace.open(
+        context,
         MaterialPageRoute<void>(
           builder: (_) => ForumThreadPage(
             channelId: channel.id,
@@ -955,7 +959,8 @@ class _MessageTile extends ConsumerWidget {
         ),
       );
     } else {
-      Navigator.of(context).push(
+      AdaptiveWorkspace.open(
+        context,
         MaterialPageRoute<void>(
           builder: (_) => ChannelDetailPage(channel: channel),
         ),

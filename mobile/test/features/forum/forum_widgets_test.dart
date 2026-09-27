@@ -1,7 +1,10 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:buzz/features/channels/channel.dart';
+import 'package:buzz/features/channels/compose_bar.dart';
 import 'package:buzz/features/channels/channel_management_provider.dart';
 import 'package:buzz/features/forum/forum_models.dart';
 import 'package:buzz/features/forum/forum_post_card.dart';
@@ -136,10 +139,24 @@ Widget _buildPostsView({
 /// [main].
 late SharedPreferences _testPrefs;
 
+ThreadReply reply(String eventId, String content) => ThreadReply(
+  eventId: eventId,
+  pubkey: 'bob',
+  content: content,
+  kind: 45003,
+  createdAt: 2000,
+  channelId: _channelId,
+  tags: const [
+    ['h', _channelId],
+  ],
+  depth: 1,
+);
+
 Widget _buildThreadPage({
   required ForumThreadResponse threadResponse,
-  Future<ForumThreadResponse> Function()? loadThread,
   String postEventId = 'post1',
+  String? initialMessageId,
+  ThreadReply? initialReply,
   String? currentPubkey = 'self',
   bool isMember = true,
   bool isArchived = false,
@@ -147,12 +164,11 @@ Widget _buildThreadPage({
   Set<String> knownAgentPubkeys = const {},
   Set<String> channelBotPubkeys = const {},
   TextScaler textScaler = TextScaler.noScaling,
+  FutureOr<ForumThreadResponse> Function()? loadThread,
   CommunityMemberRole? communityRole,
   RecordingSignedEventRelay? signedEventRelay,
 }) {
   return ProviderScope(
-    // Failed loads stay failed until the user retries.
-    retry: (_, _) => null,
     overrides: [
       currentCommunityRoleProvider.overrideWithValue(AsyncData(communityRole)),
       if (signedEventRelay != null)
@@ -168,7 +184,7 @@ Widget _buildThreadPage({
       forumThreadProvider((
         channelId: _channelId,
         eventId: postEventId,
-      )).overrideWith((ref) => loadThread?.call() ?? threadResponse),
+      )).overrideWith((ref) async => loadThread?.call() ?? threadResponse),
       savedPrefsProvider.overrideWithValue(_testPrefs),
       relayClientProvider.overrideWithValue(
         RelayClient(baseUrl: 'http://localhost:3000'),
@@ -182,6 +198,8 @@ Widget _buildThreadPage({
           child: ForumThreadPage(
             channelId: _channelId,
             postEventId: postEventId,
+            initialMessageId: initialMessageId,
+            initialReply: initialReply,
             currentPubkey: currentPubkey,
             isMember: isMember,
             isArchived: isArchived,
@@ -871,88 +889,41 @@ void main() {
   });
 
   group('ForumThreadPage', () {
-    ThreadReply reply(String eventId, String content) => ThreadReply(
-      eventId: eventId,
-      pubkey: 'bob',
-      content: content,
-      kind: 45003,
-      createdAt: 2000,
-      channelId: _channelId,
-      tags: const [
-        ['h', _channelId],
-      ],
-      depth: 1,
-    );
-
-    testWidgets('pull down shows a reply published after opening', (
-      tester,
-    ) async {
-      var loads = 0;
-      await tester.pumpWidget(
-        _buildThreadPage(
-          threadResponse: ForumThreadResponse(
-            post: _makePost(),
-            replies: const [],
-            totalReplies: 0,
+    testWidgets(
+      'notification scrolls to and highlights a distant forum reply',
+      (tester) async {
+        final replies = List.generate(
+          50,
+          (i) => ThreadReply(
+            eventId: 'reply-$i',
+            pubkey: 'alice',
+            content: 'Forum reply $i',
+            kind: 45003,
+            createdAt: 1000 + i,
+            channelId: _channelId,
+            tags: const [],
+            depth: 1,
           ),
-          loadThread: () async {
-            loads++;
-            final replies = loads == 1
-                ? const <ThreadReply>[]
-                : [reply('r1', 'Late reply')];
-            return ForumThreadResponse(
+        );
+        await tester.pumpWidget(
+          _buildThreadPage(
+            initialMessageId: 'reply-40',
+            threadResponse: ForumThreadResponse(
               post: _makePost(),
               replies: replies,
-              totalReplies: replies.length,
-            );
-          },
-        ),
-      );
-      await tester.pumpAndSettle();
-      expect(find.text('0 replies'), findsOneWidget);
-
-      await tester.timedDrag(
-        find.byType(ListView),
-        const Offset(0, 320),
-        const Duration(milliseconds: 500),
-      );
-      await tester.pumpAndSettle();
-
-      expect(loads, 2);
-      expect(find.text('1 reply'), findsOneWidget);
-      expect(find.text('Late reply'), findsOneWidget);
-    });
-
-    testWidgets('Retry reloads a thread that failed to load', (tester) async {
-      var loads = 0;
-      await tester.pumpWidget(
-        _buildThreadPage(
-          threadResponse: ForumThreadResponse(
-            post: _makePost(),
-            replies: const [],
-            totalReplies: 0,
+              totalReplies: 50,
+            ),
           ),
-          loadThread: () async {
-            loads++;
-            if (loads == 1) throw Exception('relay timeout');
-            return ForumThreadResponse(
-              post: _makePost(),
-              replies: [reply('r1', 'Reply after retry')],
-              totalReplies: 1,
-            );
-          },
-        ),
-      );
-      await tester.pumpAndSettle();
-      expect(find.text('Failed to load thread'), findsOneWidget);
-
-      await tester.tap(find.text('Retry'));
-      await tester.pumpAndSettle();
-
-      expect(loads, 2);
-      expect(find.text('Failed to load thread'), findsNothing);
-      expect(find.text('Reply after retry'), findsOneWidget);
-    });
+        );
+        await tester.pumpAndSettle();
+        final target = find.byKey(const ValueKey('forum-message-reply-40'));
+        expect(target.hitTestable(), findsOneWidget);
+        expect(tester.widget<ColoredBox>(target).color.a, closeTo(0.12, .001));
+        await tester.pump(const Duration(seconds: 3));
+        expect(tester.widget<ColoredBox>(target).color, Colors.transparent);
+        await tester.pumpWidget(const SizedBox());
+      },
+    );
 
     AvatarImage avatarIn(WidgetTester tester, Key key) =>
         tester.widget<AvatarImage>(
@@ -1449,6 +1420,210 @@ void main() {
       expect(find.text('Bob reply'), findsNothing);
     });
 
+    group('reply opened from a notification', () {
+      ThreadReply timedReply(
+        String eventId,
+        String content,
+        int createdAt, {
+        String pubkey = 'bob',
+      }) => ThreadReply(
+        eventId: eventId,
+        pubkey: pubkey,
+        content: content,
+        kind: 45003,
+        createdAt: createdAt,
+        channelId: _channelId,
+        tags: const [
+          ['h', _channelId],
+        ],
+        depth: 1,
+      );
+
+      ForumThreadResponse threadOf(List<ThreadReply> replies) =>
+          ForumThreadResponse(
+            post: _makePost(pubkey: 'alice'),
+            replies: replies,
+            totalReplies: replies.length,
+          );
+
+      testWidgets('shows a notified reply older than the loaded replies', (
+        tester,
+      ) async {
+        final loaded = [timedReply('newer', 'Newer reply', 3000)];
+        await tester.pumpWidget(
+          _buildThreadPage(
+            threadResponse: threadOf(loaded),
+            initialMessageId: 'older',
+            initialReply: timedReply('older', 'Older notified reply', 1500),
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        expect(find.text('Older notified reply'), findsOneWidget);
+        expect(find.text('Newer reply'), findsOneWidget);
+      });
+
+      testWidgets('hides a notified reply missing from the loaded replies', (
+        tester,
+      ) async {
+        final loaded = [
+          timedReply('first', 'First reply', 1500),
+          timedReply('last', 'Last reply', 3000),
+        ];
+        await tester.pumpWidget(
+          _buildThreadPage(
+            threadResponse: threadOf(loaded),
+            initialMessageId: 'deleted',
+            initialReply: timedReply('deleted', 'Deleted reply', 2000),
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        expect(find.text('Deleted reply'), findsNothing);
+        expect(find.text('First reply'), findsOneWidget);
+      });
+
+      testWidgets('community admin deletes the notified reply with kind 9005 '
+          'and it disappears', (tester) async {
+        final notified = timedReply('bob-reply', 'Bob reply', 2000);
+        var replies = [notified];
+        final relay = RecordingSignedEventRelay(
+          onSubmit: (submission) {
+            final target = submission.tags.firstWhere((t) => t[0] == 'e')[1];
+            replies = [
+              for (final r in replies)
+                if (r.eventId != target) r,
+            ];
+          },
+        );
+        await tester.pumpWidget(
+          _buildThreadPage(
+            threadResponse: threadOf(replies),
+            loadThread: () async => threadOf(replies),
+            initialMessageId: 'bob-reply',
+            initialReply: notified,
+            currentPubkey: 'self',
+            communityRole: CommunityMemberRole.admin,
+            signedEventRelay: relay,
+          ),
+        );
+        await tester.pumpAndSettle();
+        expect(find.text('Bob reply'), findsOneWidget);
+
+        await openReplyActions(tester);
+        await tester.tap(find.text('Delete reply'));
+        await tester.pumpAndSettle();
+        await tester.tap(find.widgetWithText(FilledButton, 'Delete'));
+        await tester.pumpAndSettle();
+
+        expect(relay.submissions.single.kind, EventKind.nip29DeleteEvent);
+        expect(relay.submissions.single.tags, [
+          ['h', _channelId],
+          ['e', 'bob-reply'],
+        ]);
+        expect(find.text('Bob reply'), findsNothing);
+      });
+
+      testWidgets('a deleted older notified reply stays gone after a failed '
+          'reload and Retry', (tester) async {
+        final notified = timedReply(
+          'own-reply',
+          'Own notified reply',
+          1500,
+          pubkey: 'self',
+        );
+        final response = threadOf([timedReply('newer', 'Newer reply', 3000)]);
+        var failReload = false;
+        final relay = RecordingSignedEventRelay(
+          onSubmit: (_) => failReload = true,
+        );
+        await tester.pumpWidget(
+          _buildThreadPage(
+            threadResponse: response,
+            loadThread: () async {
+              if (failReload) throw Exception('reload failed');
+              return response;
+            },
+            initialMessageId: 'own-reply',
+            initialReply: notified,
+            currentPubkey: 'self',
+            signedEventRelay: relay,
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        await tester.tap(
+          find.descendant(
+            of: find.ancestor(
+              of: find.text('Own notified reply'),
+              matching: find.byWidgetPredicate(
+                (widget) => widget.runtimeType.toString() == '_ReplyRow',
+              ),
+            ),
+            matching: find.byType(IconButton),
+          ),
+        );
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Delete reply'));
+        await tester.pumpAndSettle();
+        await tester.tap(find.widgetWithText(FilledButton, 'Delete'));
+        await tester.pumpAndSettle();
+        expect(relay.submissions.single.kind, EventKind.deletion);
+        expect(find.text('Failed to load thread'), findsOneWidget);
+
+        failReload = false;
+        await tester.tap(find.text('Retry'));
+        await tester.pumpAndSettle();
+
+        expect(find.text('Newer reply'), findsOneWidget);
+        expect(find.text('Own notified reply'), findsNothing);
+      });
+
+      testWidgets('author deletes an older notified reply with kind 5 and it '
+          'disappears', (tester) async {
+        final notified = timedReply(
+          'own-reply',
+          'Own notified reply',
+          1500,
+          pubkey: 'self',
+        );
+        final newer = timedReply('newer', 'Newer reply', 3000);
+        final relay = RecordingSignedEventRelay();
+        await tester.pumpWidget(
+          _buildThreadPage(
+            threadResponse: threadOf([newer]),
+            initialMessageId: 'own-reply',
+            initialReply: notified,
+            currentPubkey: 'self',
+            signedEventRelay: relay,
+          ),
+        );
+        await tester.pumpAndSettle();
+        expect(find.text('Own notified reply'), findsOneWidget);
+
+        await tester.tap(
+          find.descendant(
+            of: find.ancestor(
+              of: find.text('Own notified reply'),
+              matching: find.byWidgetPredicate(
+                (widget) => widget.runtimeType.toString() == '_ReplyRow',
+              ),
+            ),
+            matching: find.byType(IconButton),
+          ),
+        );
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Delete reply'));
+        await tester.pumpAndSettle();
+        await tester.tap(find.widgetWithText(FilledButton, 'Delete'));
+        await tester.pumpAndSettle();
+
+        expect(relay.submissions.single.kind, EventKind.deletion);
+        expect(find.text('Own notified reply'), findsNothing);
+        expect(find.text('Newer reply'), findsOneWidget);
+      });
+    });
+
     testWidgets('plain member does not see Delete reply on others\' replies', (
       tester,
     ) async {
@@ -1508,6 +1683,109 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(relay.submissions.single.kind, EventKind.deletion);
+    });
+  });
+
+  group('ForumThreadPage jump to latest', () {
+    ForumThreadResponse threadWithReplies(int count) => ForumThreadResponse(
+      post: _makePost(),
+      replies: [
+        for (var i = 0; i < count; i++)
+          ThreadReply(
+            eventId: 'r$i',
+            pubkey: 'bob',
+            content: 'Reply number $i',
+            kind: 45003,
+            createdAt: 2000 + i,
+            channelId: _channelId,
+            tags: const [
+              ['h', _channelId],
+            ],
+            depth: 1,
+          ),
+      ],
+      totalReplies: count,
+    );
+
+    final jumpButton = find.byKey(
+      const ValueKey('forum-thread-jump-to-latest'),
+    );
+
+    testWidgets('hides the button when the whole thread fits', (tester) async {
+      _setSurfaceSize(tester, const Size(400, 800));
+      addTearDown(tester.view.reset);
+      await tester.pumpWidget(
+        _buildThreadPage(threadResponse: threadWithReplies(1)),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('Reply number 0'), findsOneWidget);
+      expect(jumpButton, findsNothing);
+    });
+
+    testWidgets('scrolls a long thread to its newest reply', (tester) async {
+      _setSurfaceSize(tester, const Size(400, 800));
+      addTearDown(tester.view.reset);
+      await tester.pumpWidget(
+        _buildThreadPage(threadResponse: threadWithReplies(40)),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('Reply number 39'), findsNothing);
+      expect(jumpButton, findsOneWidget);
+
+      await tester.tap(jumpButton);
+      await tester.pumpAndSettle();
+
+      final newest = find.text('Reply number 39');
+      expect(newest, findsOneWidget);
+      final composerTop = tester.getTopLeft(find.byType(ComposeBar)).dy;
+      expect(tester.getBottomLeft(newest).dy, lessThanOrEqualTo(composerTop));
+      expect(jumpButton, findsNothing);
+    });
+
+    testWidgets('shows the button when a new reply lands below the view', (
+      tester,
+    ) async {
+      _setSurfaceSize(tester, const Size(400, 800));
+      addTearDown(tester.view.reset);
+      var thread = threadWithReplies(40);
+      await tester.pumpWidget(
+        _buildThreadPage(threadResponse: thread, loadThread: () => thread),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(jumpButton);
+      await tester.pumpAndSettle();
+      expect(jumpButton, findsNothing);
+
+      thread = threadWithReplies(41);
+      ProviderScope.containerOf(
+        tester.element(find.byType(ForumThreadPage)),
+      ).invalidate(
+        forumThreadProvider((channelId: _channelId, eventId: 'post1')),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('Reply number 39'), findsOneWidget);
+      expect(find.text('Reply number 40'), findsNothing);
+      expect(jumpButton, findsOneWidget);
+    });
+
+    testWidgets('shows the button again after scrolling away', (tester) async {
+      _setSurfaceSize(tester, const Size(400, 800));
+      addTearDown(tester.view.reset);
+      await tester.pumpWidget(
+        _buildThreadPage(threadResponse: threadWithReplies(40)),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(jumpButton);
+      await tester.pumpAndSettle();
+      expect(jumpButton, findsNothing);
+
+      await tester.drag(find.text('Reply number 39'), const Offset(0, 1500));
+      await tester.pumpAndSettle();
+
+      expect(jumpButton, findsOneWidget);
     });
   });
 }

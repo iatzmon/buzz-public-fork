@@ -9,7 +9,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_hooks/flutter_hooks.dart';
 
 import '../../shared/theme/theme.dart';
-import 'message_action_backdrop_state.dart';
+import '../../shared/widgets/message_action_backdrop_state.dart';
 
 /// The active date and vertical push-off applied to a sticky date header.
 @immutable

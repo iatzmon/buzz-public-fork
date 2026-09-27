@@ -182,6 +182,24 @@ pub fn monotonic_created_at(prior_head_created_at: Option<i64>) -> nostr::Timest
     nostr::Timestamp::from(now.max(floor) as u64)
 }
 
+/// Relay ingest rejects any event whose `created_at` is more than ±900s from
+/// server time (`crates/buzz-relay/src/handlers/ingest.rs`
+/// `MAX_TIMESTAMP_DRIFT_SECS`).
+pub(crate) const RELAY_ACCEPT_WINDOW_SECS: i64 = 900;
+
+/// Whether a still-pending retained head was signed too long ago for the relay
+/// to accept it.
+///
+/// The flush never re-dates a replaceable head: it cannot tell a current edit
+/// from a leftover whose record is gone, and re-dating a leftover would publish
+/// it. So the flush skips an expired head, and the boot reconcile — which only
+/// visits heads that still have a disk record — re-signs it with a fresh
+/// `created_at` so it can publish.
+pub(crate) fn pending_head_expired(row: &super::retention::RetainedEvent) -> bool {
+    let now = nostr::Timestamp::now().as_secs() as i64;
+    row.pending_sync && now - row.created_at > RELAY_ACCEPT_WINDOW_SECS
+}
+
 /// Build a kind:30175 event from a `AgentDefinition`.
 ///
 /// Returns an unsigned `EventBuilder` — the caller signs and submits.
@@ -379,11 +397,10 @@ pub(crate) async fn flush_pending_events_at(
         let event = nostr::Event::from_json(&current.raw_event)
             .map_err(|e| format!("failed to parse retained event '{}': {e}", current.d_tag))?;
 
-        // Relay ingest rejects any event whose `created_at` is more than
-        // ±900s from server time (`crates/buzz-relay/src/handlers/ingest.rs`
-        // MAX_TIMESTAMP_DRIFT_SECS). A kind:5 tombstone is signed strictly past
-        // the head it retracts, so its retained `created_at` is the domination
-        // floor `f`: any publish at `t >= f` still soft-deletes the head (NIP-09
+        // Relay ingest rejects any event whose `created_at` is outside
+        // `RELAY_ACCEPT_WINDOW_SECS` of server time. A kind:5 tombstone is
+        // signed strictly past the head it retracts, so its retained
+        // `created_at` is the domination floor `f`: any publish at `t >= f` still soft-deletes the head (NIP-09
         // only clears coordinate versions with `created_at <= t`). Reconcile the
         // two constraints at publish time so a byte-frozen future-dated
         // tombstone can never age out of the acceptance window and strand the
@@ -395,9 +412,8 @@ pub(crate) async fn flush_pending_events_at(
         //                       clock advances toward `f`.
         // A boundary publish the relay still rejects self-heals: the submit
         // error below re-queues it for the next sweep.
-        const RELAY_ACCEPT_WINDOW_SECS: i64 = 900;
+        let now = nostr::Timestamp::now().as_secs() as i64;
         let event = if current.kind == 5 {
-            let now = nostr::Timestamp::now().as_secs() as i64;
             if current.created_at - now > RELAY_ACCEPT_WINDOW_SECS {
                 // Its replacement must keep deferring behind the unpublished
                 // tombstone so a re-created head is never wiped out of order.
@@ -413,6 +429,13 @@ pub(crate) async fn flush_pending_events_at(
             // and `mark_synced` below still compares against the retained row's
             // original `created_at`/`content`, which are untouched.
             resign_with_fresh_timestamp(&event, state)?
+        } else if (event.created_at.as_secs() as i64 - now).abs() > RELAY_ACCEPT_WINDOW_SECS {
+            // A frozen replaceable head outside the window is rejected on
+            // every sweep, so POSTing it only adds relay load. Leave it
+            // pending: the boot reconcile re-signs it if its record still
+            // exists (`pending_head_expired`), and a future-dated head
+            // becomes publishable as the clock advances.
+            continue;
         } else {
             event
         };

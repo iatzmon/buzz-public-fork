@@ -892,26 +892,35 @@ mod flush_barrier {
     use nostr::JsonUtil;
 
     /// Stub relay: `POST /events` rejects kind:5 with HTTP 500, accepts
-    /// everything else. Returns the HTTP base URL.
-    async fn spawn_stub_relay() -> String {
+    /// everything else, and counts every POST. Returns the HTTP base URL and
+    /// the POST counter.
+    async fn spawn_stub_relay() -> (String, Arc<std::sync::atomic::AtomicUsize>) {
         use axum::{http::StatusCode, routing::post, Router};
+        use std::sync::atomic::{AtomicUsize, Ordering};
 
+        let posts = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&posts);
         let app = Router::new().route(
             "/events",
-            post(|body: String| async move {
-                let event: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
-                if event.get("kind").and_then(serde_json::Value::as_u64) == Some(5) {
-                    return (StatusCode::INTERNAL_SERVER_ERROR, String::new());
+            post(move |body: String| {
+                let counter = Arc::clone(&counter);
+                async move {
+                    counter.fetch_add(1, Ordering::SeqCst);
+                    let event: serde_json::Value =
+                        serde_json::from_str(&body).unwrap_or_default();
+                    if event.get("kind").and_then(serde_json::Value::as_u64) == Some(5) {
+                        return (StatusCode::INTERNAL_SERVER_ERROR, String::new());
+                    }
+                    (
+                        StatusCode::OK,
+                        serde_json::json!({
+                            "event_id": event.get("id").and_then(serde_json::Value::as_str).unwrap_or(""),
+                            "accepted": true,
+                            "message": ""
+                        })
+                        .to_string(),
+                    )
                 }
-                (
-                    StatusCode::OK,
-                    serde_json::json!({
-                        "event_id": event.get("id").and_then(serde_json::Value::as_str).unwrap_or(""),
-                        "accepted": true,
-                        "message": ""
-                    })
-                    .to_string(),
-                )
             }),
         );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -921,7 +930,7 @@ mod flush_barrier {
         tokio::spawn(async move {
             axum::serve(listener, app).await.ok();
         });
-        format!("http://{addr}")
+        (format!("http://{addr}"), posts)
     }
 
     fn retain_signed(
@@ -946,6 +955,73 @@ mod flush_barrier {
             },
         )
         .expect("retain test event");
+    }
+
+    /// A replaceable head signed outside the relay's ±900s window is rejected
+    /// by the relay on every sweep. The flush must not POST it (it only adds
+    /// relay load) and must leave it pending for the boot reconcile, while a
+    /// head inside the window still publishes.
+    #[tokio::test]
+    async fn expired_head_is_not_posted_and_stays_pending() {
+        use std::sync::atomic::Ordering;
+
+        let keys = nostr::Keys::generate();
+        let pubkey = keys.public_key().to_hex();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db_path = dir.path().join("retention.db");
+        let now = nostr::Timestamp::now().as_secs() as i64;
+        let head = |d_tag: &str, created_at: i64| {
+            EventBuilder::new(Kind::Custom(KIND_PERSONA as u16), "{}")
+                .tags(vec![Tag::parse(["d", d_tag]).unwrap()])
+                .custom_created_at(nostr::Timestamp::from(created_at as u64))
+        };
+
+        {
+            let conn = open_retention_db(&db_path).expect("open db");
+            let expired = now - RELAY_ACCEPT_WINDOW_SECS - 100;
+            retain_signed(
+                &conn,
+                &keys,
+                KIND_PERSONA,
+                "expired",
+                head("expired", expired),
+                expired,
+            );
+            let future = now + RELAY_ACCEPT_WINDOW_SECS + 100;
+            retain_signed(
+                &conn,
+                &keys,
+                KIND_PERSONA,
+                "future",
+                head("future", future),
+                future,
+            );
+            retain_signed(&conn, &keys, KIND_PERSONA, "fresh", head("fresh", now), now);
+        }
+
+        let state = build_app_state();
+        *state.keys.lock().unwrap() = keys;
+        let (relay, posts) = spawn_stub_relay().await;
+        *state.relay_url_override.lock().unwrap() = Some(relay);
+
+        let flushed = flush_pending_events(&db_path, &state).await.expect("flush");
+        assert_eq!(flushed, 1, "only the in-window head publishes");
+        assert_eq!(
+            posts.load(Ordering::SeqCst),
+            1,
+            "heads outside the relay window must not be POSTed"
+        );
+
+        let conn = open_retention_db(&db_path).expect("reopen db");
+        let pending = |d_tag: &str| {
+            get_retained_event(&conn, KIND_PERSONA, &pubkey, d_tag)
+                .unwrap()
+                .unwrap()
+                .pending_sync
+        };
+        assert!(pending("expired"), "expired head stays pending");
+        assert!(pending("future"), "future-dated head stays pending");
+        assert!(!pending("fresh"), "in-window head is marked synced");
     }
 
     #[test]
@@ -1026,7 +1102,7 @@ mod flush_barrier {
 
         let state = build_app_state();
         *state.keys.lock().unwrap() = keys;
-        *state.relay_url_override.lock().unwrap() = Some(spawn_stub_relay().await);
+        *state.relay_url_override.lock().unwrap() = Some(spawn_stub_relay().await.0);
 
         let flushed = flush_pending_events(&db_path, &state).await.expect("flush");
         assert_eq!(flushed, 1, "only the unrelated row publishes");

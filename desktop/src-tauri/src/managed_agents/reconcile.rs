@@ -22,7 +22,7 @@ use std::path::Path;
 
 use super::{
     agent_events::build_agent_event,
-    persona_events::monotonic_created_at,
+    persona_events::{monotonic_created_at, pending_head_expired},
     retention::{get_retained_event, open_retention_db, retain_event, RetainedEvent},
     ManagedAgentRecord,
 };
@@ -144,8 +144,13 @@ pub(crate) fn retain_agent_record(
         .sign_with_keys(keys)
         .map_err(|e| format!("failed to sign event for '{}': {e}", record.name))?;
 
+    // An unchanged but expired pending head is re-signed too: the flush skips
+    // it, so without a fresh `created_at` it would never publish.
     let content = event.content.clone();
-    if existing.as_ref().is_some_and(|row| row.content == content) {
+    if existing
+        .as_ref()
+        .is_some_and(|row| row.content == content && !pending_head_expired(row))
+    {
         return Ok(false);
     }
 

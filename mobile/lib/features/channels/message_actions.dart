@@ -56,6 +56,44 @@ final _messageActionBackdropFilter = ImageFilter.blur(
   sigmaY: _messageActionBackdropBlurSigma,
 );
 
+/// Whether the viewer may delete a message, and whether that delete must use
+/// the moderator (kind:9005) path rather than the author (kind:5) path.
+typedef MessageDeleteAccess = ({bool canDelete, bool asModerator});
+
+/// Resolves delete access for [message] viewed by [currentPubkey].
+///
+/// Self-authored messages always keep the existing NIP-09 kind:5 author path.
+/// Messages the viewer manages only as the owner of the authoring agent
+/// ([canManageMessage] without self-authorship) also use kind:5, unless the
+/// viewer can moderate ([canModerateMessage]): then the delete uses the NIP-29
+/// kind:9005 moderator path, because the relay's kind:5 agent-owner check
+/// relies on its own ownership record, which can disagree with the profile
+/// owner the app uses, while kind:9005 accepts agent owners and moderators
+/// alike. Moderators may delete any other non-system message through
+/// kind:9005. System rows (membership changes, huddles) are never deletable
+/// by moderators. The relay refuses kind:9005 in an archived channel, so
+/// [isArchived] turns the moderator path off and leaves the author path as is.
+@visibleForTesting
+MessageDeleteAccess resolveMessageDeleteAccess({
+  required TimelineMessage message,
+  required String? currentPubkey,
+  required bool canManageMessage,
+  required bool canModerateMessage,
+  required bool isArchived,
+}) {
+  final moderatorDelete =
+      canModerateMessage && !isArchived && !message.isSystem;
+  if (canManageMessage) {
+    final viewer = currentPubkey?.trim().toLowerCase();
+    final isSelfAuthored =
+        viewer != null &&
+        viewer.isNotEmpty &&
+        message.pubkey.toLowerCase() == viewer;
+    return (canDelete: true, asModerator: !isSelfAuthored && moderatorDelete);
+  }
+  return (canDelete: moderatorDelete, asModerator: moderatorDelete);
+}
+
 /// Presents the actions for [message] as an anchored popover when both
 /// [anchorRect] and [captureAnchorSnapshot] are supplied, otherwise as a sheet.
 ///
@@ -71,12 +109,16 @@ final _messageActionBackdropFilter = ImageFilter.blur(
 /// [restoreComposerFocus] only after a dismissal with no selected action. The
 /// restorer must remain callable for the same lifetime and no-op if its composer
 /// is later disposed or replaced.
+///
+/// [canManageMessage] grants Edit and author-path Delete. [canModerateMessage]
+/// grants only moderator-path Delete; see [resolveMessageDeleteAccess].
 void showMessageActions({
   required BuildContext context,
   required WidgetRef ref,
   required TimelineMessage message,
   required String channelId,
   required bool canManageMessage,
+  bool canModerateMessage = false,
   List<TimelineMessage>? allMessages,
   String? currentPubkey,
   bool isMember = false,
@@ -107,6 +149,7 @@ void showMessageActions({
     message: message,
     channelId: channelId,
     canManageMessage: canManageMessage,
+    canModerateMessage: canModerateMessage,
     allMessages: allMessages,
     currentPubkey: currentPubkey,
     isMember: isMember,
@@ -121,6 +164,13 @@ void showMessageActions({
     return;
   }
 
+  final deleteAccess = resolveMessageDeleteAccess(
+    message: message,
+    currentPubkey: currentPubkey,
+    canManageMessage: canManageMessage,
+    canModerateMessage: canModerateMessage,
+    isArchived: isArchived,
+  );
   showBuzzModalBottomSheet<void>(
     context: context,
     isScrollControlled: true,
@@ -180,22 +230,23 @@ void showMessageActions({
                       },
                     ),
                   ],
-                  if (canManageMessage) ...[
+                  if (deleteAccess.canDelete) ...[
                     if (!message.isSystem) const SheetDivider(),
-                    ListTile(
-                      contentPadding: EdgeInsets.zero,
-                      leading: const Icon(LucideIcons.pencil),
-                      title: const Text('Edit message'),
-                      onTap: () {
-                        Navigator.of(sheetContext).pop();
-                        _showEditSheet(
-                          context: context,
-                          ref: ref,
-                          message: message,
-                          channelId: channelId,
-                        );
-                      },
-                    ),
+                    if (canManageMessage)
+                      ListTile(
+                        contentPadding: EdgeInsets.zero,
+                        leading: const Icon(LucideIcons.pencil),
+                        title: const Text('Edit message'),
+                        onTap: () {
+                          Navigator.of(sheetContext).pop();
+                          _showEditSheet(
+                            context: context,
+                            ref: ref,
+                            message: message,
+                            channelId: channelId,
+                          );
+                        },
+                      ),
                     ListTile(
                       contentPadding: EdgeInsets.zero,
                       leading: Icon(
@@ -213,6 +264,7 @@ void showMessageActions({
                           ref: ref,
                           channelId: channelId,
                           messageId: message.id,
+                          asModerator: deleteAccess.asModerator,
                         );
                       },
                     ),
@@ -235,8 +287,18 @@ void showImageActions({
   required String channelId,
   required String imageUrl,
   required bool canManageMessage,
+  bool canModerateMessage = false,
+  String? currentPubkey,
+  bool isArchived = false,
   VoidCallback? onDeleted,
 }) {
+  final deleteAccess = resolveMessageDeleteAccess(
+    message: message,
+    currentPubkey: currentPubkey,
+    canManageMessage: canManageMessage,
+    canModerateMessage: canModerateMessage,
+    isArchived: isArchived,
+  );
   showBuzzModalBottomSheet<void>(
     context: context,
     isScrollControlled: true,
@@ -296,7 +358,7 @@ void showImageActions({
                   );
                 },
               ),
-              if (canManageMessage) ...[
+              if (deleteAccess.canDelete) ...[
                 const SheetDivider(),
                 ListTile(
                   contentPadding: EdgeInsets.zero,
@@ -315,6 +377,7 @@ void showImageActions({
                       ref: ref,
                       channelId: channelId,
                       messageId: message.id,
+                      asModerator: deleteAccess.asModerator,
                       onDeleted: onDeleted,
                     );
                   },
@@ -868,6 +931,7 @@ void _confirmDelete({
   required WidgetRef ref,
   required String channelId,
   required String messageId,
+  required bool asModerator,
   VoidCallback? onDeleted,
 }) {
   showBuzzDialog<void>(
@@ -887,7 +951,11 @@ void _confirmDelete({
             try {
               await ref
                   .read(channelActionsProvider)
-                  .deleteMessage(channelId: channelId, eventId: messageId);
+                  .deleteMessage(
+                    channelId: channelId,
+                    eventId: messageId,
+                    asModerator: asModerator,
+                  );
               onDeleted?.call();
             } catch (error) {
               messenger.showSnackBar(

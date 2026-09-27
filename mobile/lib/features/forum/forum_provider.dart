@@ -213,15 +213,30 @@ class ForumEventDelivery {
   }
 }
 
+/// Whether the active user may delete other members' posts and replies in the
+/// forum [channelId]: a community owner/admin or an owner/admin of the forum.
+final canModerateForumProvider = Provider.autoDispose.family<bool, String>(
+  (ref, channelId) => ref.watch(canModerateChannelMessagesProvider(channelId)),
+);
+
 /// Deletes a forum post or reply and invalidates relevant caches.
+///
+/// [asModerator] selects the NIP-29 kind:9005 moderator delete used when a
+/// community owner/admin removes someone else's post or reply; authors keep
+/// the NIP-09 kind:5 path.
 Future<void> deleteForumEvent(
   WidgetRef ref, {
   required String channelId,
   required String eventId,
   String? rootEventId,
+  bool asModerator = false,
 }) async {
   final actions = ref.read(channelActionsProvider);
-  await actions.deleteMessage(channelId: channelId, eventId: eventId);
+  await actions.deleteMessage(
+    channelId: channelId,
+    eventId: eventId,
+    asModerator: asModerator,
+  );
   ref.invalidate(forumPostsProvider(channelId));
   if (rootEventId != null) {
     ref.invalidate(

@@ -322,7 +322,7 @@ test("editing an immediate attachment reply preserves its media tags", async ({
   );
 });
 
-test("Inbox offers Edit and Delete actions only for manageable messages", async ({
+test("Inbox offers Edit only for manageable messages and moderator Delete on others", async ({
   page,
 }) => {
   await installMockBridge(page);
@@ -426,9 +426,12 @@ test("Inbox offers Edit and Delete actions only for manageable messages", async 
   await expect(
     page.getByTestId(`edit-message-${FOREIGN_MESSAGE_ID}`),
   ).toHaveCount(0);
+  // The mock identity owns #general, so Delete stays available on someone
+  // else's message as a moderator delete; members get none (see
+  // moderator-message-delete.spec.ts).
   await expect(
     page.getByTestId(`delete-message-${FOREIGN_MESSAGE_ID}`),
-  ).toHaveCount(0);
+  ).toBeVisible();
   await page.keyboard.press("Escape");
 
   await page.evaluate(async (channelId) => {
@@ -518,7 +521,10 @@ test("explicit Inbox deletion targets the chosen non-selected message", async ({
       ?.payload;
   });
   expect(deletePayload).toEqual(
-    expect.objectContaining({ eventId: EMPTY_DELETE_ROOT_ID }),
+    expect.objectContaining({
+      eventId: EMPTY_DELETE_ROOT_ID,
+      asModerator: false,
+    }),
   );
 });
 

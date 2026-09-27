@@ -86,15 +86,24 @@ class ForumThreadPage extends HookConsumerWidget {
             )
             .value ??
         false;
+    // Community and forum owners/admins may delete other members' posts,
+    // except in an archived forum, where the relay refuses moderator deletes.
+    final canModerate =
+        !isArchived && ref.watch(canModerateForumProvider(channelId));
+    final canDeletePost = threadAsync.hasValue && (isOwnPost || canModerate);
 
     return FrostedScaffold(
       appBar: FrostedAppBar(
         title: const Text('Thread'),
         actions: [
-          if (isOwnPost)
+          if (canDeletePost)
             IconButton(
-              onPressed: () =>
-                  _showPostActions(context, ref, threadAsync.value!),
+              onPressed: () => _showPostActions(
+                context,
+                ref,
+                threadAsync.value!,
+                asModerator: !isOwnPost,
+              ),
               tooltip: 'Post actions',
               icon: const Icon(LucideIcons.ellipsis),
             ),
@@ -142,8 +151,9 @@ class ForumThreadPage extends HookConsumerWidget {
   void _showPostActions(
     BuildContext context,
     WidgetRef ref,
-    ForumThreadResponse thread,
-  ) {
+    ForumThreadResponse thread, {
+    required bool asModerator,
+  }) {
     showBuzzModalBottomSheet<void>(
       context: context,
       showDragHandle: true,
@@ -179,7 +189,12 @@ class ForumThreadPage extends HookConsumerWidget {
                   ),
                   onTap: () {
                     Navigator.of(sheetContext).pop();
-                    _confirmDeletePost(context, ref, thread.post.eventId);
+                    _confirmDeletePost(
+                      context,
+                      ref,
+                      thread.post.eventId,
+                      asModerator: asModerator,
+                    );
                   },
                 ),
               ],
@@ -190,7 +205,12 @@ class ForumThreadPage extends HookConsumerWidget {
     );
   }
 
-  void _confirmDeletePost(BuildContext context, WidgetRef ref, String eventId) {
+  void _confirmDeletePost(
+    BuildContext context,
+    WidgetRef ref,
+    String eventId, {
+    required bool asModerator,
+  }) {
     showBuzzDialog<void>(
       context: context,
       builder: (dialogContext) => AlertDialog(
@@ -204,11 +224,20 @@ class ForumThreadPage extends HookConsumerWidget {
           FilledButton(
             onPressed: () async {
               Navigator.of(dialogContext).pop();
-              await deleteForumEvent(
-                ref,
-                channelId: channelId,
-                eventId: eventId,
-              );
+              final messenger = ScaffoldMessenger.maybeOf(context);
+              try {
+                await deleteForumEvent(
+                  ref,
+                  channelId: channelId,
+                  eventId: eventId,
+                  asModerator: asModerator,
+                );
+              } catch (error) {
+                messenger?.showSnackBar(
+                  SnackBar(content: Text('Failed to delete post: $error')),
+                );
+                return;
+              }
               if (context.mounted) {
                 Navigator.of(context).pop();
               }
@@ -367,6 +396,7 @@ class _ThreadContent extends HookConsumerWidget {
                       currentPubkey: currentPubkey,
                       channelId: channelId,
                       rootEventId: post.eventId,
+                      isArchived: isArchived,
                     ),
               ],
             ),
@@ -512,12 +542,14 @@ class _ReplyRow extends ConsumerWidget {
   final String? currentPubkey;
   final String channelId;
   final String rootEventId;
+  final bool isArchived;
 
   const _ReplyRow({
     required this.reply,
     required this.currentPubkey,
     required this.channelId,
     required this.rootEventId,
+    required this.isArchived,
   });
 
   @override
@@ -527,6 +559,10 @@ class _ReplyRow extends ConsumerWidget {
         ref.watch(userCacheProvider.select((cache) => cache[pk])) ??
         ref.read(userCacheProvider.notifier).get(pk);
     final displayName = profile?.label ?? shortPubkey(reply.pubkey);
+    // Community and forum owners/admins may delete other members' replies,
+    // except in an archived forum, where the relay refuses moderator deletes.
+    final canModerate =
+        !isArchived && ref.watch(canModerateForumProvider(channelId));
 
     final userCache = ref.watch(userCacheProvider);
     final agentMentionPubkeys = agentPubkeysWithProfileOwners(
@@ -598,7 +634,8 @@ class _ReplyRow extends ConsumerWidget {
                 width: 28,
                 height: 28,
                 child: IconButton(
-                  onPressed: () => _showActions(context, ref),
+                  onPressed: () =>
+                      _showActions(context, ref, canModerate: canModerate),
                   icon: Icon(
                     LucideIcons.ellipsis,
                     size: 16,
@@ -628,10 +665,15 @@ class _ReplyRow extends ConsumerWidget {
     );
   }
 
-  void _showActions(BuildContext context, WidgetRef ref) {
+  void _showActions(
+    BuildContext context,
+    WidgetRef ref, {
+    required bool canModerate,
+  }) {
     final isOwn =
         currentPubkey != null &&
         reply.pubkey.toLowerCase() == currentPubkey!.toLowerCase();
+    final asModerator = !isOwn && canModerate;
 
     showBuzzModalBottomSheet<void>(
       context: context,
@@ -657,7 +699,7 @@ class _ReplyRow extends ConsumerWidget {
                     Clipboard.setData(ClipboardData(text: reply.content));
                   },
                 ),
-                if (isOwn)
+                if (isOwn || asModerator)
                   ListTile(
                     leading: Icon(
                       LucideIcons.trash2,
@@ -669,7 +711,7 @@ class _ReplyRow extends ConsumerWidget {
                     ),
                     onTap: () {
                       Navigator.of(sheetContext).pop();
-                      _confirmDelete(context, ref);
+                      _confirmDelete(context, ref, asModerator: asModerator);
                     },
                   ),
               ],
@@ -680,7 +722,11 @@ class _ReplyRow extends ConsumerWidget {
     );
   }
 
-  void _confirmDelete(BuildContext context, WidgetRef ref) {
+  void _confirmDelete(
+    BuildContext context,
+    WidgetRef ref, {
+    required bool asModerator,
+  }) {
     showBuzzDialog<void>(
       context: context,
       builder: (dialogContext) => AlertDialog(
@@ -694,12 +740,20 @@ class _ReplyRow extends ConsumerWidget {
           FilledButton(
             onPressed: () async {
               Navigator.of(dialogContext).pop();
-              await deleteForumEvent(
-                ref,
-                channelId: channelId,
-                eventId: reply.eventId,
-                rootEventId: rootEventId,
-              );
+              final messenger = ScaffoldMessenger.maybeOf(context);
+              try {
+                await deleteForumEvent(
+                  ref,
+                  channelId: channelId,
+                  eventId: reply.eventId,
+                  rootEventId: rootEventId,
+                  asModerator: asModerator,
+                );
+              } catch (error) {
+                messenger?.showSnackBar(
+                  SnackBar(content: Text('Failed to delete reply: $error')),
+                );
+              }
             },
             style: FilledButton.styleFrom(
               backgroundColor: dialogContext.colors.error,

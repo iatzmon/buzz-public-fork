@@ -13,7 +13,7 @@ import {
   isWithinGroupingWindow,
 } from "@/features/messages/lib/messageGrouping";
 import type { MessageComposerEditTarget } from "@/features/messages/ui/MessageComposer.types";
-import { canManageMessageForCurrentUser } from "@/features/messages/lib/canManageMessage";
+import { resolveMessageManagePermissions } from "@/features/messages/lib/messageDeleteAuthority";
 import { handleTimelineMentionCopy } from "@/features/messages/lib/timelineMentionCopy";
 import type { TimelineMessage } from "@/features/messages/types";
 import type { VideoReviewPresentation } from "@/features/messages/lib/videoReviewContext";
@@ -53,6 +53,9 @@ import { selectDeferredListRenderState } from "@/features/messages/lib/timelineS
 import { selectThreadRowHighlight } from "@/features/messages/lib/threadReplyHighlight";
 
 type MessageThreadPanelProps = ThreadPanelLayoutProps & {
+  /** Viewer owns/admins the community or channel: Delete (never Edit) on
+   *  other people's messages, sent as a moderator delete by the handler. */
+  canModerateMessages?: boolean;
   channel: Channel | null;
   channelId: string | null;
   channelName: string;
@@ -143,6 +146,7 @@ const EMPTY_THREAD_REPLIES: MainTimelineEntry[] = [];
 const THREAD_PANEL_SUMMARY_INDENT_OFFSET_REM = 0;
 
 export function MessageThreadPanel({
+  canModerateMessages = false,
   channel,
   channelId,
   channelName,
@@ -503,6 +507,12 @@ export function MessageThreadPanel({
   if (!threadHead) {
     return null;
   }
+  const threadHeadPermissions = resolveMessageManagePermissions(
+    threadHead,
+    currentPubkey,
+    profiles,
+    canModerateMessages,
+  );
   const threadScrollRegion = (
     <AuxiliaryPanelBody
       className="overflow-y-auto overflow-x-hidden overscroll-contain pb-24"
@@ -545,24 +555,12 @@ export function MessageThreadPanel({
                 isUnread={isMessageUnreadById?.(threadHead.id)}
                 message={threadHead}
                 onDelete={
-                  onDelete &&
-                  canManageMessageForCurrentUser(
-                    threadHead,
-                    currentPubkey,
-                    profiles,
-                  )
+                  onDelete && threadHeadPermissions.deleteAuthority !== null
                     ? onDelete
                     : undefined
                 }
                 onEdit={
-                  onEdit &&
-                  canManageMessageForCurrentUser(
-                    threadHead,
-                    currentPubkey,
-                    profiles,
-                  )
-                    ? onEdit
-                    : undefined
+                  onEdit && threadHeadPermissions.canEdit ? onEdit : undefined
                 }
                 onFollowThread={
                   onFollowThread ? (_msg) => onFollowThread() : undefined
@@ -658,6 +656,12 @@ export function MessageThreadPanel({
                       messageDepth: entry.message.depth,
                       showGuides: shouldShowThreadBranchGuides,
                     });
+                    const entryPermissions = resolveMessageManagePermissions(
+                      entry.message,
+                      currentPubkey,
+                      profiles,
+                      canModerateMessages,
+                    );
                     return (
                       <div
                         className={cn(
@@ -716,21 +720,12 @@ export function MessageThreadPanel({
                           }
                           onDelete={
                             onDelete &&
-                            canManageMessageForCurrentUser(
-                              entry.message,
-                              currentPubkey,
-                              profiles,
-                            )
+                            entryPermissions.deleteAuthority !== null
                               ? onDelete
                               : undefined
                           }
                           onEdit={
-                            onEdit &&
-                            canManageMessageForCurrentUser(
-                              entry.message,
-                              currentPubkey,
-                              profiles,
-                            )
+                            onEdit && entryPermissions.canEdit
                               ? onEdit
                               : undefined
                           }

@@ -110,6 +110,8 @@ Future<void> _pumpSheet(
   required SharedPreferences prefs,
   ReadStateNotifier Function()? readStateOverride,
   bool canManageMessage = false,
+  bool canModerateMessage = false,
+  bool isArchived = false,
   List<TimelineMessage>? allMessages,
   ReminderService? reminderService,
 }) async {
@@ -139,9 +141,11 @@ Future<void> _pumpSheet(
                 message: message,
                 channelId: _channelId,
                 canManageMessage: canManageMessage,
+                canModerateMessage: canModerateMessage,
                 allMessages: allMessages,
                 currentPubkey: 'self',
                 isMember: true,
+                isArchived: isArchived,
               ),
               child: const Text('open'),
             ),
@@ -158,6 +162,8 @@ Future<void> _pumpImageSheet(
   WidgetTester tester, {
   required TimelineMessage message,
   bool canManageMessage = false,
+  bool canModerateMessage = false,
+  bool isArchived = false,
 }) async {
   await tester.pumpWidget(
     ProviderScope(
@@ -173,6 +179,9 @@ Future<void> _pumpImageSheet(
                 channelId: _channelId,
                 imageUrl: 'https://example.com/photo.png',
                 canManageMessage: canManageMessage,
+                canModerateMessage: canModerateMessage,
+                currentPubkey: 'self',
+                isArchived: isArchived,
               ),
               child: const Text('open image actions'),
             ),
@@ -1284,6 +1293,66 @@ void main() {
       expect(find.text('Delete message'), findsOneWidget);
     });
 
+    testWidgets('moderator rights show Delete but never Edit', (tester) async {
+      final prefs = await _mockPrefs();
+      await _pumpSheet(
+        tester,
+        message: _message(),
+        prefs: prefs,
+        canModerateMessage: true,
+      );
+
+      expect(find.text('Edit message'), findsNothing);
+      expect(find.text('Delete message'), findsOneWidget);
+    });
+
+    testWidgets('moderator rights never make system rows deletable', (
+      tester,
+    ) async {
+      final prefs = await _mockPrefs();
+      await _pumpSheet(
+        tester,
+        message: _message(isSystem: true),
+        prefs: prefs,
+        canModerateMessage: true,
+      );
+
+      expect(find.text('Edit message'), findsNothing);
+      expect(find.text('Delete message'), findsNothing);
+    });
+
+    // The relay refuses moderator deletes in an archived channel.
+    testWidgets('moderator rights show no Delete in an archived channel', (
+      tester,
+    ) async {
+      final prefs = await _mockPrefs();
+      await _pumpSheet(
+        tester,
+        message: _message(),
+        prefs: prefs,
+        canModerateMessage: true,
+        isArchived: true,
+      );
+
+      expect(find.text('Delete message'), findsNothing);
+    });
+
+    testWidgets('manage rights keep Delete in an archived channel', (
+      tester,
+    ) async {
+      final prefs = await _mockPrefs();
+      await _pumpSheet(
+        tester,
+        message: _message(),
+        prefs: prefs,
+        canManageMessage: true,
+        canModerateMessage: true,
+        isArchived: true,
+      );
+
+      expect(find.text('Delete message'), findsOneWidget);
+    });
+
     testWidgets('Mark read appears for unread messages and advances the '
         'message marker', (tester) async {
       final prefs = await _mockPrefs();
@@ -1452,6 +1521,39 @@ void main() {
 
       expect(find.text('Delete message'), findsOneWidget);
       expect(find.text('Delete upload'), findsNothing);
+    });
+
+    testWidgets('offers Delete message to moderators', (tester) async {
+      await _pumpImageSheet(
+        tester,
+        message: _message(),
+        canModerateMessage: true,
+      );
+
+      expect(find.text('Delete message'), findsOneWidget);
+    });
+
+    testWidgets('hides moderator Delete message in an archived channel', (
+      tester,
+    ) async {
+      await _pumpImageSheet(
+        tester,
+        message: _message(),
+        canModerateMessage: true,
+        isArchived: true,
+      );
+
+      expect(find.text('Save image'), findsOneWidget);
+      expect(find.text('Delete message'), findsNothing);
+    });
+
+    testWidgets('hides Delete message without manage or moderator rights', (
+      tester,
+    ) async {
+      await _pumpImageSheet(tester, message: _message());
+
+      expect(find.text('Save image'), findsOneWidget);
+      expect(find.text('Delete message'), findsNothing);
     });
   });
 

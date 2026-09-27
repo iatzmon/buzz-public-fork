@@ -36,6 +36,9 @@ export type ChannelPaneProps = {
   onAutoSendComplete?: (() => void) | null;
   botTypingEntries: TypingIndicatorEntry[];
   channelManagementOpen?: boolean;
+  /** Viewer owns/admins the community or channel: Delete (never Edit) on
+   *  other people's messages in the timeline and thread panel. */
+  canModerateMessages?: boolean;
   currentPubkey?: string;
   editTarget?: MessageComposerEditTarget | null;
   fetchOlder?: () => Promise<void>;

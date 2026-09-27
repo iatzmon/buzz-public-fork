@@ -61,6 +61,8 @@ type MessageTimelineProps = {
   onEntranceMessageComplete?: (messageId: string) => void;
   emptyTitle?: string;
   emptyDescription?: string;
+  /** Viewer owns/admins the community or channel (moderator Delete). */
+  canModerateMessages?: boolean;
   currentPubkey?: string;
   fetchOlder?: () => Promise<void>;
   hasOlderMessages?: boolean;
@@ -174,6 +176,7 @@ const MessageTimelineBase = React.forwardRef<
     onEntranceMessageComplete,
     emptyTitle = "No messages yet",
     emptyDescription = "Send the first message to start the thread.",
+    canModerateMessages = false,
     currentPubkey,
     fetchOlder,
     hasComposerOverlay = true,
@@ -656,6 +659,7 @@ const MessageTimelineBase = React.forwardRef<
       channelId={channelId}
       channelName={channelName}
       channelType={channelType}
+      canModerateMessages={canModerateMessages}
       currentPubkey={currentPubkey}
       firstUnreadMessageId={firstUnreadMessageId}
       followThreadById={followThreadById}

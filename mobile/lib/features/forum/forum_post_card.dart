@@ -18,12 +18,15 @@ import '../profile/user_profile_sheet.dart';
 import '../../shared/profile/user_profile.dart';
 import 'forum_activity.dart';
 import 'forum_models.dart';
+import 'forum_provider.dart';
 import 'forum_working_indicator.dart';
 
 /// Card displaying a forum post preview in the posts list.
 ///
 /// Long-press opens an action sheet (copy, delete) matching the stream
-/// message pattern from channel_detail_page.dart.
+/// message pattern from channel_detail_page.dart. Delete is offered on the
+/// viewer's own posts and, for community or forum owners/admins, on everyone
+/// else's; [onDelete] receives `asModerator: true` for the latter.
 ///
 /// The card flags replies newer than the reader has seen (see
 /// [forumPostHasNewReplies]) and shows who is currently writing a reply.
@@ -31,7 +34,11 @@ class ForumPostCard extends HookConsumerWidget {
   final ForumPost post;
   final String? currentPubkey;
   final VoidCallback onTap;
-  final void Function(String eventId)? onDelete;
+  final void Function(String eventId, {required bool asModerator})? onDelete;
+
+  /// Whether the forum is archived. The relay refuses moderator deletes there,
+  /// so only the author's own Delete stays available.
+  final bool isArchived;
 
   /// The forum channel's read marker (Unix seconds) captured once when the
   /// post list opened; the new-reply baseline for posts never opened.
@@ -44,6 +51,7 @@ class ForumPostCard extends HookConsumerWidget {
     required this.onTap,
     this.onDelete,
     this.channelReadSnapshot,
+    this.isArchived = false,
   });
 
   @override
@@ -129,10 +137,12 @@ class ForumPostCard extends HookConsumerWidget {
     final workingPubkeys = workingKey.isEmpty
         ? const <String>[]
         : workingKey.split(',');
+    final canModerate =
+        !isArchived && ref.watch(canModerateForumProvider(post.channelId));
 
     return GestureDetector(
       onTap: onTap,
-      onLongPress: () => _showActions(context),
+      onLongPress: () => _showActions(context, canModerate: canModerate),
       child: Container(
         width: double.infinity,
         padding: const EdgeInsets.all(Grid.twelve),
@@ -188,7 +198,8 @@ class ForumPostCard extends HookConsumerWidget {
                   width: 24,
                   height: 24,
                   child: IconButton(
-                    onPressed: () => _showActions(context),
+                    onPressed: () =>
+                        _showActions(context, canModerate: canModerate),
                     icon: Icon(
                       LucideIcons.ellipsis,
                       size: 16,
@@ -246,10 +257,11 @@ class ForumPostCard extends HookConsumerWidget {
     );
   }
 
-  void _showActions(BuildContext context) {
+  void _showActions(BuildContext context, {required bool canModerate}) {
     final isOwn =
         currentPubkey != null &&
         post.pubkey.toLowerCase() == currentPubkey!.toLowerCase();
+    final asModerator = !isOwn && canModerate;
 
     showBuzzModalBottomSheet<void>(
       context: context,
@@ -275,7 +287,7 @@ class ForumPostCard extends HookConsumerWidget {
                     Clipboard.setData(ClipboardData(text: post.content));
                   },
                 ),
-                if (isOwn && onDelete != null)
+                if ((isOwn || asModerator) && onDelete != null)
                   ListTile(
                     leading: Icon(
                       LucideIcons.trash2,
@@ -287,7 +299,7 @@ class ForumPostCard extends HookConsumerWidget {
                     ),
                     onTap: () {
                       Navigator.of(sheetContext).pop();
-                      _confirmDelete(context);
+                      _confirmDelete(context, asModerator: asModerator);
                     },
                   ),
               ],
@@ -298,7 +310,7 @@ class ForumPostCard extends HookConsumerWidget {
     );
   }
 
-  void _confirmDelete(BuildContext context) {
+  void _confirmDelete(BuildContext context, {required bool asModerator}) {
     showBuzzDialog<void>(
       context: context,
       builder: (dialogContext) => AlertDialog(
@@ -312,7 +324,7 @@ class ForumPostCard extends HookConsumerWidget {
           FilledButton(
             onPressed: () {
               Navigator.of(dialogContext).pop();
-              onDelete?.call(post.eventId);
+              onDelete?.call(post.eventId, asModerator: asModerator);
             },
             style: FilledButton.styleFrom(
               backgroundColor: dialogContext.colors.error,

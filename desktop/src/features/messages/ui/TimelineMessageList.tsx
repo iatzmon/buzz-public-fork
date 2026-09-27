@@ -48,6 +48,8 @@ type TimelineMessageListProps = {
   channelId?: string | null;
   channelName?: string;
   channelType?: ChannelType | null;
+  /** See MessageRowItem: moderator Delete on other people's messages. */
+  canModerateMessages?: boolean;
   currentPubkey?: string;
   huddleMemberPubkeys?: readonly string[];
   huddleMemberPubkeysPending?: boolean;
@@ -128,6 +130,7 @@ export const TimelineMessageList = React.memo(function TimelineMessageList({
   channelId,
   channelName,
   channelType,
+  canModerateMessages,
   currentPubkey,
   firstUnreadMessageId = null,
   followThreadById,
@@ -246,6 +249,7 @@ export const TimelineMessageList = React.memo(function TimelineMessageList({
         case "message":
           return (
             <MessageRowItem
+              canModerateMessages={canModerateMessages}
               channelId={channelId}
               currentPubkey={currentPubkey}
               entry={item.entry}
@@ -288,6 +292,7 @@ export const TimelineMessageList = React.memo(function TimelineMessageList({
       }
     },
     [
+      canModerateMessages,
       channelId,
       alwaysShowMessageIdentity,
       currentPubkey,

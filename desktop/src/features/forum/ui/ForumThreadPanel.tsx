@@ -1,6 +1,7 @@
 import { ArrowLeft, MessageSquare } from "lucide-react";
 import * as React from "react";
 
+import { resolveMessageManagePermissions } from "@/features/messages/lib/messageDeleteAuthority";
 import { handleTimelineMentionCopy } from "@/features/messages/lib/timelineMentionCopy";
 import {
   resolveUserLabel,
@@ -40,25 +41,20 @@ type ForumThreadPanelProps = {
     mediaTags?: string[][],
   ) => undefined | Promise<unknown>;
   onDeletePost?: (eventId: string) => void;
-  onDeleteReply?: (eventId: string) => void;
+  onDeleteReply?: (eventId: string, options: { asModerator: boolean }) => void;
   onTargetReached?: (eventId: string) => void;
   canDeletePost?: boolean;
+  /** Viewer owns/admins the community or this forum: may delete any reply. */
+  canModerate?: boolean;
   isDeletingPost?: boolean;
   targetEventId?: string | null;
   targetSearchMessageId?: string;
   targetSearchQuery?: string;
 };
 
-function canDeleteReply(
-  reply: ThreadReply,
-  currentPubkey: string | undefined,
-): boolean {
-  if (!currentPubkey) return false;
-  return reply.pubkey.toLowerCase() === currentPubkey.toLowerCase();
-}
-
 function ReplyRow({
   reply,
+  canModerate = false,
   currentPubkey,
   profiles,
   channelNames,
@@ -66,10 +62,11 @@ function ReplyRow({
   searchQuery,
 }: {
   reply: ThreadReply;
+  canModerate?: boolean;
   currentPubkey?: string;
   profiles?: UserProfileLookup;
   channelNames?: string[];
-  onDelete?: (eventId: string) => void;
+  onDelete?: (eventId: string, options: { asModerator: boolean }) => void;
   searchQuery?: string;
 }) {
   const replyAuthorLabel = resolveUserLabel({
@@ -82,7 +79,13 @@ function ReplyRow({
     profiles?.[reply.pubkey.toLowerCase()]?.avatarUrl ?? null;
   const replyAuthorIsAgent =
     profiles?.[reply.pubkey.toLowerCase()]?.isAgent === true;
-  const showDelete = onDelete && canDeleteReply(reply, currentPubkey);
+  const { deleteAuthority } = resolveMessageManagePermissions(
+    reply,
+    currentPubkey,
+    profiles,
+    canModerate,
+  );
+  const showDelete = onDelete && deleteAuthority !== null;
   const {
     mentionNames: replyMentionNames,
     mentionPubkeysByName: replyMentionPubkeysByName,
@@ -122,7 +125,11 @@ function ReplyRow({
           <DeleteActionMenu
             iconSize="sm"
             label="reply"
-            onConfirm={() => onDelete(reply.eventId)}
+            onConfirm={() =>
+              onDelete(reply.eventId, {
+                asModerator: deleteAuthority === "moderator",
+              })
+            }
           />
         ) : null}
       </div>
@@ -159,6 +166,7 @@ export function ForumThreadPanel({
   onDeleteReply,
   onTargetReached,
   canDeletePost,
+  canModerate = false,
   isDeletingPost,
   targetEventId,
   targetSearchMessageId,
@@ -313,6 +321,7 @@ export function ForumThreadPanel({
         <div className="divide-y divide-border/40">
           {replies.map((reply) => (
             <ReplyRow
+              canModerate={canModerate}
               channelNames={channelNames}
               currentPubkey={currentPubkey}
               key={reply.eventId}

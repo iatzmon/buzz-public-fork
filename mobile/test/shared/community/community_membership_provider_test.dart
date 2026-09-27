@@ -1,6 +1,7 @@
 import 'package:buzz/shared/community/community_membership_provider.dart';
 import 'package:buzz/shared/relay/relay.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:hooks_riverpod/hooks_riverpod.dart';
 
 void main() {
   const owner =
@@ -57,6 +58,53 @@ void main() {
     expect(snapshot.snapshotFound, isFalse);
     expect(snapshot.members, isEmpty);
     expect(canManageCommunityInvites(snapshot.roleFor(owner)), isFalse);
+  });
+
+  group('canModerateCommunityMessagesProvider', () {
+    final snapshot = communityMembershipFromEvents([
+      _event(
+        createdAt: 1,
+        tags: [
+          ['member', owner, 'owner'],
+          ['member', admin, 'admin'],
+          ['member', member, 'member'],
+        ],
+      ),
+    ]);
+
+    Future<bool> resolve(String? pubkey) async {
+      final container = ProviderContainer(
+        overrides: [
+          myPubkeyProvider.overrideWithValue(pubkey),
+          communityMembershipProvider.overrideWith((ref) async => snapshot),
+        ],
+      );
+      addTearDown(container.dispose);
+      final subscription = container.listen(
+        canModerateCommunityMessagesProvider,
+        (_, _) {},
+      );
+      // Fails closed while the membership snapshot is still loading.
+      expect(subscription.read(), isFalse);
+      await container.read(communityMembershipProvider.future);
+      return container.read(canModerateCommunityMessagesProvider);
+    }
+
+    test('grants community owners and admins', () async {
+      expect(await resolve(owner), isTrue);
+      expect(await resolve(admin), isTrue);
+    });
+
+    test('denies members, non-members, and signed-out viewers', () async {
+      expect(await resolve(member), isFalse);
+      expect(
+        await resolve(
+          'dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',
+        ),
+        isFalse,
+      );
+      expect(await resolve(null), isFalse);
+    });
   });
 }
 

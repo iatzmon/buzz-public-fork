@@ -2,12 +2,14 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:buzz/features/channels/channel.dart';
+import 'package:buzz/features/channels/channel_management_provider.dart';
 import 'package:buzz/features/forum/forum_models.dart';
 import 'package:buzz/features/forum/forum_post_card.dart';
 import 'package:buzz/features/forum/forum_posts_view.dart';
 import 'package:buzz/features/forum/forum_provider.dart';
 import 'package:buzz/features/forum/forum_thread_page.dart';
 import 'package:buzz/features/profile/profile_provider.dart';
+import 'package:buzz/shared/community/community_membership_provider.dart';
 import 'package:buzz/shared/mentions/agent_identity_provider.dart';
 import 'package:buzz/shared/profile/user_cache_provider.dart';
 import 'package:buzz/shared/profile/user_profile.dart';
@@ -15,6 +17,8 @@ import 'package:buzz/shared/relay/relay.dart';
 import 'package:buzz/shared/theme/theme.dart';
 import 'package:buzz/shared/widgets/avatar_image.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+
+import '../../helpers/recording_signed_event_relay.dart';
 
 const _channelId = 'forum-channel';
 
@@ -62,14 +66,16 @@ Widget _buildPostCard({
   String? currentPubkey = 'self',
   Map<String, UserProfile> users = const {},
   VoidCallback? onTap,
-  void Function(String)? onDelete,
+  void Function(String eventId, {required bool asModerator})? onDelete,
   TextScaler textScaler = TextScaler.noScaling,
   Set<String> knownAgentPubkeys = const {},
+  CommunityMemberRole? communityRole,
 }) {
   return ProviderScope(
     overrides: [
       userCacheProvider.overrideWith(() => _FakeUserCacheNotifier(users)),
       knownAgentPubkeysProvider.overrideWithValue(knownAgentPubkeys),
+      currentCommunityRoleProvider.overrideWithValue(AsyncData(communityRole)),
     ],
     child: MaterialApp(
       theme: AppTheme.light(),
@@ -91,16 +97,28 @@ Widget _buildPostCard({
 }
 
 Widget _buildPostsView({
-  required ForumPostsResponse postsResponse,
+  ForumPostsResponse? postsResponse,
+  ForumPostsResponse Function()? loadPosts,
   Channel? channel,
   Map<String, UserProfile> users = const {},
+  CommunityMemberRole? communityRole,
+  RecordingSignedEventRelay? signedEventRelay,
+  List<ChannelMember> channelMembers = const [],
 }) {
   final ch = channel ?? _forumChannel;
   return ProviderScope(
     overrides: [
+      channelMembersProvider(ch.id).overrideWith((ref) async => channelMembers),
       userCacheProvider.overrideWith(() => _FakeUserCacheNotifier(users)),
       profileProvider.overrideWith(() => _FakeProfileNotifier()),
-      forumPostsProvider(ch.id).overrideWith((ref) async => postsResponse),
+      forumPostsProvider(
+        ch.id,
+      ).overrideWith((ref) async => loadPosts?.call() ?? postsResponse!),
+      currentCommunityRoleProvider.overrideWithValue(AsyncData(communityRole)),
+      if (signedEventRelay != null)
+        channelActionsProvider.overrideWith(
+          recordingChannelActions(signedEventRelay),
+        ),
       relayClientProvider.overrideWithValue(
         RelayClient(baseUrl: 'http://localhost:3000'),
       ),
@@ -129,11 +147,18 @@ Widget _buildThreadPage({
   Set<String> knownAgentPubkeys = const {},
   Set<String> channelBotPubkeys = const {},
   TextScaler textScaler = TextScaler.noScaling,
+  CommunityMemberRole? communityRole,
+  RecordingSignedEventRelay? signedEventRelay,
 }) {
   return ProviderScope(
     // Failed loads stay failed until the user retries.
     retry: (_, _) => null,
     overrides: [
+      currentCommunityRoleProvider.overrideWithValue(AsyncData(communityRole)),
+      if (signedEventRelay != null)
+        channelActionsProvider.overrideWith(
+          recordingChannelActions(signedEventRelay),
+        ),
       userCacheProvider.overrideWith(() => _FakeUserCacheNotifier(users)),
       knownAgentPubkeysProvider.overrideWithValue(knownAgentPubkeys),
       channelBotPubkeysProvider(
@@ -438,7 +463,7 @@ void main() {
         _buildPostCard(
           post: _makePost(pubkey: 'self'),
           currentPubkey: 'self',
-          onDelete: (_) {},
+          onDelete: (_, {required asModerator}) {},
         ),
       );
       await tester.pumpAndSettle();
@@ -456,7 +481,7 @@ void main() {
         _buildPostCard(
           post: _makePost(pubkey: 'other'),
           currentPubkey: 'self',
-          onDelete: (_) {},
+          onDelete: (_, {required asModerator}) {},
         ),
       );
       await tester.pumpAndSettle();
@@ -468,11 +493,17 @@ void main() {
 
     testWidgets('delete confirmation dialog triggers onDelete', (tester) async {
       String? deletedId;
+      bool? deletedAsModerator;
       await tester.pumpWidget(
         _buildPostCard(
           post: _makePost(pubkey: 'self', eventId: 'evt-to-delete'),
           currentPubkey: 'self',
-          onDelete: (id) => deletedId = id,
+          // An admin deleting their own post keeps the author path.
+          communityRole: CommunityMemberRole.admin,
+          onDelete: (id, {required asModerator}) {
+            deletedId = id;
+            deletedAsModerator = asModerator;
+          },
         ),
       );
       await tester.pumpAndSettle();
@@ -493,7 +524,59 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(deletedId, 'evt-to-delete');
+      expect(deletedAsModerator, isFalse);
     });
+
+    testWidgets('community admin sees Delete post on another member\'s post', (
+      tester,
+    ) async {
+      String? deletedId;
+      bool? deletedAsModerator;
+      await tester.pumpWidget(
+        _buildPostCard(
+          post: _makePost(pubkey: 'alice', eventId: 'alice-post'),
+          currentPubkey: 'self',
+          communityRole: CommunityMemberRole.admin,
+          onDelete: (id, {required asModerator}) {
+            deletedId = id;
+            deletedAsModerator = asModerator;
+          },
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.longPress(find.byType(ForumPostCard));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Delete post'));
+      await tester.pumpAndSettle();
+      expect(find.text('This cannot be undone.'), findsOneWidget);
+      await tester.tap(find.widgetWithText(FilledButton, 'Delete'));
+      await tester.pumpAndSettle();
+
+      expect(deletedId, 'alice-post');
+      expect(deletedAsModerator, isTrue);
+    });
+
+    for (final role in [CommunityMemberRole.member, null]) {
+      testWidgets('$role does not see Delete post on another member\'s post', (
+        tester,
+      ) async {
+        await tester.pumpWidget(
+          _buildPostCard(
+            post: _makePost(pubkey: 'alice'),
+            currentPubkey: 'self',
+            communityRole: role,
+            onDelete: (_, {required asModerator}) {},
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        await tester.longPress(find.byType(ForumPostCard));
+        await tester.pumpAndSettle();
+        expect(find.text('Copy text'), findsOneWidget);
+        expect(find.text('Delete post'), findsNothing);
+      });
+    }
   });
 
   group('ForumPostsView', () {
@@ -580,6 +663,210 @@ void main() {
 
       expect(find.text('First post'), findsOneWidget);
       expect(find.text('Second post'), findsOneWidget);
+    });
+
+    Future<void> deleteFirstPost(WidgetTester tester) async {
+      await tester.longPress(
+        find.ancestor(
+          of: find.text('Alice post'),
+          matching: find.byType(ForumPostCard),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Delete post'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(FilledButton, 'Delete'));
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('community admin deletes another member\'s post with kind '
+        '9005 and the refetched list drops it', (tester) async {
+      var posts = [
+        _makePost(eventId: 'alice-post', content: 'Alice post'),
+        _makePost(eventId: 'other-post', content: 'Other post'),
+      ];
+      final relay = RecordingSignedEventRelay(
+        // The relay soft-deletes the target, so the next fetch omits it.
+        onSubmit: (submission) {
+          final target = submission.tags.firstWhere((t) => t[0] == 'e')[1];
+          posts = [
+            for (final post in posts)
+              if (post.eventId != target) post,
+          ];
+        },
+      );
+      await tester.pumpWidget(
+        _buildPostsView(
+          loadPosts: () => ForumPostsResponse(posts: posts),
+          communityRole: CommunityMemberRole.admin,
+          signedEventRelay: relay,
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('Alice post'), findsOneWidget);
+
+      await deleteFirstPost(tester);
+
+      expect(relay.submissions, hasLength(1));
+      expect(relay.submissions.single.kind, EventKind.nip29DeleteEvent);
+      expect(relay.submissions.single.tags, [
+        ['h', _channelId],
+        ['e', 'alice-post'],
+      ]);
+      expect(find.text('Alice post'), findsNothing);
+      expect(find.text('Other post'), findsOneWidget);
+    });
+
+    testWidgets('forum admin deletes another member\'s post with kind 9005', (
+      tester,
+    ) async {
+      final relay = RecordingSignedEventRelay();
+      await tester.pumpWidget(
+        _buildPostsView(
+          postsResponse: ForumPostsResponse(
+            posts: [_makePost(eventId: 'alice-post', content: 'Alice post')],
+          ),
+          communityRole: CommunityMemberRole.member,
+          channelMembers: [
+            ChannelMember(
+              pubkey: 'self',
+              role: 'owner',
+              joinedAt: DateTime(2025),
+            ),
+          ],
+          signedEventRelay: relay,
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await deleteFirstPost(tester);
+
+      expect(relay.submissions.single.kind, EventKind.nip29DeleteEvent);
+    });
+
+    testWidgets('plain forum member cannot delete another member\'s post', (
+      tester,
+    ) async {
+      await tester.pumpWidget(
+        _buildPostsView(
+          postsResponse: ForumPostsResponse(
+            posts: [_makePost(eventId: 'alice-post', content: 'Alice post')],
+          ),
+          communityRole: CommunityMemberRole.member,
+          channelMembers: [
+            ChannelMember(
+              pubkey: 'self',
+              role: 'member',
+              joinedAt: DateTime(2025),
+            ),
+          ],
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.longPress(
+        find.ancestor(
+          of: find.text('Alice post'),
+          matching: find.byType(ForumPostCard),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('Copy text'), findsOneWidget);
+      expect(find.text('Delete post'), findsNothing);
+    });
+
+    // The relay refuses moderator deletes in an archived forum.
+    testWidgets('community admin sees no Delete post on another member\'s '
+        'post in an archived forum', (tester) async {
+      await tester.pumpWidget(
+        _buildPostsView(
+          channel: _forumChannel.copyWith(archivedAt: DateTime(2026)),
+          postsResponse: ForumPostsResponse(
+            posts: [
+              _makePost(eventId: 'alice-post', content: 'Alice post'),
+              _makePost(
+                eventId: 'own-post',
+                pubkey: 'self',
+                content: 'Own post',
+              ),
+            ],
+          ),
+          communityRole: CommunityMemberRole.owner,
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      Future<void> openCard(String content) async {
+        await tester.longPress(
+          find.ancestor(
+            of: find.text(content),
+            matching: find.byType(ForumPostCard),
+          ),
+        );
+        await tester.pumpAndSettle();
+      }
+
+      await openCard('Alice post');
+      expect(find.text('Copy text'), findsOneWidget);
+      expect(find.text('Delete post'), findsNothing);
+      Navigator.of(tester.element(find.text('Copy text'))).pop();
+      await tester.pumpAndSettle();
+
+      // The author's own Delete stays.
+      await openCard('Own post');
+      expect(find.text('Delete post'), findsOneWidget);
+    });
+
+    testWidgets('own post delete keeps the kind 5 author path', (tester) async {
+      final relay = RecordingSignedEventRelay();
+      await tester.pumpWidget(
+        _buildPostsView(
+          postsResponse: ForumPostsResponse(
+            posts: [
+              _makePost(
+                eventId: 'own-post',
+                pubkey: 'self',
+                content: 'Alice post',
+              ),
+            ],
+          ),
+          communityRole: CommunityMemberRole.owner,
+          signedEventRelay: relay,
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await deleteFirstPost(tester);
+
+      expect(relay.submissions.single.kind, EventKind.deletion);
+      expect(relay.submissions.single.tags, [
+        ['h', _channelId],
+        ['e', 'own-post'],
+      ]);
+    });
+
+    testWidgets('surfaces a failed moderator delete in a SnackBar', (
+      tester,
+    ) async {
+      final relay = RecordingSignedEventRelay(error: Exception('rejected'));
+      await tester.pumpWidget(
+        _buildPostsView(
+          postsResponse: ForumPostsResponse(
+            posts: [_makePost(eventId: 'alice-post', content: 'Alice post')],
+          ),
+          communityRole: CommunityMemberRole.admin,
+          signedEventRelay: relay,
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await deleteFirstPost(tester);
+
+      expect(relay.submissions.single.kind, EventKind.nip29DeleteEvent);
+      expect(
+        find.text('Failed to delete post: Exception: rejected'),
+        findsOneWidget,
+      );
     });
   });
 
@@ -1029,6 +1316,198 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.byTooltip('Post actions'), findsNothing);
+    });
+
+    testWidgets('community admin deletes another member\'s post from the '
+        'thread with kind 9005', (tester) async {
+      final relay = RecordingSignedEventRelay();
+      await tester.pumpWidget(
+        _buildThreadPage(
+          threadResponse: ForumThreadResponse(
+            post: _makePost(pubkey: 'alice'),
+            replies: const [],
+            totalReplies: 0,
+          ),
+          currentPubkey: 'self',
+          communityRole: CommunityMemberRole.owner,
+          signedEventRelay: relay,
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byTooltip('Post actions'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Delete post'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(FilledButton, 'Delete'));
+      await tester.pumpAndSettle();
+
+      expect(relay.submissions.single.kind, EventKind.nip29DeleteEvent);
+      expect(relay.submissions.single.tags, [
+        ['h', _channelId],
+        ['e', 'post1'],
+      ]);
+    });
+
+    Future<void> openReplyActions(WidgetTester tester) async {
+      await tester.tap(
+        find.descendant(
+          of: find.byWidgetPredicate(
+            (widget) => widget.runtimeType.toString() == '_ReplyRow',
+          ),
+          matching: find.byType(IconButton),
+        ),
+      );
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('community admin gets no post or reply Delete on other '
+        'members\' content in an archived forum', (tester) async {
+      await tester.pumpWidget(
+        _buildThreadPage(
+          threadResponse: ForumThreadResponse(
+            post: _makePost(pubkey: 'alice'),
+            replies: [reply('bob-reply', 'Bob reply')],
+            totalReplies: 1,
+          ),
+          currentPubkey: 'self',
+          isArchived: true,
+          communityRole: CommunityMemberRole.owner,
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.byTooltip('Post actions'), findsNothing);
+      await openReplyActions(tester);
+      expect(find.text('Copy text'), findsOneWidget);
+      expect(find.text('Delete reply'), findsNothing);
+    });
+
+    testWidgets('author keeps post Delete in an archived forum', (
+      tester,
+    ) async {
+      await tester.pumpWidget(
+        _buildThreadPage(
+          threadResponse: ForumThreadResponse(
+            post: _makePost(pubkey: 'self'),
+            replies: const [],
+            totalReplies: 0,
+          ),
+          currentPubkey: 'self',
+          isArchived: true,
+          communityRole: CommunityMemberRole.owner,
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.byTooltip('Post actions'), findsOneWidget);
+    });
+
+    testWidgets('community admin deletes another member\'s reply with kind '
+        '9005 and the refetched thread drops it', (tester) async {
+      var replies = [reply('bob-reply', 'Bob reply')];
+      final relay = RecordingSignedEventRelay(
+        onSubmit: (submission) {
+          final target = submission.tags.firstWhere((t) => t[0] == 'e')[1];
+          replies = [
+            for (final r in replies)
+              if (r.eventId != target) r,
+          ];
+        },
+      );
+      await tester.pumpWidget(
+        _buildThreadPage(
+          threadResponse: ForumThreadResponse(
+            post: _makePost(pubkey: 'alice'),
+            replies: replies,
+            totalReplies: replies.length,
+          ),
+          loadThread: () async => ForumThreadResponse(
+            post: _makePost(pubkey: 'alice'),
+            replies: replies,
+            totalReplies: replies.length,
+          ),
+          currentPubkey: 'self',
+          communityRole: CommunityMemberRole.admin,
+          signedEventRelay: relay,
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('Bob reply'), findsOneWidget);
+
+      await openReplyActions(tester);
+      await tester.tap(find.text('Delete reply'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(FilledButton, 'Delete'));
+      await tester.pumpAndSettle();
+
+      expect(relay.submissions.single.kind, EventKind.nip29DeleteEvent);
+      expect(relay.submissions.single.tags, [
+        ['h', _channelId],
+        ['e', 'bob-reply'],
+      ]);
+      expect(find.text('Bob reply'), findsNothing);
+    });
+
+    testWidgets('plain member does not see Delete reply on others\' replies', (
+      tester,
+    ) async {
+      await tester.pumpWidget(
+        _buildThreadPage(
+          threadResponse: ForumThreadResponse(
+            post: _makePost(pubkey: 'alice'),
+            replies: [reply('bob-reply', 'Bob reply')],
+            totalReplies: 1,
+          ),
+          currentPubkey: 'self',
+          communityRole: CommunityMemberRole.member,
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.byTooltip('Post actions'), findsNothing);
+      await openReplyActions(tester);
+      expect(find.text('Copy text'), findsOneWidget);
+      expect(find.text('Delete reply'), findsNothing);
+    });
+
+    testWidgets('own reply delete keeps the kind 5 author path', (
+      tester,
+    ) async {
+      final relay = RecordingSignedEventRelay();
+      final ownReply = ThreadReply(
+        eventId: 'own-reply',
+        pubkey: 'self',
+        content: 'Bob reply',
+        kind: 45003,
+        createdAt: 2000,
+        channelId: _channelId,
+        tags: const [
+          ['h', _channelId],
+        ],
+        depth: 1,
+      );
+      await tester.pumpWidget(
+        _buildThreadPage(
+          threadResponse: ForumThreadResponse(
+            post: _makePost(pubkey: 'alice'),
+            replies: [ownReply],
+            totalReplies: 1,
+          ),
+          currentPubkey: 'self',
+          communityRole: CommunityMemberRole.admin,
+          signedEventRelay: relay,
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await openReplyActions(tester);
+      await tester.tap(find.text('Delete reply'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(FilledButton, 'Delete'));
+      await tester.pumpAndSettle();
+
+      expect(relay.submissions.single.kind, EventKind.deletion);
     });
   });
 }

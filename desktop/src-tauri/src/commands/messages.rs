@@ -920,18 +920,39 @@ pub async fn edit_message(
     Ok(())
 }
 
+/// Delete a channel message.
+///
+/// `as_moderator` selects the event kind. Absent/false keeps the author path:
+/// a NIP-09 kind:5, which the relay accepts only from the author or the
+/// agent's owner and which leaves no tombstone. `true` sends a NIP-29
+/// kind:9005 DELETE_EVENT, the only delete the relay accepts from a channel
+/// or community owner/admin acting on someone else's message.
 #[tauri::command]
 pub async fn delete_message(
     channel_id: String,
     event_id: String,
+    as_moderator: Option<bool>,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let channel_uuid = uuid::Uuid::parse_str(&channel_id)
-        .map_err(|_| format!("invalid channel UUID: {channel_id}"))?;
-    let target_eid = EventId::from_hex(&event_id).map_err(|e| format!("invalid event ID: {e}"))?;
-    let builder = events::build_delete_compat(channel_uuid, target_eid)?;
+    let builder =
+        build_delete_message_event(&channel_id, &event_id, as_moderator.unwrap_or(false))?;
     submit_event(builder, &state).await?;
     Ok(())
+}
+
+fn build_delete_message_event(
+    channel_id: &str,
+    event_id: &str,
+    as_moderator: bool,
+) -> Result<nostr::EventBuilder, String> {
+    let channel_uuid = uuid::Uuid::parse_str(channel_id)
+        .map_err(|_| format!("invalid channel UUID: {channel_id}"))?;
+    let target_eid = EventId::from_hex(event_id).map_err(|e| format!("invalid event ID: {e}"))?;
+    if as_moderator {
+        events::build_delete_event(channel_uuid, target_eid)
+    } else {
+        events::build_delete_compat(channel_uuid, target_eid)
+    }
 }
 
 // ── Local helpers ───────────────────────────────────────────────────────────

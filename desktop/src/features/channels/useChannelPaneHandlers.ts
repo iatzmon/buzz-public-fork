@@ -8,6 +8,7 @@ import type {
   useToggleReactionMutation,
 } from "@/features/messages/hooks";
 import { resolveThreadReplyTarget } from "@/features/messages/hooks";
+import { deleteRequiresModerator } from "@/features/messages/lib/messageDeleteAuthority";
 import { getSendToChannelSemantics } from "@/features/messages/lib/sendToChannelSemantics";
 import { summarizeThreadRoot } from "@/features/messages/lib/sentFromThread";
 import type { TimelineMessage } from "@/features/messages/types";
@@ -22,6 +23,8 @@ import type { UserProfileLookup } from "@/features/profile/lib/identity";
  * rather than listing the whole mutation as a dependency.
  */
 export function useChannelPaneHandlers({
+  canModerateMessages,
+  currentPubkey,
   deleteMessageMutation,
   editMessageMutation,
   editTargetId,
@@ -44,6 +47,9 @@ export function useChannelPaneHandlers({
   threadReplyTargetId,
   toggleReactionMutation,
 }: {
+  /** Viewer owns/admins the community or channel (see messageDeleteAuthority). */
+  canModerateMessages: boolean;
+  currentPubkey: string | undefined;
   deleteMessageMutation: ReturnType<typeof useDeleteMessageMutation>;
   editMessageMutation: ReturnType<typeof useEditMessageMutation>;
   editTargetId: string | null;
@@ -85,6 +91,12 @@ export function useChannelPaneHandlers({
 
   const profilesRef = React.useRef(profiles);
   profilesRef.current = profiles;
+
+  const currentPubkeyRef = React.useRef(currentPubkey);
+  currentPubkeyRef.current = currentPubkey;
+
+  const canModerateMessagesRef = React.useRef(canModerateMessages);
+  canModerateMessagesRef.current = canModerateMessages;
 
   const sendMutateRef = React.useRef(sendMessageMutation.mutateAsync);
   sendMutateRef.current = sendMessageMutation.mutateAsync;
@@ -155,10 +167,27 @@ export function useChannelPaneHandlers({
     setEditTargetId(null);
   }, [setEditTargetId]);
 
-  const handleDelete = React.useCallback(async (message: { id: string }) => {
-    // Failure is surfaced via the mutation's onError toast.
-    await deleteMutateRef.current({ eventId: message.id }).catch(() => {});
-  }, []);
+  const handleDelete = React.useCallback(
+    async (
+      message: Pick<TimelineMessage, "id" | "kind" | "pending" | "pubkey">,
+    ) => {
+      // Someone else's message reaches here only through a moderator's Delete;
+      // it must go out as the kind:9005 moderator delete. The viewer's own or
+      // own agent's message (and the empty-edit shorthand's bare id) keeps the
+      // author's kind:5.
+      const asModerator = deleteRequiresModerator(
+        message,
+        currentPubkeyRef.current,
+        profilesRef.current,
+        canModerateMessagesRef.current,
+      );
+      // Failure is surfaced via the mutation's onError toast.
+      await deleteMutateRef
+        .current({ eventId: message.id, asModerator })
+        .catch(() => {});
+    },
+    [],
+  );
 
   const handleEdit = React.useCallback(
     (message: { id: string }) => {

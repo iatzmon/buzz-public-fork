@@ -180,13 +180,24 @@ class ForumPostsView extends HookConsumerWidget {
                         post: post,
                         currentPubkey: currentPubkey,
                         channelReadSnapshot: channelReadSnapshot,
+                        isArchived: channel.isArchived,
                         onTap: () => _openThread(context, post),
-                        onDelete: (eventId) async {
-                          await deleteForumEvent(
-                            ref,
-                            channelId: channel.id,
-                            eventId: eventId,
-                          );
+                        onDelete: (eventId, {required asModerator}) async {
+                          final messenger = ScaffoldMessenger.maybeOf(context);
+                          try {
+                            await deleteForumEvent(
+                              ref,
+                              channelId: channel.id,
+                              eventId: eventId,
+                              asModerator: asModerator,
+                            );
+                          } catch (error) {
+                            messenger?.showSnackBar(
+                              SnackBar(
+                                content: Text('Failed to delete post: $error'),
+                              ),
+                            );
+                          }
                         },
                       );
                     },

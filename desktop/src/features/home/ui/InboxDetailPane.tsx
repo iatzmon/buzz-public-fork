@@ -34,7 +34,8 @@ import {
   isWithinGroupingWindow,
   startsNewMessageGroup,
 } from "@/features/messages/lib/messageGrouping";
-import { canManageMessageForCurrentUser } from "@/features/messages/lib/canManageMessage";
+import { resolveMessageManagePermissions } from "@/features/messages/lib/messageDeleteAuthority";
+import { useCanModerateChannelMessages } from "@/features/messages/lib/useCanModerateChannelMessages";
 import { buildEditMentionState } from "@/features/messages/lib/draftMentionRefs";
 import { imetaMediaFromTags } from "@/features/messages/lib/imetaMediaMarkdown";
 import {
@@ -111,7 +112,8 @@ type InboxDetailPaneProps = {
   latchedDefaultParentId?: string | null;
   onBack?: () => void;
   onDelete: () => void;
-  onDeleteMessage: (eventId: string) => void;
+  /** `asModerator` selects the kind:9005 delete for someone else's message. */
+  onDeleteMessage: (eventId: string, options: { asModerator: boolean }) => void;
   onEditTargetChange: React.Dispatch<React.SetStateAction<string | null>>;
   onEditSave: (input: {
     content: string;
@@ -214,6 +216,7 @@ function InboxMessageDetailPane({
   // scroll centering) key on this.
   const conversationId = item?.conversationId ?? null;
   const selectedChannelId = item?.item.channelId ?? null;
+  const canModerateMessages = useCanModerateChannelMessages(selectedChannelId);
   const isDirectMessage = item?.item.channelType === "dm";
   // Build the plain, non-virtualized timeline the shared hook anchors against.
   // Live arrivals rerun its layout compensation without changing the target.
@@ -740,23 +743,17 @@ function InboxMessageDetailPane({
                   message.createdAt,
                 );
 
-              const canManageMessage = canManageMessageForCurrentUser(
-                {
-                  id: message.id,
-                  author: message.authorLabel,
-                  body: message.content,
-                  createdAt: message.createdAt,
-                  depth: message.depth,
-                  kind: message.kind,
-                  pubkey: message.authorPubkey,
-                  time: message.timeLabel ?? message.fullTimestampLabel,
-                },
+              const permissions = resolveMessageManagePermissions(
+                { kind: message.kind, pubkey: message.authorPubkey },
                 currentPubkey,
                 profiles,
+                canModerateMessages,
               );
-
-              const canEditMessage =
-                channel?.archivedAt === null && canManageMessage;
+              const isChannelWritable = channel?.archivedAt === null;
+              const canEditMessage = isChannelWritable && permissions.canEdit;
+              const deleteAuthority = isChannelWritable
+                ? permissions.deleteAuthority
+                : null;
 
               return (
                 <InboxMessageRow
@@ -769,8 +766,11 @@ function InboxMessageDetailPane({
                   key={message.id}
                   message={message}
                   onDelete={
-                    canEditMessage
-                      ? () => onDeleteMessage(message.id)
+                    deleteAuthority !== null
+                      ? () =>
+                          onDeleteMessage(message.id, {
+                            asModerator: deleteAuthority === "moderator",
+                          })
                       : undefined
                   }
                   onEdit={canEditMessage ? handleSelectEditTarget : undefined}

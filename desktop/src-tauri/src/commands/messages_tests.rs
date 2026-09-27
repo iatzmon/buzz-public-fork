@@ -276,3 +276,61 @@ fn feed_item_from_event_carries_singular_mention_category() {
     assert_eq!(json["category"], "mention");
     assert_eq!(json["id"], event.id.to_hex());
 }
+
+fn signed_delete(as_moderator: bool, channel_id: &str, target_hex: &str) -> nostr::Event {
+    build_delete_message_event(channel_id, target_hex, as_moderator)
+        .expect("delete should build")
+        .sign_with_keys(&Keys::generate())
+        .expect("delete should sign")
+}
+
+fn event_tag_vecs(event: &nostr::Event) -> Vec<Vec<String>> {
+    event.tags.iter().map(|t| t.as_slice().to_vec()).collect()
+}
+
+#[test]
+fn delete_message_author_path_sends_nip09_kind_5() {
+    let channel_id = uuid::Uuid::new_v4().to_string();
+    let target = "ab".repeat(32);
+    let event = signed_delete(false, &channel_id, &target);
+
+    assert_eq!(event.kind, nostr::Kind::Custom(5));
+    assert_eq!(
+        event_tag_vecs(&event),
+        vec![
+            vec!["h".to_string(), channel_id],
+            vec!["e".to_string(), target]
+        ]
+    );
+}
+
+#[test]
+fn delete_message_moderator_path_sends_nip29_kind_9005() {
+    let channel_id = uuid::Uuid::new_v4().to_string();
+    let target = "cd".repeat(32);
+    let event = signed_delete(true, &channel_id, &target);
+
+    assert_eq!(event.kind, nostr::Kind::Custom(9005));
+    assert_eq!(event.content, "");
+    assert_eq!(
+        event_tag_vecs(&event),
+        vec![
+            vec!["h".to_string(), channel_id],
+            vec!["e".to_string(), target]
+        ]
+    );
+}
+
+#[test]
+fn delete_message_rejects_invalid_ids_on_both_paths() {
+    let target = "ef".repeat(32);
+    for as_moderator in [false, true] {
+        assert!(build_delete_message_event("not-a-uuid", &target, as_moderator).is_err());
+        assert!(build_delete_message_event(
+            &uuid::Uuid::new_v4().to_string(),
+            "not-hex",
+            as_moderator
+        )
+        .is_err());
+    }
+}

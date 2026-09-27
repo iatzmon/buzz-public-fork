@@ -323,6 +323,23 @@ class _ComposeBarLayout extends HookWidget {
   }
 
   Widget _buildTextField(BuildContext context) {
+    // Return keeps inserting a newline; hardware keyboards send with the
+    // desktop chord instead. `send` owns the empty/uploading/sending guards.
+    return CallbackShortcuts(
+      bindings: {
+        for (final key in [
+          LogicalKeyboardKey.enter,
+          LogicalKeyboardKey.numpadEnter,
+        ]) ...{
+          SingleActivator(key, meta: true): onSend,
+          SingleActivator(key, control: true): onSend,
+        },
+      },
+      child: _buildTextInput(context),
+    );
+  }
+
+  Widget _buildTextInput(BuildContext context) {
     return TextField(
       controller: controller,
       focusNode: focusNode,

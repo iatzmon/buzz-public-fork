@@ -58,6 +58,9 @@ class ForumThreadPage extends HookConsumerWidget {
     final threadAsync = ref.watch(
       forumThreadProvider((channelId: channelId, eventId: postEventId)),
     );
+    // Replies deleted from this page. Kept for the page's lifetime, because a
+    // failed reload replaces the thread content and would forget them.
+    final deletedReplyIds = useState<Set<String>>(const {});
 
     // Manual refresh for pull-down and the error state's Retry button.
     Future<void> refresh() async {
@@ -151,6 +154,9 @@ class ForumThreadPage extends HookConsumerWidget {
           isArchived: isArchived,
           initialMessageId: initialMessageId,
           initialReply: initialReply,
+          deletedReplyIds: deletedReplyIds.value,
+          onReplyDeleted: (eventId) =>
+              deletedReplyIds.value = {...deletedReplyIds.value, eventId},
           onRefresh: refresh,
         ),
       ),
@@ -271,6 +277,8 @@ class _ThreadContent extends HookConsumerWidget {
   final Future<void> Function() onRefresh;
   final String? initialMessageId;
   final ThreadReply? initialReply;
+  final Set<String> deletedReplyIds;
+  final ValueChanged<String> onReplyDeleted;
 
   const _ThreadContent({
     required this.thread,
@@ -279,6 +287,8 @@ class _ThreadContent extends HookConsumerWidget {
     required this.isMember,
     required this.isArchived,
     required this.onRefresh,
+    required this.deletedReplyIds,
+    required this.onReplyDeleted,
     this.initialMessageId,
     this.initialReply,
   });
@@ -293,18 +303,17 @@ class _ThreadContent extends HookConsumerWidget {
     // its reply is kept as a seed. Keep the seed only while it is older than
     // every loaded reply: inside the loaded window, its absence means it was
     // deleted. A reply deleted from this page is dropped at once.
-    final deletedReplyIds = useState<Set<String>>(const {});
     final seed = initialReply;
     final keepSeed =
         seed != null &&
-        !deletedReplyIds.value.contains(seed.eventId) &&
+        !deletedReplyIds.contains(seed.eventId) &&
         thread.replies.isNotEmpty &&
         !thread.replies.any((reply) => reply.eventId == seed.eventId) &&
         thread.replies.every((reply) => seed.createdAt < reply.createdAt);
     final replies =
         [
           ...thread.replies.where(
-            (reply) => !deletedReplyIds.value.contains(reply.eventId),
+            (reply) => !deletedReplyIds.contains(reply.eventId),
           ),
           if (keepSeed) seed,
         ]..sort((a, b) {
@@ -461,8 +470,7 @@ class _ThreadContent extends HookConsumerWidget {
               channelId: channelId,
               rootEventId: post.eventId,
               isArchived: isArchived,
-              onDeleted: (eventId) =>
-                  deletedReplyIds.value = {...deletedReplyIds.value, eventId},
+              onDeleted: onReplyDeleted,
             ),
           ),
       // Zero-height end marker: jumping to it with alignment 1.0 puts the

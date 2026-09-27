@@ -1524,6 +1524,61 @@ void main() {
         expect(find.text('Bob reply'), findsNothing);
       });
 
+      testWidgets('a deleted older notified reply stays gone after a failed '
+          'reload and Retry', (tester) async {
+        final notified = timedReply(
+          'own-reply',
+          'Own notified reply',
+          1500,
+          pubkey: 'self',
+        );
+        final response = threadOf([timedReply('newer', 'Newer reply', 3000)]);
+        var failReload = false;
+        final relay = RecordingSignedEventRelay(
+          onSubmit: (_) => failReload = true,
+        );
+        await tester.pumpWidget(
+          _buildThreadPage(
+            threadResponse: response,
+            loadThread: () async {
+              if (failReload) throw Exception('reload failed');
+              return response;
+            },
+            initialMessageId: 'own-reply',
+            initialReply: notified,
+            currentPubkey: 'self',
+            signedEventRelay: relay,
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        await tester.tap(
+          find.descendant(
+            of: find.ancestor(
+              of: find.text('Own notified reply'),
+              matching: find.byWidgetPredicate(
+                (widget) => widget.runtimeType.toString() == '_ReplyRow',
+              ),
+            ),
+            matching: find.byType(IconButton),
+          ),
+        );
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Delete reply'));
+        await tester.pumpAndSettle();
+        await tester.tap(find.widgetWithText(FilledButton, 'Delete'));
+        await tester.pumpAndSettle();
+        expect(relay.submissions.single.kind, EventKind.deletion);
+        expect(find.text('Failed to load thread'), findsOneWidget);
+
+        failReload = false;
+        await tester.tap(find.text('Retry'));
+        await tester.pumpAndSettle();
+
+        expect(find.text('Newer reply'), findsOneWidget);
+        expect(find.text('Own notified reply'), findsNothing);
+      });
+
       testWidgets('author deletes an older notified reply with kind 5 and it '
           'disappears', (tester) async {
         final notified = timedReply(

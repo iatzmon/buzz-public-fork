@@ -1774,6 +1774,11 @@ fn emit_project_owner_control_result(
 }
 
 /// Handle a `cancel_turn` control frame: signal the in-flight task to cancel.
+///
+/// With an optional `turnId`, the frame names one exact in-flight turn and is
+/// never ambiguous: it cancels that turn or reports `no_active_turn`. Without
+/// it (older clients), the frame names only a channel and is refused with
+/// `ambiguous_target` when that channel has several session scopes.
 fn handle_cancel_turn_control(
     payload: &serde_json::Value,
     pool: &mut AgentPool,
@@ -1787,8 +1792,25 @@ fn handle_cancel_turn_control(
         tracing::warn!("observer cancel_turn control frame missing valid channelId");
         return;
     };
+    // Only an omitted `turnId` selects the channel-only path. A supplied but
+    // malformed target (empty, null, non-string) must never fall back to
+    // cancelling whatever turn the channel happens to be running.
+    let turn_id = match payload.get("turnId") {
+        None => None,
+        Some(serde_json::Value::String(value)) if !value.is_empty() => Some(value.as_str()),
+        Some(_) => {
+            tracing::warn!("observer cancel_turn control frame has an invalid turnId");
+            return;
+        }
+    };
 
-    let status = if pool.channel_control_is_ambiguous(channel_id) {
+    let status = if let Some(turn_id) = turn_id {
+        if signal_in_flight_turn(pool, channel_id, turn_id, ControlSignal::Cancel) {
+            "sent"
+        } else {
+            "no_active_turn"
+        }
+    } else if pool.channel_control_is_ambiguous(channel_id) {
         "ambiguous_target"
     } else if signal_in_flight_task(pool, channel_id, ControlSignal::Cancel) {
         "sent"
@@ -1802,13 +1824,14 @@ fn handle_cancel_turn_control(
             &observer::ObserverContext {
                 channel_id: Some(channel_id.to_string()),
                 session_id: None,
-                turn_id: None,
+                turn_id: turn_id.map(str::to_string),
                 started_at: None,
             },
             serde_json::json!({
                 "type": "cancel_turn",
                 "status": status,
                 "requestId": payload.get("requestId"),
+                "turnId": turn_id,
             }),
         );
     }
@@ -4239,8 +4262,9 @@ fn mode_gate_signal(
 /// Send a control signal to the in-flight task for `channel_id`.
 ///
 /// Channel-targeted: refuses channels with multiple session scopes. Used only
-/// by desktop observer frames (`cancel_turn` / `switch_model`), which carry a
-/// bare `channelId` and no thread context. Every thread-aware
+/// by desktop observer frames (`cancel_turn` / `switch_model`) that carry a
+/// bare `channelId` and no thread context; a `cancel_turn` that names a
+/// `turnId` uses [`signal_in_flight_turn`] instead. Every thread-aware
 /// path — mid-turn steering/interruption and the owner `!cancel` / `!rotate`
 /// commands, whose triggering event carries NIP-10 thread tags — uses
 /// [`signal_in_flight_task_for_scope`], which targets one exact
@@ -4266,6 +4290,36 @@ fn signal_in_flight_task(
             tracing::info!(channel = %channel_id, ?mode, "control signal sent to in-flight task");
             let _ = tx.send(mode);
             return true;
+        }
+    }
+    false
+}
+
+/// Send a control signal to one exact in-flight turn.
+///
+/// The observer `turnId` is the `TaskMeta::turn_id` minted at dispatch, so it
+/// names one task even when sibling thread sessions share the channel. The
+/// channel must match too, so a stale or foreign turn id cannot reach a turn
+/// in another channel. Returns `false` when the turn has already ended or its
+/// control signal was already consumed.
+fn signal_in_flight_turn(
+    pool: &mut AgentPool,
+    channel_id: uuid::Uuid,
+    turn_id: &str,
+    mode: ControlSignal,
+) -> bool {
+    let entry = pool
+        .task_map_mut()
+        .values_mut()
+        .find(|m| m.channel_id == Some(channel_id) && m.turn_id == turn_id);
+
+    if let Some(meta) = entry {
+        if let Some(tx) = meta.control_tx.take() {
+            // A task that already finished may have dropped its receiver
+            // before its metadata is reaped; that is not a delivered signal.
+            let delivered = tx.send(mode).is_ok();
+            tracing::info!(channel = %channel_id, turn_id, delivered, "cancel signal for in-flight turn");
+            return delivered;
         }
     }
     false
@@ -6155,6 +6209,16 @@ mod owner_control_command_tests {
         scope: scope::SessionScope,
         control_tx: tokio::sync::oneshot::Sender<ControlSignal>,
     ) {
+        insert_task_meta_with_turn(pool, agent_index, scope, "t", control_tx);
+    }
+
+    fn insert_task_meta_with_turn(
+        pool: &mut AgentPool,
+        agent_index: usize,
+        scope: scope::SessionScope,
+        turn_id: &str,
+        control_tx: tokio::sync::oneshot::Sender<ControlSignal>,
+    ) {
         let abort_handle = pool.join_set.spawn(async {});
         pool.task_map_mut().insert(
             abort_handle.id(),
@@ -6162,7 +6226,7 @@ mod owner_control_command_tests {
                 agent_index,
                 channel_id: Some(scope.channel_id()),
                 scope: Some(scope),
-                turn_id: "t".to_string(),
+                turn_id: turn_id.to_string(),
                 recoverable_batch: None,
                 control_tx: Some(control_tx),
                 steer_tx: None,
@@ -6214,6 +6278,109 @@ mod owner_control_command_tests {
             IdleSwitchResult::AmbiguousTarget
         );
         assert!(!pool.channel_control_is_ambiguous(Uuid::new_v4()));
+    }
+
+    #[tokio::test]
+    async fn observer_cancel_with_turn_id_targets_one_sibling_session() {
+        let mut pool = AgentPool::from_slots(vec![]);
+        let ch = Uuid::new_v4();
+        let a = thread_scope(ch, &"a".repeat(64));
+        let b = thread_scope(ch, &"b".repeat(64));
+        let (tx_a, mut rx_a) = tokio::sync::oneshot::channel();
+        let (tx_b, rx_b) = tokio::sync::oneshot::channel();
+        insert_task_meta_with_turn(&mut pool, 0, a, "turn-a", tx_a);
+        insert_task_meta_with_turn(&mut pool, 1, b, "turn-b", tx_b);
+        assert!(pool.channel_control_is_ambiguous(ch));
+        let observer = observer::ObserverHandle::in_process();
+
+        handle_cancel_turn_control(
+            &serde_json::json!({
+                "channelId": ch.to_string(), "turnId": "turn-b", "requestId": "stop-1",
+            }),
+            &mut pool,
+            Some(&observer),
+        );
+        assert_eq!(rx_b.await.unwrap(), ControlSignal::Cancel);
+        assert_eq!(
+            rx_a.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+        );
+        let result = &observer.snapshot()[0];
+        assert_eq!(result.payload["status"], "sent");
+        assert_eq!(result.payload["requestId"], "stop-1");
+        assert_eq!(result.payload["turnId"], "turn-b");
+        assert_eq!(result.channel_id, Some(ch.to_string()));
+        assert_eq!(result.turn_id.as_deref(), Some("turn-b"));
+
+        // A repeat Stop, an ended turn, and a turn id from another channel
+        // all report no_active_turn and never signal a different turn.
+        for (channel, turn) in [
+            (ch, "turn-b"),
+            (ch, "turn-gone"),
+            (Uuid::new_v4(), "turn-a"),
+        ] {
+            handle_cancel_turn_control(
+                &serde_json::json!({ "channelId": channel.to_string(), "turnId": turn }),
+                &mut pool,
+                Some(&observer),
+            );
+            assert_eq!(
+                observer.snapshot().last().unwrap().payload["status"],
+                "no_active_turn"
+            );
+        }
+        assert_eq!(
+            rx_a.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+        );
+    }
+
+    #[tokio::test]
+    async fn observer_cancel_with_malformed_turn_id_signals_nothing() {
+        let mut pool = AgentPool::from_slots(vec![]);
+        let ch = Uuid::new_v4();
+        // One scope only: the channel-only path would cancel this turn.
+        let scope = scope::SessionScope::Conversation { channel_id: ch };
+        let (tx, mut rx) = tokio::sync::oneshot::channel();
+        insert_task_meta_with_turn(&mut pool, 0, scope, "turn-a", tx);
+        let observer = observer::ObserverHandle::in_process();
+
+        for turn_id in [
+            serde_json::json!(""),
+            serde_json::Value::Null,
+            serde_json::json!(42),
+            serde_json::json!(["turn-a"]),
+        ] {
+            handle_cancel_turn_control(
+                &serde_json::json!({ "channelId": ch.to_string(), "turnId": turn_id }),
+                &mut pool,
+                Some(&observer),
+            );
+        }
+        assert!(observer.snapshot().is_empty());
+        assert_eq!(
+            rx.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+        );
+    }
+
+    #[tokio::test]
+    async fn observer_cancel_with_turn_id_reports_dropped_receiver_as_no_active_turn() {
+        let mut pool = AgentPool::from_slots(vec![]);
+        let ch = Uuid::new_v4();
+        let scope = scope::SessionScope::Conversation { channel_id: ch };
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        insert_task_meta_with_turn(&mut pool, 0, scope, "turn-a", tx);
+        // The task finished and dropped its receiver; metadata is not reaped yet.
+        drop(rx);
+        let observer = observer::ObserverHandle::in_process();
+
+        handle_cancel_turn_control(
+            &serde_json::json!({ "channelId": ch.to_string(), "turnId": "turn-a" }),
+            &mut pool,
+            Some(&observer),
+        );
+        assert_eq!(observer.snapshot()[0].payload["status"], "no_active_turn");
     }
 
     #[tokio::test]

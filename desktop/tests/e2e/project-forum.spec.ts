@@ -247,6 +247,19 @@ test("forum Files explains a missing external checkout without trying GitHub aut
   await expect(
     page.getByText("Could not load the repository file tree."),
   ).toHaveCount(0);
+  await expect(page.getByText("No files have been pushed yet.")).toHaveCount(0);
+  const calls = await page.evaluate(
+    () => window.__BUZZ_E2E_COMMAND_PAYLOADS__ ?? [],
+  );
+  expect(
+    calls.filter(
+      ({ command, payload }) =>
+        command === "get_project_repo_snapshot" &&
+        String((payload as { cloneUrl?: string }).cloneUrl).includes(
+          "github.com",
+        ),
+    ),
+  ).toEqual([]);
 });
 
 test("forum commits read the selected external repository locally", async ({

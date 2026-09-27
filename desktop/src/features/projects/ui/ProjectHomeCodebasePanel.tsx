@@ -131,6 +131,14 @@ export function ProjectHomeCodebasePanel({
           onContextChange={onFilesContextChange}
           onOpenCommit={onOpenCommit}
           snapshot={snapshot}
+          unavailableMessage={
+            result?.source === "local" &&
+            !result.isLoading &&
+            !result.error &&
+            !snapshot
+              ? "No local checkout found."
+              : undefined
+          }
         />
       </div>
     </div>

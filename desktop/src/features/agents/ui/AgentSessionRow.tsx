@@ -81,7 +81,11 @@ export function AgentSessionRow({
       }
       setIsStopping(false);
       if (outcome === "no_active_turn") {
-        toast.info("This turn has already ended.");
+        // NIP-AO: no_active_turn also covers a turn an earlier Stop is still
+        // finishing, so it does not prove the turn ended.
+        toast.info(
+          `${agentName} has no running turn with this ID. It may have ended, or an earlier Stop may still be finishing.`,
+        );
       } else {
         toast.info("Stop requested, but the agent hasn't confirmed it.");
       }

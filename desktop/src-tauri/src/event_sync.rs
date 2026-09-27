@@ -115,9 +115,7 @@ fn migrate_personas_in_dir_at(
     db_path: &Path,
 ) -> Result<u32, String> {
     use crate::managed_agents::{
-        persona_events::{
-            build_persona_event, monotonic_created_at, pending_head_expired, persona_d_tag,
-        },
+        persona_events::{build_persona_event, monotonic_created_at, persona_d_tag},
         retention::{get_retained_event, open_retention_db, retain_event, RetainedEvent},
     };
     use buzz_core_pkg::kind::KIND_PERSONA;
@@ -172,15 +170,13 @@ fn migrate_personas_in_dir_at(
             .map_err(|e| format!("failed to sign event for '{}': {e}", record.display_name))?;
 
         // Per-coordinate reconcile: skip when an identical body is already
-        // retained, so an unchanged persona doesn't reset `pending_sync`. An
-        // expired pending head is re-signed anyway: the flush skips it, so it
-        // would otherwise never publish.
+        // retained, so an unchanged persona doesn't reset `pending_sync`.
         // Content is timestamp-independent, so the monotonic bump above never
         // forces a spurious republish.
         let event_content = event.content.to_string();
         if existing
             .as_ref()
-            .is_some_and(|row| row.content == event_content && !pending_head_expired(row))
+            .is_some_and(|row| row.content == event_content)
         {
             continue;
         }
@@ -254,7 +250,7 @@ fn migrate_teams_in_dir_at(
     db_path: &Path,
 ) -> Result<u32, String> {
     use crate::managed_agents::{
-        persona_events::{monotonic_created_at, pending_head_expired},
+        persona_events::monotonic_created_at,
         retention::{get_retained_event, open_retention_db, retain_event, RetainedEvent},
         team_events::build_team_event,
         TeamRecord,
@@ -308,7 +304,7 @@ fn migrate_teams_in_dir_at(
         let event_content = event.content.to_string();
         if existing
             .as_ref()
-            .is_some_and(|row| row.content == event_content && !pending_head_expired(row))
+            .is_some_and(|row| row.content == event_content)
         {
             continue;
         }
@@ -404,7 +400,7 @@ fn reconcile_team_catalog_heads_core(
     db_path: &Path,
 ) -> Result<u32, String> {
     use crate::managed_agents::{
-        persona_events::{monotonic_created_at, pending_head_expired},
+        persona_events::monotonic_created_at,
         retention::{get_retained_events_by_kind, open_retention_db, retain_event, RetainedEvent},
         team_catalog::{
             build_team_catalog_event, resolve_team_members, tombstone_team_catalog_coordinate,
@@ -528,7 +524,7 @@ fn reconcile_team_catalog_heads_core(
         // Compare the tag too, not just the body: an unshare replays the
         // retained content verbatim, so bytes alone would report "unchanged"
         // and leave the stale head shared.
-        if head.content == event.content && event_is_shared(&event) && !pending_head_expired(head) {
+        if head.content == event.content && event_is_shared(&event) {
             continue;
         }
 

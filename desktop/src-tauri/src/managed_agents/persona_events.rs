@@ -187,17 +187,120 @@ pub fn monotonic_created_at(prior_head_created_at: Option<i64>) -> nostr::Timest
 /// `MAX_TIMESTAMP_DRIFT_SECS`).
 pub(crate) const RELAY_ACCEPT_WINDOW_SECS: i64 = 900;
 
-/// Whether a still-pending retained head was signed too long ago for the relay
-/// to accept it.
+/// What the flush does with a pending replaceable head whose signed
+/// `created_at` the relay no longer accepts.
+enum ExpiredHead {
+    /// Publish this re-signed copy instead of the frozen one.
+    Renewed(Box<nostr::Event>),
+    /// The relay already holds this exact event; only the sync flag is stale.
+    AlreadyOnRelay,
+    /// Do not publish this sweep, and keep the row pending.
+    Hold,
+}
+
+/// Decide whether an expired pending head may be re-signed with a fresh
+/// `created_at`. Only parameterized replaceable heads (30000–39999) are
+/// renewed; the coordinate lookup below relies on the relay's `#d` pushdown.
 ///
-/// The flush never re-dates a replaceable head: it cannot tell a current edit
-/// from a leftover whose record is gone, and re-dating a leftover would publish
-/// it. So the flush skips an expired head, and the boot reconcile — which only
-/// visits heads that still have a disk record — re-signs it with a fresh
-/// `created_at` so it can publish.
-pub(crate) fn pending_head_expired(row: &super::retention::RetainedEvent) -> bool {
-    let now = nostr::Timestamp::now().as_secs() as i64;
-    row.pending_sync && now - row.created_at > RELAY_ACCEPT_WINDOW_SECS
+/// Expiry alone never authorizes a renewal, because a fresh timestamp would
+/// beat any newer version another device published:
+/// - A managed-agent head (30177) with no record in `managed-agents.json` is
+///   held without any network call. Such a head can be a leftover of a
+///   removed identity; renewing it would publish a dead agent.
+/// - Otherwise the relay's coordinate head and any deletion of it are fetched.
+///   A relay version or deletion at or after the local head wins: hold, and
+///   inbound replay adopts it (`inbound_event_outcome` clears `pending_sync`).
+///   Only when the relay has nothing newer is the local head re-signed, past
+///   every version seen.
+/// - A failed query holds; the next sweep retries.
+async fn renew_expired_head(
+    db_path: &std::path::Path,
+    state: &AppState,
+    relay_api_base: &str,
+    owner_keys: &nostr::Keys,
+    current: &super::retention::RetainedEvent,
+    event: &nostr::Event,
+) -> ExpiredHead {
+    if !buzz_core_pkg::kind::is_parameterized_replaceable(current.kind) {
+        return ExpiredHead::Hold;
+    }
+    if current.kind == buzz_core_pkg::kind::KIND_MANAGED_AGENT
+        && !agent_record_exists(db_path, &current.d_tag)
+    {
+        return ExpiredHead::Hold;
+    }
+
+    let coordinate = format!("{}:{}:{}", current.kind, current.pubkey, current.d_tag);
+    let filters = [
+        serde_json::json!({
+            "kinds": [current.kind],
+            "authors": [current.pubkey],
+            "#d": [current.d_tag],
+            "limit": 1
+        }),
+        // Only a deletion at or after the local head can supersede it, and
+        // `since` is applied in the database (`#a` is matched afterwards), so
+        // unrelated older deletions cannot crowd out the one that matters.
+        serde_json::json!({
+            "kinds": [5],
+            "authors": [current.pubkey],
+            "#a": [coordinate],
+            "since": current.created_at,
+        }),
+    ];
+    let Ok(relay_events) =
+        crate::relay::query_relay_at_with_keys(state, relay_api_base, &filters, owner_keys, None)
+            .await
+    else {
+        return ExpiredHead::Hold;
+    };
+
+    if relay_events.iter().any(|relay| relay.id == event.id) {
+        return ExpiredHead::AlreadyOnRelay;
+    }
+    let newest_on_relay = relay_events
+        .iter()
+        .map(|relay| relay.created_at.as_secs() as i64)
+        .max();
+    if newest_on_relay.is_some_and(|newest| newest >= current.created_at) {
+        return ExpiredHead::Hold;
+    }
+
+    // Everything the relay returned is older than the local head, so bumping
+    // past the local head also bumps past every relay version.
+    match nostr::EventBuilder::new(event.kind, event.content.clone())
+        .tags(event.tags.iter().cloned())
+        .allow_self_tagging()
+        .custom_created_at(monotonic_created_at(Some(current.created_at)))
+        .sign_with_keys(owner_keys)
+    {
+        Ok(renewed) => ExpiredHead::Renewed(Box::new(renewed)),
+        Err(_) => ExpiredHead::Hold,
+    }
+}
+
+/// Whether `managed-agents.json` beside this retention scope still holds an
+/// agent whose pubkey is `agent_pubkey`.
+///
+/// Scoped retention databases live at `<agents dir>/retention/<scope>.db`. An
+/// unreadable or malformed store reads as "no record", so the head is held
+/// rather than renewed.
+fn agent_record_exists(db_path: &std::path::Path, agent_pubkey: &str) -> bool {
+    let Some(store) = db_path
+        .parent()
+        .and_then(std::path::Path::parent)
+        .map(|agents_dir| agents_dir.join("managed-agents.json"))
+    else {
+        return false;
+    };
+    let Ok(content) = std::fs::read_to_string(store) else {
+        return false;
+    };
+    serde_json::from_str::<Vec<serde_json::Value>>(&content).is_ok_and(|records| {
+        records.iter().any(|record| {
+            record.get("pubkey").and_then(serde_json::Value::as_str) == Some(agent_pubkey)
+        })
+    })
 }
 
 /// Build a kind:30175 event from a `AgentDefinition`.
@@ -400,8 +503,9 @@ pub(crate) async fn flush_pending_events_at(
         // Relay ingest rejects any event whose `created_at` is outside
         // `RELAY_ACCEPT_WINDOW_SECS` of server time. A kind:5 tombstone is
         // signed strictly past the head it retracts, so its retained
-        // `created_at` is the domination floor `f`: any publish at `t >= f` still soft-deletes the head (NIP-09
-        // only clears coordinate versions with `created_at <= t`). Reconcile the
+        // `created_at` is the domination floor `f`: any publish at `t >= f`
+        // still soft-deletes the head (NIP-09 only clears coordinate versions
+        // with `created_at <= t`). Reconcile the
         // two constraints at publish time so a byte-frozen future-dated
         // tombstone can never age out of the acceptance window and strand the
         // head live forever:
@@ -429,13 +533,45 @@ pub(crate) async fn flush_pending_events_at(
             // and `mark_synced` below still compares against the retained row's
             // original `created_at`/`content`, which are untouched.
             resign_with_fresh_timestamp(&event, state)?
-        } else if (event.created_at.as_secs() as i64 - now).abs() > RELAY_ACCEPT_WINDOW_SECS {
-            // A frozen replaceable head outside the window is rejected on
-            // every sweep, so POSTing it only adds relay load. Leave it
-            // pending: the boot reconcile re-signs it if its record still
-            // exists (`pending_head_expired`), and a future-dated head
-            // becomes publishable as the clock advances.
+        } else if event.created_at.as_secs() as i64 - now > RELAY_ACCEPT_WINDOW_SECS {
+            // Future-dated past the window: the relay rejects it until the
+            // clock catches up, and it cannot be re-dated lower without
+            // losing to its own predecessor. Leave it pending.
             continue;
+        } else if now - event.created_at.as_secs() as i64 > RELAY_ACCEPT_WINDOW_SECS {
+            // Expired: the frozen bytes are rejected on every sweep. Renew
+            // only when the relay holds nothing newer (`renew_expired_head`);
+            // the lookup is bounded like the publish so it cannot pin the
+            // per-scope lock.
+            let renewal = tokio::time::timeout(
+                PUBLISH_TIMEOUT,
+                renew_expired_head(
+                    db_path,
+                    state,
+                    &relay_api_base,
+                    owner_keys,
+                    &current,
+                    &event,
+                ),
+            )
+            .await
+            .unwrap_or(ExpiredHead::Hold);
+            match renewal {
+                ExpiredHead::Renewed(renewed) => *renewed,
+                ExpiredHead::AlreadyOnRelay => {
+                    let conn = open_retention_db(db_path)?;
+                    mark_synced(
+                        &conn,
+                        current.kind,
+                        &current.pubkey,
+                        &current.d_tag,
+                        current.created_at,
+                        &current.content,
+                    )?;
+                    continue;
+                }
+                ExpiredHead::Hold => continue,
+            }
         } else {
             event
         };

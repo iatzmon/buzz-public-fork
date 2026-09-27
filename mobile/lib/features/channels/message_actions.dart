@@ -71,15 +71,18 @@ typedef MessageDeleteAccess = ({bool canDelete, bool asModerator});
 /// owner the app uses, while kind:9005 accepts agent owners and moderators
 /// alike. Moderators may delete any other non-system message through
 /// kind:9005. System rows (membership changes, huddles) are never deletable
-/// by moderators.
+/// by moderators. The relay refuses kind:9005 in an archived channel, so
+/// [isArchived] turns the moderator path off and leaves the author path as is.
 @visibleForTesting
 MessageDeleteAccess resolveMessageDeleteAccess({
   required TimelineMessage message,
   required String? currentPubkey,
   required bool canManageMessage,
   required bool canModerateMessage,
+  required bool isArchived,
 }) {
-  final moderatorDelete = canModerateMessage && !message.isSystem;
+  final moderatorDelete =
+      canModerateMessage && !isArchived && !message.isSystem;
   if (canManageMessage) {
     final viewer = currentPubkey?.trim().toLowerCase();
     final isSelfAuthored =
@@ -166,6 +169,7 @@ void showMessageActions({
     currentPubkey: currentPubkey,
     canManageMessage: canManageMessage,
     canModerateMessage: canModerateMessage,
+    isArchived: isArchived,
   );
   showBuzzModalBottomSheet<void>(
     context: context,
@@ -285,6 +289,7 @@ void showImageActions({
   required bool canManageMessage,
   bool canModerateMessage = false,
   String? currentPubkey,
+  bool isArchived = false,
   VoidCallback? onDeleted,
 }) {
   final deleteAccess = resolveMessageDeleteAccess(
@@ -292,6 +297,7 @@ void showImageActions({
     currentPubkey: currentPubkey,
     canManageMessage: canManageMessage,
     canModerateMessage: canModerateMessage,
+    isArchived: isArchived,
   );
   showBuzzModalBottomSheet<void>(
     context: context,

@@ -86,8 +86,10 @@ class ForumThreadPage extends HookConsumerWidget {
             )
             .value ??
         false;
-    // Community and forum owners/admins may delete other members' posts.
-    final canModerate = ref.watch(canModerateForumProvider(channelId));
+    // Community and forum owners/admins may delete other members' posts,
+    // except in an archived forum, where the relay refuses moderator deletes.
+    final canModerate =
+        !isArchived && ref.watch(canModerateForumProvider(channelId));
     final canDeletePost = threadAsync.hasValue && (isOwnPost || canModerate);
 
     return FrostedScaffold(
@@ -394,6 +396,7 @@ class _ThreadContent extends HookConsumerWidget {
                       currentPubkey: currentPubkey,
                       channelId: channelId,
                       rootEventId: post.eventId,
+                      isArchived: isArchived,
                     ),
               ],
             ),
@@ -539,12 +542,14 @@ class _ReplyRow extends ConsumerWidget {
   final String? currentPubkey;
   final String channelId;
   final String rootEventId;
+  final bool isArchived;
 
   const _ReplyRow({
     required this.reply,
     required this.currentPubkey,
     required this.channelId,
     required this.rootEventId,
+    required this.isArchived,
   });
 
   @override
@@ -554,8 +559,10 @@ class _ReplyRow extends ConsumerWidget {
         ref.watch(userCacheProvider.select((cache) => cache[pk])) ??
         ref.read(userCacheProvider.notifier).get(pk);
     final displayName = profile?.label ?? shortPubkey(reply.pubkey);
-    // Community and forum owners/admins may delete other members' replies.
-    final canModerate = ref.watch(canModerateForumProvider(channelId));
+    // Community and forum owners/admins may delete other members' replies,
+    // except in an archived forum, where the relay refuses moderator deletes.
+    final canModerate =
+        !isArchived && ref.watch(canModerateForumProvider(channelId));
 
     final userCache = ref.watch(userCacheProvider);
     final agentMentionPubkeys = agentPubkeysWithProfileOwners(

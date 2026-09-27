@@ -270,6 +270,7 @@ class _ThreadMessage extends HookConsumerWidget {
                                         canManageMessage: canManageMessage,
                                         canModerateMessage: canModerateMessage,
                                         currentPubkey: currentPubkey,
+                                        isArchived: isArchived,
                                         onDeleted: () {
                                           if (viewerContext.mounted) {
                                             Navigator.of(

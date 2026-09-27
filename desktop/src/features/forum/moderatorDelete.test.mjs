@@ -141,12 +141,16 @@ const channel = { id: CHANNEL_ID, channelType: "forum" };
 let toastErrors;
 const originalToastError = toast.error;
 // Every client is cleared after each test: a live QueryClient's gc/poll
-// timers would otherwise keep the test process from exiting.
+// timers would otherwise keep the test process from exiting. clear() does not
+// cancel mutation gc timers, so mutations also use gcTime 0.
 const viewerClients = [];
 
 function newViewerClient() {
   const queryClient = new QueryClient({
-    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    defaultOptions: {
+      queries: { retry: false },
+      mutations: { retry: false, gcTime: 0 },
+    },
   });
   queryClient.setQueryData(relaySelfQueryKey, null);
   viewerClients.push(queryClient);

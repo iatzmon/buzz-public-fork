@@ -330,6 +330,75 @@ void moderatorDeleteTests() {
       ]);
     });
 
+    // The relay refuses kind:9005 in an archived channel, so moderators lose
+    // Delete there; the author's own kind:5 Delete stays.
+    final archivedChannel = _testChannel.copyWith(archivedAt: DateTime(2026));
+
+    testWidgets('community admin sees no Delete on another member\'s stream '
+        'message in an archived channel', (tester) async {
+      await tester.pumpWidget(
+        _buildTestable(
+          messages: [
+            _textMsg(id: 'target', pubkey: 'alice', content: 'Target'),
+          ],
+          channel: archivedChannel,
+          communityRole: CommunityMemberRole.owner,
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await openActions(tester, 'message-row-target');
+      expect(
+        find.byKey(const ValueKey('message-action-copyText')),
+        findsOneWidget,
+      );
+      expect(find.byKey(const ValueKey('message-action-delete')), findsNothing);
+      await dismissActions(tester);
+    });
+
+    testWidgets('community admin keeps the kind 5 Delete on their own stream '
+        'message in an archived channel', (tester) async {
+      final relay = RecordingSignedEventRelay();
+      await tester.pumpWidget(
+        _buildTestable(
+          messages: [_textMsg(id: 'mine', pubkey: 'self', content: 'Mine')],
+          channel: archivedChannel,
+          communityRole: CommunityMemberRole.admin,
+          createChannelActions: recordingChannelActions(relay),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await openActions(tester, 'message-row-mine');
+      await confirmDelete(tester);
+
+      expect(relay.submissions.single.kind, EventKind.deletion);
+    });
+
+    testWidgets('community admin sees no Delete on another member\'s thread '
+        'reply in an archived channel', (tester) async {
+      await tester.pumpWidget(
+        _buildTestable(
+          messages: [root],
+          threadReplies: {
+            threadRootId: [reply],
+          },
+          initialThreadRootId: threadRootId,
+          channel: archivedChannel,
+          communityRole: CommunityMemberRole.admin,
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await openActions(tester, 'thread-message-row-bob-reply');
+      expect(
+        find.byKey(const ValueKey('message-action-copyText')),
+        findsOneWidget,
+      );
+      expect(find.byKey(const ValueKey('message-action-delete')), findsNothing);
+      await dismissActions(tester);
+    });
+
     testWidgets('plain member cannot delete another member\'s thread reply', (
       tester,
     ) async {

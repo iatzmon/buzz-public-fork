@@ -396,6 +396,7 @@ List<_PopoverMessageAction> _buildPopoverMessageActions({
     currentPubkey: currentPubkey,
     canManageMessage: canManageMessage,
     canModerateMessage: canModerateMessage,
+    isArchived: isArchived,
   );
   if (deleteAccess.canDelete) {
     actions.add(

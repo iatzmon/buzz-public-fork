@@ -36,6 +36,10 @@ class ForumPostCard extends HookConsumerWidget {
   final VoidCallback onTap;
   final void Function(String eventId, {required bool asModerator})? onDelete;
 
+  /// Whether the forum is archived. The relay refuses moderator deletes there,
+  /// so only the author's own Delete stays available.
+  final bool isArchived;
+
   /// The forum channel's read marker (Unix seconds) captured once when the
   /// post list opened; the new-reply baseline for posts never opened.
   final int? channelReadSnapshot;
@@ -47,6 +51,7 @@ class ForumPostCard extends HookConsumerWidget {
     required this.onTap,
     this.onDelete,
     this.channelReadSnapshot,
+    this.isArchived = false,
   });
 
   @override
@@ -132,7 +137,8 @@ class ForumPostCard extends HookConsumerWidget {
     final workingPubkeys = workingKey.isEmpty
         ? const <String>[]
         : workingKey.split(',');
-    final canModerate = ref.watch(canModerateForumProvider(post.channelId));
+    final canModerate =
+        !isArchived && ref.watch(canModerateForumProvider(post.channelId));
 
     return GestureDetector(
       onTap: onTap,

@@ -775,6 +775,48 @@ void main() {
       expect(find.text('Delete post'), findsNothing);
     });
 
+    // The relay refuses moderator deletes in an archived forum.
+    testWidgets('community admin sees no Delete post on another member\'s '
+        'post in an archived forum', (tester) async {
+      await tester.pumpWidget(
+        _buildPostsView(
+          channel: _forumChannel.copyWith(archivedAt: DateTime(2026)),
+          postsResponse: ForumPostsResponse(
+            posts: [
+              _makePost(eventId: 'alice-post', content: 'Alice post'),
+              _makePost(
+                eventId: 'own-post',
+                pubkey: 'self',
+                content: 'Own post',
+              ),
+            ],
+          ),
+          communityRole: CommunityMemberRole.owner,
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      Future<void> openCard(String content) async {
+        await tester.longPress(
+          find.ancestor(
+            of: find.text(content),
+            matching: find.byType(ForumPostCard),
+          ),
+        );
+        await tester.pumpAndSettle();
+      }
+
+      await openCard('Alice post');
+      expect(find.text('Copy text'), findsOneWidget);
+      expect(find.text('Delete post'), findsNothing);
+      Navigator.of(tester.element(find.text('Copy text'))).pop();
+      await tester.pumpAndSettle();
+
+      // The author's own Delete stays.
+      await openCard('Own post');
+      expect(find.text('Delete post'), findsOneWidget);
+    });
+
     testWidgets('own post delete keeps the kind 5 author path', (tester) async {
       final relay = RecordingSignedEventRelay();
       await tester.pumpWidget(
@@ -1318,6 +1360,48 @@ void main() {
       );
       await tester.pumpAndSettle();
     }
+
+    testWidgets('community admin gets no post or reply Delete on other '
+        'members\' content in an archived forum', (tester) async {
+      await tester.pumpWidget(
+        _buildThreadPage(
+          threadResponse: ForumThreadResponse(
+            post: _makePost(pubkey: 'alice'),
+            replies: [reply('bob-reply', 'Bob reply')],
+            totalReplies: 1,
+          ),
+          currentPubkey: 'self',
+          isArchived: true,
+          communityRole: CommunityMemberRole.owner,
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.byTooltip('Post actions'), findsNothing);
+      await openReplyActions(tester);
+      expect(find.text('Copy text'), findsOneWidget);
+      expect(find.text('Delete reply'), findsNothing);
+    });
+
+    testWidgets('author keeps post Delete in an archived forum', (
+      tester,
+    ) async {
+      await tester.pumpWidget(
+        _buildThreadPage(
+          threadResponse: ForumThreadResponse(
+            post: _makePost(pubkey: 'self'),
+            replies: const [],
+            totalReplies: 0,
+          ),
+          currentPubkey: 'self',
+          isArchived: true,
+          communityRole: CommunityMemberRole.owner,
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.byTooltip('Post actions'), findsOneWidget);
+    });
 
     testWidgets('community admin deletes another member\'s reply with kind '
         '9005 and the refetched thread drops it', (tester) async {

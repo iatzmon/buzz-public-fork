@@ -180,6 +180,7 @@ class ForumPostsView extends HookConsumerWidget {
                         post: post,
                         currentPubkey: currentPubkey,
                         channelReadSnapshot: channelReadSnapshot,
+                        isArchived: channel.isArchived,
                         onTap: () => _openThread(context, post),
                         onDelete: (eventId, {required asModerator}) async {
                           final messenger = ScaffoldMessenger.maybeOf(context);

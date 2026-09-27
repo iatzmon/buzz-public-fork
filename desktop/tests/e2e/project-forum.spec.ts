@@ -151,3 +151,177 @@ test("project forum codebase link opens its repository", async ({ page }) => {
   await expect(page.getByTestId("project-home-context-panel")).toHaveCount(0);
   await expect(page.getByTestId("project-detail-scroll")).toBeVisible();
 });
+
+test("forum Files switches between Buzz remote and GitHub local content", async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    window.__BUZZ_E2E_PROJECT_LOCAL_REPO_SNAPSHOT__ = {
+      path: "/tmp/buzz/REPOS/relay-tools",
+      snapshot: {
+        latest_commit: null,
+        commits: [],
+        contributors: [],
+        files: [
+          {
+            path: "local-only.txt",
+            kind: "blob",
+            size: 18,
+            preview_content: null,
+            last_changed_at: null,
+            latest_commit: null,
+          },
+        ],
+      },
+    };
+    window.__BUZZ_E2E_PROJECT_REPO_FILE_CONTENTS__ = {
+      "local-only.txt": "Local checkout content",
+    };
+  });
+  await page.goto(`/#/channels/${CHANNEL}/posts/${POST}`);
+  await page.getByTestId("project-home-context-files").click();
+  const panel = page.getByTestId("project-home-codebase-panel");
+  await panel.getByTestId("project-home-codebase-repo-trigger").click();
+  await page.getByRole("menuitem", { name: "buzz", exact: true }).click();
+  await expect(
+    panel.getByRole("row", { name: "Open directory crates" }),
+  ).toBeVisible();
+  await panel.getByTestId("project-home-codebase-repo-trigger").click();
+  await page
+    .getByRole("menuitem", { name: "relay-tools", exact: true })
+    .click();
+  await expect(panel.getByTestId("project-home-local-source")).toContainText(
+    "Local working copy",
+  );
+  await expect(
+    panel.getByRole("row", { name: "Open directory crates" }),
+  ).toHaveCount(0);
+  await panel.getByRole("row", { name: "Open file local-only.txt" }).click();
+  await expect(
+    panel.getByText("Local checkout content", { exact: true }),
+  ).toBeVisible();
+  await expect(page.getByTestId("forum-thread-scroll")).toBeVisible();
+  const calls = await page.evaluate(
+    () => window.__BUZZ_E2E_COMMAND_PAYLOADS__ ?? [],
+  );
+  expect(
+    calls.some(
+      ({ command }) => command === "get_project_local_repo_file_content",
+    ),
+  ).toBe(true);
+  expect(
+    calls.filter(
+      ({ command, payload }) =>
+        command === "get_project_repo_snapshot" &&
+        String((payload as { cloneUrl?: string }).cloneUrl).includes(
+          "github.com",
+        ),
+    ),
+  ).toEqual([]);
+  await waitForAnimations(page);
+  await panel.screenshot({
+    path: "test-results/project-forum/local-files.png",
+  });
+  await panel.getByTestId("project-home-codebase-repo-trigger").click();
+  await page.getByRole("menuitem", { name: "buzz", exact: true }).click();
+  await expect(
+    panel.getByRole("row", { name: "Open directory crates" }),
+  ).toBeVisible();
+  await expect(
+    panel.getByText("Local checkout content", { exact: true }),
+  ).toHaveCount(0);
+});
+
+test("forum Files explains a missing external checkout without trying GitHub auth", async ({
+  page,
+}) => {
+  await page.goto(`/#/channels/${CHANNEL}`);
+  await page.getByTestId("project-home-context-files").click();
+  await page.getByTestId("project-home-codebase-repo-trigger").click();
+  await page
+    .getByRole("menuitem", { name: "relay-tools", exact: true })
+    .click();
+  await expect(page.getByTestId("project-home-local-source")).toContainText(
+    "No local checkout found",
+  );
+  await expect(
+    page.getByText("Could not load the repository file tree."),
+  ).toHaveCount(0);
+});
+
+test("forum commits read the selected external repository locally", async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    const commit = {
+      hash: "a".repeat(40),
+      short_hash: "aaaaaaa",
+      author_name: "Alice",
+      author_email: "alice@example.com",
+      timestamp: 2000000000,
+      subject: "Local-only commit",
+    };
+    window.__BUZZ_E2E_PROJECT_LOCAL_REPO_SNAPSHOT__ = {
+      path: "/tmp/buzz/REPOS/relay-tools",
+      snapshot: {
+        latest_commit: commit,
+        commits: [commit],
+        contributors: [],
+        files: [],
+      },
+    };
+  });
+  await page.goto(`/#/channels/${CHANNEL}`);
+  await expect(page.getByTestId("project-home-context-commits")).toBeVisible();
+  await page.evaluate(() => {
+    const w = window as typeof window & {
+      __TAURI_INTERNALS__: {
+        invoke: (
+          command: string,
+          payload: unknown,
+          options: unknown,
+        ) => Promise<unknown>;
+      };
+    };
+    const original = w.__TAURI_INTERNALS__.invoke.bind(w.__TAURI_INTERNALS__);
+    w.__TAURI_INTERNALS__.invoke = async (command, payload, options) => {
+      if (command === "get_project_local_repo_diff") {
+        window.__BUZZ_E2E_COMMAND_PAYLOADS__?.push({ command, payload });
+        return {
+          files: [],
+          additions: 0,
+          deletions: 0,
+          commit_body: "Local commit diff loaded",
+        };
+      }
+      return original(command, payload, options);
+    };
+  });
+  await page.getByTestId("project-home-context-commits").click();
+  const sheet = page.getByTestId("project-home-workspace-sheet");
+  await sheet.getByRole("button", { name: "aaaaaaa", exact: true }).click();
+  await expect(
+    sheet.getByText("Local commit diff loaded", { exact: true }),
+  ).toBeVisible();
+  const calls = await page.evaluate(
+    () => window.__BUZZ_E2E_COMMAND_PAYLOADS__ ?? [],
+  );
+  const local = calls.find(
+    ({ command }) => command === "get_project_local_repo_diff",
+  );
+  expect(local?.payload).toMatchObject({
+    projectDtag: "relay-tools",
+    targetCommit: "a".repeat(40),
+  });
+  expect(
+    calls.filter(
+      ({ command, payload }) =>
+        ["get_project_repo_snapshot", "get_project_repo_diff"].includes(
+          command,
+        ) &&
+        String((payload as { cloneUrl?: string }).cloneUrl).includes(
+          "github.com",
+        ),
+    ),
+  ).toEqual([]);
+});

@@ -1,67 +1,98 @@
 import { useQueries } from "@tanstack/react-query";
 
+import { useCommunities } from "@/features/communities/useCommunities";
 import type {
   ProjectRepoSnapshot,
   Repository,
 } from "@/features/projects/hooks";
 import { fetchRepoState } from "@/features/projects/hooks";
 import { resolveProjectDefaultBranch } from "@/features/projects/lib/projectBranches";
-import { getProjectRepoSnapshot } from "@/shared/api/projectGit";
+import { projectRepoHostForRepository } from "@/features/projects/lib/projectRepoHost";
+import {
+  getProjectLocalRepoSnapshot,
+  getProjectRepoSnapshot,
+} from "@/shared/api/projectGit";
+import { useRelayOrigin } from "@/shared/lib/useRelayOrigin";
 
 export type ProjectRepositorySnapshotResult = {
+  branch: string | null;
   error: unknown;
   isLoading: boolean;
+  localPath: string | null;
   repository: Repository;
   snapshot: ProjectRepoSnapshot | null;
+  source: "local" | "remote";
 };
 
-/** Loads each project repository independently so one failure stays partial. */
+/** Reads external repositories from local checkouts and Buzz repositories from the relay. */
 export function useProjectRepositorySnapshots(
   repositories: Repository[],
   enabled = true,
 ): ProjectRepositorySnapshotResult[] {
+  const { activeCommunity } = useCommunities();
+  const reposDir = activeCommunity?.reposDir;
+  const relayOrigin = useRelayOrigin();
+  const sources = repositories.map((repository) =>
+    projectRepoHostForRepository(repository, relayOrigin).kind === "external"
+      ? ("local" as const)
+      : ("remote" as const),
+  );
   const queries = useQueries({
-    queries: repositories.map((repository) => ({
-      enabled: Boolean(enabled && repository.cloneUrls[0]),
+    queries: repositories.map((repository, index) => ({
+      enabled: Boolean(enabled && relayOrigin && repository.cloneUrls[0]),
       queryFn: async () => {
-        const cloneUrl = repository.cloneUrls[0];
-        if (!cloneUrl) return null;
+        if (sources[index] === "local") {
+          const local = await getProjectLocalRepoSnapshot({
+            reposDir,
+            projectDtag: repository.dtag,
+            cloneUrl: repository.cloneUrls[0],
+          });
+          return {
+            branch: null,
+            snapshot: local?.snapshot ?? null,
+            localPath: local?.path ?? null,
+          };
+        }
         const repoState = await fetchRepoState(repository);
         const defaultBranch = resolveProjectDefaultBranch(
           repository.defaultBranch,
           repoState,
         );
-        return getProjectRepoSnapshot({
+        const snapshot = await getProjectRepoSnapshot({
           baseBranch: defaultBranch,
-          cloneUrl,
+          cloneUrl: repository.cloneUrls[0],
           defaultBranch,
         });
+        return { snapshot, localPath: null, branch: defaultBranch };
       },
       queryKey: [
         "project",
         repository.id,
-        "repo-snapshot",
+        "sidebar-snapshot",
+        relayOrigin,
+        sources[index],
+        reposDir ?? "default",
+        repository.cloneUrls[0],
         repository.defaultBranch,
-        "none",
-        "none",
-        "no-tag",
-        "no-tag-commit",
       ],
       retry: 1,
-      staleTime: 30_000,
+      staleTime: sources[index] === "local" ? 10_000 : 30_000,
     })),
   });
 
   return repositories.map((repository, index) => {
     const query = queries[index];
     return {
+      branch: query?.data?.branch ?? null,
       error:
         enabled && !repository.cloneUrls[0]
-          ? new Error("Repository not found on the relay.")
+          ? new Error("Repository has no clone URL.")
           : query?.error,
-      isLoading: query?.isLoading ?? false,
+      isLoading: Boolean(enabled && (!relayOrigin || query?.isLoading)),
+      localPath: query?.data?.localPath ?? null,
       repository,
-      snapshot: query?.data ?? null,
+      snapshot: query?.data?.snapshot ?? null,
+      source: sources[index],
     };
   });
 }

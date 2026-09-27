@@ -12,12 +12,10 @@ import * as React from "react";
 
 import { presentContextCount } from "@/features/projects/lib/projectHomeSummary";
 import type { ProjectHomeWorkspaceSheetTab } from "@/features/projects/lib/projectHomeWorkspaceSheet";
-import { resolveProjectDefaultBranch } from "@/features/projects/lib/projectBranches";
+import { useProjectRepositorySnapshots } from "@/features/projects/useProjectRepositorySnapshots";
 import { listProjectBoundChannels } from "@/features/projects/lib/projectRelatedChannels";
 import {
   useProjectActivitySummariesQuery,
-  useProjectRepoSnapshotQuery,
-  useRepoStateQuery,
   type Project,
 } from "@/features/projects/hooks";
 import { ProjectChannelIcon } from "@/features/projects/ui/ProjectChannelIcon";
@@ -220,19 +218,8 @@ export function ProjectHomeContextPanel({
   ]).size;
   const activityQuery = useProjectActivitySummariesQuery([project]);
   const activity = activityQuery.data?.[project.id];
-  const repoStateQuery = useRepoStateQuery(firstRepository);
-  const defaultBranch = firstRepository
-    ? resolveProjectDefaultBranch(
-        firstRepository.defaultBranch,
-        repoStateQuery.data,
-      )
-    : null;
-  const snapshotQuery = useProjectRepoSnapshotQuery(
-    firstRepository,
-    defaultBranch,
-    null,
-    null,
-    Boolean(firstRepository),
+  const [snapshotResult] = useProjectRepositorySnapshots(
+    firstRepository ? [firstRepository] : [],
   );
   const channelsById = new Map(
     channels.map((candidate) => [candidate.id, candidate]),
@@ -296,7 +283,7 @@ export function ProjectHomeContextPanel({
           Commits
         </ContextNavButton>
         <ContextNavButton
-          count={presentContextCount(snapshotQuery.data?.files.length)}
+          count={presentContextCount(snapshotResult?.snapshot?.files.length)}
           disabled={!firstRepository && !onAddRepository}
           icon={<FileCode2 />}
           onClick={() => openWorkspace("files")}

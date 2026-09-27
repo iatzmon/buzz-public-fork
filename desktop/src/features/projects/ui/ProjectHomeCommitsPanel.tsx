@@ -31,9 +31,12 @@ export function ProjectHomeCommitsPanel({
     (result) => (result.snapshot?.commits.length ?? 0) > 0,
   );
   const commitItems = loaded
-    .flatMap(({ repository, snapshot }) =>
+    .flatMap(({ repository, snapshot, source, branch }) =>
       (snapshot?.commits ?? []).map((commit) => ({
-        branch: repository.defaultBranch,
+        branch:
+          source === "local"
+            ? "local working copy"
+            : (branch ?? repository.defaultBranch),
         commit,
         project: repository,
         projectId,
@@ -42,11 +45,17 @@ export function ProjectHomeCommitsPanel({
       })),
     )
     .sort((left, right) => right.commit.timestamp - left.commit.timestamp);
-  const failed = results.filter((result) => result.error);
+  const failed = results.filter(
+    (result) =>
+      result.error ||
+      (!result.isLoading && result.source === "local" && !result.localPath),
+  );
   const firstFailure = failed[0];
   const failure = firstFailure
     ? projectRepoUnavailablePresentation(
-        projectRepoUnavailableReason(firstFailure.error),
+        projectRepoUnavailableReason(
+          firstFailure.error ?? new Error("No local checkout found."),
+        ),
       )
     : null;
   if (results.some((result) => result.isLoading) && loaded.length === 0) {
@@ -57,7 +66,7 @@ export function ProjectHomeCommitsPanel({
       <ProjectPanelState
         description={
           failure
-            ? `${firstFailure.repository.name}: ${failure.description}${
+            ? `${firstFailure.repository.name}: ${firstFailure.source === "local" && !firstFailure.error ? "No local checkout found. Open the repository from Codebase to set up a local copy." : failure.description}${
                 failed.length > 1
                   ? ` ${failed.length - 1} other repositories also failed.`
                   : ""

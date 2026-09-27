@@ -7,6 +7,9 @@ import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 
 import '../../shared/mentions/agent_identity_provider.dart';
+import '../../shared/read_state/deferred_read_state_update.dart';
+import '../../shared/read_state/read_state_format.dart';
+import '../../shared/read_state/read_state_provider.dart';
 import '../../shared/theme/theme.dart';
 import '../../shared/widgets/avatar_image.dart';
 import '../../shared/widgets/bee_refresh_indicator.dart';
@@ -14,14 +17,17 @@ import '../../shared/widgets/buzz_loading_indicator.dart';
 import '../../shared/widgets/frosted_app_bar.dart';
 import '../../shared/widgets/frosted_scaffold.dart';
 import '../../shared/widgets/modal_presentation.dart';
+import '../channels/channel_typing_provider.dart';
 import '../channels/compose_bar.dart';
 import '../channels/message_content.dart';
 import '../../shared/profile/user_cache_provider.dart';
 import '../../shared/utils/string_utils.dart';
 import '../../shared/profile/user_profile.dart';
 import '../profile/user_profile_sheet.dart';
+import 'forum_activity.dart';
 import 'forum_models.dart';
 import 'forum_provider.dart';
+import 'forum_working_indicator.dart';
 
 /// Full-screen page showing a forum post and its replies.
 class ForumThreadPage extends HookConsumerWidget {
@@ -265,6 +271,45 @@ class _ThreadContent extends HookConsumerWidget {
       return null;
     }, [allPubkeysKey]);
 
+    // Opening the thread reads it: advance `thread:<postId>` to the newest
+    // loaded reply, and again as newer replies (including our own) load.
+    final readStateReady = ref.watch(
+      readStateProvider.select((state) => state.isReady),
+    );
+    // The post list underneath, when open, holds the relay's summary for this
+    // post. Only consult it if it already exists; don't start a list fetch.
+    final listedSummary = ref.exists(forumPostsProvider(channelId))
+        ? ref.watch(
+            forumPostsProvider(channelId).select(
+              (posts) => _listedSummary(posts.asData?.value, post.eventId),
+            ),
+          )
+        : null;
+    final readAt = forumThreadReadAt(
+      post: post,
+      replies: replies,
+      listedSummary: listedSummary,
+    );
+    useEffect(() {
+      if (!readStateReady) return null;
+      return deferReadStateUpdate(context, () {
+        ref
+            .read(readStateProvider.notifier)
+            .markContextRead(threadContextKey(post.eventId), readAt);
+      });
+    }, [post.eventId, readStateReady, readAt]);
+
+    // Joined so unrelated typing churn does not rebuild the thread.
+    final workingKey = ref.watch(
+      channelTypingProvider(channelId).select(
+        (entries) => forumTypingPubkeys(
+          entries,
+          threadHeadId: post.eventId,
+          currentPubkey: currentPubkey,
+        ).join(','),
+      ),
+    );
+
     return Column(
       children: [
         Expanded(
@@ -326,6 +371,23 @@ class _ThreadContent extends HookConsumerWidget {
               ],
             ),
           ),
+        ),
+
+        AnimatedSize(
+          duration: MediaQuery.disableAnimationsOf(context)
+              ? Duration.zero
+              : const Duration(milliseconds: 180),
+          curve: Curves.easeOutCubic,
+          alignment: Alignment.bottomCenter,
+          child: workingKey.isEmpty
+              ? const SizedBox.shrink()
+              : ForumWorkingIndicator(
+                  key: const ValueKey('forum-thread-working'),
+                  channelId: channelId,
+                  pubkeys: workingKey.split(','),
+                  scope: ForumWorkingScope.reply,
+                  contained: true,
+                ),
         ),
 
         // Reply composer
@@ -685,6 +747,17 @@ class _Avatar extends StatelessWidget {
       isAgent: isAgent,
     );
   }
+}
+
+ForumThreadSummary? _listedSummary(
+  ForumPostsResponse? response,
+  String postId,
+) {
+  if (response == null) return null;
+  for (final post in response.posts) {
+    if (post.eventId == postId) return post.threadSummary;
+  }
+  return null;
 }
 
 Map<String, String> _buildMentionNames(

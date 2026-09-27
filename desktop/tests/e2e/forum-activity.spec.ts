@@ -1,0 +1,160 @@
+import { expect, test, type Page } from "@playwright/test";
+
+import { waitForAnimations } from "../helpers/animations";
+import { installMockBridge } from "../helpers/bridge";
+
+// Forum post list activity: an agent working on a reply shows on the post it
+// is replying under, and replies newer than the viewer's last visit mark the
+// post until it is opened.
+
+const FORUM = "watercooler";
+const FORUM_CHANNEL_ID = "a27e1ee9-76a6-5bdf-a5d5-1d85610dad11";
+const RELEASE_POST = "mock-forum-release-thread";
+const OFFSITE_POST = "mock-forum-offsite-thread";
+const TYPING_KIND = 20002;
+const READ_STATE_KIND = 30078;
+const AGENT_PUBKEY =
+  "953d3363262e86b770419834c53d2446409db6d918a57f8f339d495d54ab001f";
+
+async function waitForMockLiveSubscription(
+  page: Page,
+  channelName: string,
+  kind: number,
+) {
+  // The forum opens several live subscriptions at once; the typing REQ can
+  // wait its turn in the client's send queue for a few seconds.
+  await expect
+    .poll(
+      () =>
+        page.evaluate(
+          ({ channelName, kind }) =>
+            window.__BUZZ_E2E_HAS_MOCK_LIVE_SUBSCRIPTION__?.({
+              channelName,
+              kind,
+            }) ?? false,
+          { channelName, kind },
+        ),
+      { timeout: 15_000 },
+    )
+    .toBe(true);
+}
+
+async function emitTyping(page: Page, pubkey: string, threadHeadId?: string) {
+  await page.evaluate(
+    ({ channelName, pubkey, threadHeadId }) =>
+      window.__BUZZ_E2E_EMIT_MOCK_TYPING__?.({
+        channelName,
+        pubkey,
+        threadHeadId,
+      }),
+    { channelName: FORUM, pubkey, threadHeadId },
+  );
+}
+
+async function openForum(page: Page) {
+  await page.getByTestId(`channel-${FORUM}`).click();
+  await expect(
+    page.getByTestId(`forum-post-card-${RELEASE_POST}`),
+  ).toBeVisible();
+}
+
+test.beforeEach(async ({ page }) => {
+  await installMockBridge(page);
+});
+
+test("shows an agent working on a reply on that post's card", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await openForum(page);
+  await waitForMockLiveSubscription(page, FORUM, TYPING_KIND);
+
+  await emitTyping(page, AGENT_PUBKEY, OFFSITE_POST);
+
+  const offsiteCard = page.getByTestId(`forum-post-card-${OFFSITE_POST}`);
+  const releaseCard = page.getByTestId(`forum-post-card-${RELEASE_POST}`);
+  await expect(
+    offsiteCard.getByTestId("message-typing-indicator-label"),
+  ).toContainText("typing");
+  await expect(releaseCard.getByTestId("message-typing-indicator")).toHaveCount(
+    0,
+  );
+
+  await waitForAnimations(page);
+  await offsiteCard.screenshot({
+    path: "test-results/forum-activity/01-card-working.png",
+  });
+});
+
+test("shows channel-level agent work above the post list", async ({ page }) => {
+  await page.goto("/");
+  await openForum(page);
+  await waitForMockLiveSubscription(page, FORUM, TYPING_KIND);
+
+  await emitTyping(page, AGENT_PUBKEY);
+
+  const forumSection = page.getByRole("region", { name: "Forum posts" });
+  const typingRows = forumSection.getByTestId("message-typing-indicator");
+  await expect(typingRows).toHaveCount(1);
+  await expect(
+    page
+      .getByTestId(`forum-post-card-${RELEASE_POST}`)
+      .getByTestId("message-typing-indicator"),
+  ).toHaveCount(0);
+  await expect(
+    page
+      .getByTestId(`forum-post-card-${OFFSITE_POST}`)
+      .getByTestId("message-typing-indicator"),
+  ).toHaveCount(0);
+});
+
+test("marks a post with replies since the last visit until it is opened", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await waitForMockLiveSubscription(page, "general", READ_STATE_KIND);
+  // The read-state store drops live markers until its startup load settles
+  // (same settle wait as badge.spec.ts). Seeding earlier leaves no baseline.
+  await page.waitForTimeout(3000);
+
+  // The viewer last read the forum 70 minutes ago. The release post has
+  // replies up to 56 minutes ago; the offsite post has none.
+  const lastVisit = Math.floor(Date.now() / 1000) - 70 * 60;
+  await page.evaluate(
+    ({ channelId, ts }) =>
+      window.__BUZZ_E2E_EMIT_MOCK_READ_STATE__?.({
+        clientId: "other-device-client-id",
+        slotId: "e2e00000000000000000000000000000",
+        contexts: { [channelId]: ts },
+        createdAt: Math.floor(Date.now() / 1000),
+      }),
+    { channelId: FORUM_CHANNEL_ID, ts: lastVisit },
+  );
+
+  await openForum(page);
+
+  const releaseCard = page.getByTestId(`forum-post-card-${RELEASE_POST}`);
+  const offsiteCard = page.getByTestId(`forum-post-card-${OFFSITE_POST}`);
+  await expect(releaseCard.getByTestId("forum-post-unread-dot")).toBeVisible();
+  await expect(offsiteCard.getByTestId("forum-post-unread-dot")).toHaveCount(0);
+
+  await waitForAnimations(page);
+  await releaseCard.screenshot({
+    path: "test-results/forum-activity/02-card-new-replies.png",
+  });
+
+  await releaseCard.click();
+  await expect(
+    page.locator(`[data-forum-event-id="${RELEASE_POST}"]`),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Back to posts" }).click();
+
+  await expect(
+    page.getByTestId(`forum-post-card-${RELEASE_POST}`),
+  ).toBeVisible();
+  await expect(
+    page
+      .getByTestId(`forum-post-card-${RELEASE_POST}`)
+      .getByTestId("forum-post-unread-dot"),
+  ).toHaveCount(0);
+});

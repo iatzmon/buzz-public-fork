@@ -1103,6 +1103,24 @@ pub fn parse_thread_tags(event: &Event) -> ThreadTags {
     }
 }
 
+/// Thread tags that anchor the typing indicator for a turn triggered by `event`.
+///
+/// Same as [`parse_thread_tags`], except for a top-level forum post: the post
+/// has no thread tags, but the agent answers with a comment under it. Anchoring
+/// typing to the post lets clients show "working" on that post instead of on
+/// the channel as a whole. Other top-level events keep channel-level typing.
+pub fn typing_thread_tags(event: &Event) -> ThreadTags {
+    let mut tags = parse_thread_tags(event);
+    if tags.parent_event_id.is_none()
+        && event.kind.as_u16() == buzz_core::kind::KIND_FORUM_POST as u16
+    {
+        let post_id = event.id.to_hex();
+        tags.root_event_id = Some(post_id.clone());
+        tags.parent_event_id = Some(post_id);
+    }
+    tags
+}
+
 /// Extract a leading slash command from message content.
 ///
 /// ACP connectors (claude-agent-acp, codex-acp) detect slash commands by
@@ -3834,6 +3852,57 @@ mod tests {
             .tags(nostr_tags)
             .sign_with_keys(&keys)
             .unwrap()
+    }
+
+    fn make_kind_event_with_tags(kind: u16, tags: Vec<Vec<String>>) -> Event {
+        let nostr_tags: Vec<nostr::Tag> = tags
+            .iter()
+            .map(|t| {
+                let strs: Vec<&str> = t.iter().map(|s| s.as_str()).collect();
+                nostr::Tag::parse(strs).unwrap()
+            })
+            .collect();
+        EventBuilder::new(Kind::Custom(kind), "content")
+            .tags(nostr_tags)
+            .sign_with_keys(&Keys::generate())
+            .unwrap()
+    }
+
+    #[test]
+    fn test_typing_thread_tags_top_level_forum_post_anchors_to_post() {
+        let event = make_kind_event_with_tags(
+            buzz_core::kind::KIND_FORUM_POST as u16,
+            vec![vec!["p".into(), "agent_pubkey".into()]],
+        );
+        let tags = typing_thread_tags(&event);
+        let post_id = event.id.to_hex();
+        assert_eq!(tags.root_event_id.as_deref(), Some(post_id.as_str()));
+        assert_eq!(tags.parent_event_id.as_deref(), Some(post_id.as_str()));
+        assert_eq!(tags.mentioned_pubkeys, vec!["agent_pubkey"]);
+    }
+
+    #[test]
+    fn test_typing_thread_tags_forum_comment_keeps_its_thread() {
+        let post = "a".repeat(64);
+        let parent = "b".repeat(64);
+        let event = make_kind_event_with_tags(
+            buzz_core::kind::KIND_FORUM_COMMENT as u16,
+            vec![
+                vec!["e".into(), post.clone(), "".into(), "root".into()],
+                vec!["e".into(), parent.clone(), "".into(), "reply".into()],
+            ],
+        );
+        let tags = typing_thread_tags(&event);
+        assert_eq!(tags.root_event_id.as_deref(), Some(post.as_str()));
+        assert_eq!(tags.parent_event_id.as_deref(), Some(parent.as_str()));
+    }
+
+    #[test]
+    fn test_typing_thread_tags_top_level_stream_message_stays_channel_level() {
+        let event = make_kind_event_with_tags(buzz_core::kind::KIND_STREAM_MESSAGE as u16, vec![]);
+        let tags = typing_thread_tags(&event);
+        assert!(tags.root_event_id.is_none());
+        assert!(tags.parent_event_id.is_none());
     }
 
     #[test]

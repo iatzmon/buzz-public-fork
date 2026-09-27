@@ -6,6 +6,7 @@ import {
   type UserProfileLookup,
 } from "@/features/profile/lib/identity";
 import { UserProfilePopover } from "@/features/profile/ui/UserProfilePopover";
+import { TypingIndicatorRow } from "@/features/messages/ui/TypingIndicatorRow";
 import { UserAvatar } from "@/shared/ui/UserAvatar";
 import type { ForumPost } from "@/shared/api/types";
 import { cn } from "@/shared/lib/cn";
@@ -22,6 +23,8 @@ type ForumPostCardProps = {
   currentPubkey?: string;
   profiles?: UserProfileLookup;
   isActive?: boolean;
+  hasUnreadReplies?: boolean;
+  typingPubkeys?: string[];
   canDelete?: boolean;
   isDeleting?: boolean;
   onClick: (post: ForumPost) => void;
@@ -33,6 +36,8 @@ export function ForumPostCard({
   currentPubkey,
   profiles,
   isActive,
+  hasUnreadReplies,
+  typingPubkeys,
   canDelete,
   isDeleting,
   onClick,
@@ -71,9 +76,11 @@ export function ForumPostCard({
       tabIndex={0}
       className={cn(
         "group w-full cursor-pointer rounded-xl border border-border/60 bg-card p-4 text-left transition-colors hover:border-border hover:bg-accent/40",
+        hasUnreadReplies && "border-primary/30",
         isActive && "border-primary/40 bg-accent/60",
         isDeleting && "pointer-events-none opacity-50",
       )}
+      data-testid={`forum-post-card-${post.eventId}`}
       onClick={() => onClick(post)}
       onKeyDown={(e) => {
         if (e.key === "Enter" || e.key === " ") {
@@ -139,11 +146,27 @@ export function ForumPostCard({
       </div>
 
       {summary && summary.replyCount > 0 ? (
-        <div className="mt-3 flex items-center gap-1.5 text-xs text-muted-foreground">
+        <div
+          className={cn(
+            "mt-3 flex items-center gap-1.5 text-xs text-muted-foreground",
+            hasUnreadReplies && "font-semibold text-foreground",
+          )}
+          data-testid="forum-post-reply-summary"
+        >
+          {hasUnreadReplies ? (
+            <span
+              aria-hidden="true"
+              className="h-2 w-2 shrink-0 rounded-full bg-primary"
+              data-testid="forum-post-unread-dot"
+            />
+          ) : null}
           <MessageSquare className="h-4 w-4" />
           <span>
             {summary.replyCount}{" "}
             {summary.replyCount === 1 ? "reply" : "replies"}
+            {hasUnreadReplies ? (
+              <span className="sr-only">, new replies</span>
+            ) : null}
           </span>
           {summary.lastReplyAt ? (
             <>
@@ -152,6 +175,17 @@ export function ForumPostCard({
             </>
           ) : null}
         </div>
+      ) : null}
+
+      {typingPubkeys && typingPubkeys.length > 0 ? (
+        <TypingIndicatorRow
+          channel={null}
+          className="mt-2"
+          currentPubkey={currentPubkey}
+          profiles={profiles}
+          typingPubkeys={typingPubkeys}
+          variant="activity"
+        />
       ) : null}
     </div>
   );

@@ -4496,7 +4496,7 @@ fn dispatch_pending(
         let typing_scope = batch
             .events
             .last()
-            .map(|event| queue::parse_thread_tags(&event.event))
+            .map(|event| queue::typing_thread_tags(&event.event))
             .unwrap_or_default();
         // Scope-level affinity: reuse the worker that already holds THIS
         // thread's provider session so a temporarily busy worker cannot cause

@@ -41,7 +41,9 @@ export function AgentSessionsScreen() {
             className="text-sm text-muted-foreground"
             data-testid="agent-sessions-empty"
           >
-            No agent is working right now.
+            No agent has reported a running turn. A turn that was already
+            running when this app connected shows after its next update (about
+            10 seconds).
           </p>
         ) : (
           <ul aria-label="Running agent turns" className="space-y-2">

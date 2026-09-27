@@ -68,6 +68,33 @@ test("mention rows use the channel list when feed channelName is blank", () => {
   });
 });
 
+test("an agent request message shows as a needs-action row with its text", () => {
+  const [inboxItem] = buildInboxItems({
+    channels,
+    feed: feedWith({
+      needsAction: [
+        item({
+          category: "needs_action",
+          content: "Please approve the deploy",
+          tags: [
+            ["h", CHANNEL_ID],
+            ["p", "me"],
+            ["needs_action", "1"],
+          ],
+        }),
+      ],
+    }),
+  });
+
+  assert.deepEqual(getInboxTypeLabel(inboxItem), {
+    text: "Needs action in",
+    channelLabel: "buzz-bugs",
+  });
+  assert.equal(inboxItem.isActionRequired, true);
+  assert.equal(inboxItem.subject, "Needs action");
+  assert.equal(inboxItem.preview, "Please approve the deploy");
+});
+
 test("thread activity rows use the channel list when feed channelName is blank", () => {
   const [inboxItem] = buildInboxItems({
     channels,

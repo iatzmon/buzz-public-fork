@@ -4,6 +4,8 @@ import 'dart:typed_data';
 import 'package:nostr/nostr.dart' as nostr;
 import 'package:pointycastle/digests/sha256.dart';
 
+import '../relay/nostr_models.dart';
+
 /// NIP-OA (Owner Attestation) — verify the `auth` tag on a kind:0 profile
 /// that proves an owner key authorized an agent key.
 ///
@@ -52,6 +54,77 @@ String? verifiedOaOwnerPubkey(List<List<String>> tags, String agentPubkey) {
   }
 
   return null;
+}
+
+final _lowercaseHex = RegExp(r'^[0-9a-f]+$');
+
+/// The verified NIP-OA owner of the agent that signed `profile`, or null.
+///
+/// Stricter than [verifiedOaOwnerPubkey] and mirrors desktop's
+/// `profile_valid_oa_owner_pubkey`, so owner-only decisions agree across
+/// clients:
+/// - `profile` must be kind 0 with a valid event id and signature.
+/// - It must carry exactly one `auth` tag; a duplicate (even malformed)
+///   rejects the profile rather than falling back to another tag.
+/// - The owner key and signature must be canonical lowercase hex.
+/// - Every signed condition must hold for the profile event itself
+///   (`kind=`, `created_at<`, `created_at>`), judged by event time, not
+///   wall-clock time.
+String? verifiedProfileOaOwnerPubkey(NostrEvent profile) {
+  if (profile.kind != 0) return null;
+
+  final authTags = [
+    for (final tag in profile.tags)
+      if (tag.isNotEmpty && tag[0] == 'auth') tag,
+  ];
+  if (authTags.length != 1) return null;
+  final tag = authTags.single;
+  if (tag.length != 4) return null;
+  if (!_lowercaseHex.hasMatch(tag[1]) || !_lowercaseHex.hasMatch(tag[3])) {
+    return null;
+  }
+
+  if (!_validEventSignature(profile)) return null;
+
+  final owner = verifiedOaOwnerPubkey([tag], profile.pubkey);
+  if (owner == null) return null;
+  return _conditionsHold(tag[2], profile) ? owner : null;
+}
+
+bool _validEventSignature(NostrEvent event) {
+  try {
+    return nostr.Event(
+      event.id,
+      event.pubkey,
+      event.createdAt,
+      event.kind,
+      event.tags,
+      event.content,
+      event.sig,
+      verify: false,
+    ).isValid();
+  } catch (_) {
+    return false;
+  }
+}
+
+/// Evaluates already-validated `conditions` against `event`.
+bool _conditionsHold(String conditions, NostrEvent event) {
+  if (conditions.isEmpty) return true;
+  return conditions.split('&').every((clause) {
+    if (clause.startsWith('kind=')) {
+      return int.tryParse(clause.substring(5)) == event.kind;
+    }
+    if (clause.startsWith('created_at<')) {
+      final bound = int.tryParse(clause.substring(11));
+      return bound != null && event.createdAt < bound;
+    }
+    if (clause.startsWith('created_at>')) {
+      final bound = int.tryParse(clause.substring(11));
+      return bound != null && event.createdAt > bound;
+    }
+    return false;
+  });
 }
 
 /// Validate the NIP-OA `conditions` string: empty, or `&`-joined clauses of

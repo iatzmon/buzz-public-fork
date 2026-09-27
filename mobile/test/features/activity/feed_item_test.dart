@@ -121,6 +121,10 @@ void main() {
     test('falls back to category for unknown kinds', () {
       expect(makeItem(kind: 9, category: 'mention').headline, 'Mention');
       expect(
+        makeItem(kind: 9, category: 'needs_action').headline,
+        'Needs action',
+      );
+      expect(
         makeItem(kind: 9, category: 'agent_activity').headline,
         'Agent update',
       );

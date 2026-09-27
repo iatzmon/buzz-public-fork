@@ -85,6 +85,10 @@ function feedHeadline(item: FeedItem) {
         return "Mention";
       }
 
+      if (item.category === "needs_action") {
+        return "Needs action";
+      }
+
       if (item.category === "agent_activity") {
         return "Agent update";
       }

@@ -334,3 +334,172 @@ fn delete_message_rejects_invalid_ids_on_both_paths() {
         .is_err());
     }
 }
+
+mod needs_action_requests {
+    use super::*;
+    use nostr::{EventBuilder, Kind, Tag};
+
+    /// Kind:0 profile for `agent` carrying a NIP-OA `auth` tag. With
+    /// `claimed_owner` set, the tag names that key as owner while keeping the
+    /// signature made by `signer`, which forges the claim.
+    fn agent_profile(agent: &Keys, signer: &Keys, claimed_owner: Option<&str>) -> nostr::Event {
+        let agent_compat = nostr::PublicKey::from_hex(&agent.public_key().to_hex()).unwrap();
+        let signer_compat = nostr::Keys::new(
+            nostr::SecretKey::from_slice(signer.secret_key().as_secret_bytes()).unwrap(),
+        );
+        let tag_json = buzz_sdk_pkg::nip_oa::compute_auth_tag(&signer_compat, &agent_compat, "")
+            .expect("compute_auth_tag");
+        let mut parts: Vec<String> = serde_json::from_str(&tag_json).unwrap();
+        if let Some(owner) = claimed_owner {
+            parts[1] = owner.to_string();
+        }
+        EventBuilder::new(Kind::Metadata, "{}")
+            .tags([Tag::parse(parts).unwrap()])
+            .sign_with_keys(agent)
+            .unwrap()
+    }
+
+    fn person_profile(person: &Keys) -> nostr::Event {
+        EventBuilder::new(Kind::Metadata, "{}")
+            .sign_with_keys(person)
+            .unwrap()
+    }
+
+    fn mention_item(author: &Keys, me: &str, marked: bool) -> FeedItemInfo {
+        mention_item_of_kind(9, author, me, marked)
+    }
+
+    fn mention_item_of_kind(kind: u16, author: &Keys, me: &str, marked: bool) -> FeedItemInfo {
+        let mut tags = vec![
+            Tag::parse(["h", "9299f664-9e23-4ae8-84ab-50527da0c3a9"]).unwrap(),
+            Tag::parse(["p", me]).unwrap(),
+        ];
+        if marked {
+            tags.push(Tag::parse([buzz_sdk_pkg::NEEDS_ACTION_TAG, "1"]).unwrap());
+        }
+        let event = EventBuilder::new(Kind::Custom(kind), "please review")
+            .tags(tags)
+            .sign_with_keys(author)
+            .unwrap();
+        feed_item_from_event(&event, FeedItemCategory::Mention)
+    }
+
+    fn category_for(
+        author: &Keys,
+        profile: nostr::Event,
+        me: &str,
+        marked: bool,
+    ) -> FeedItemCategory {
+        let owners = agent_owner_pubkeys_from_profiles(&[profile]);
+        mention_feed_category(&mention_item(author, me, marked), &owners, me)
+    }
+
+    #[test]
+    fn split_moves_only_my_agents_marked_mentions() {
+        let me = Keys::generate();
+        let my_agent = Keys::generate();
+        let other_agent = Keys::generate();
+        let me_hex = me.public_key().to_hex();
+        let owners = agent_owner_pubkeys_from_profiles(&[
+            agent_profile(&my_agent, &me, None),
+            agent_profile(&other_agent, &Keys::generate(), None),
+        ]);
+        let request = mention_item(&my_agent, &me_hex, true);
+        let plain = mention_item(&my_agent, &me_hex, false);
+        let foreign = mention_item(&other_agent, &me_hex, true);
+        let (request_id, plain_id, foreign_id) =
+            (request.id.clone(), plain.id.clone(), foreign.id.clone());
+
+        let (mentions, requests) =
+            split_owned_agent_requests(vec![request, plain, foreign], &owners, &me_hex);
+
+        let ids = |items: &[FeedItemInfo]| items.iter().map(|i| i.id.clone()).collect::<Vec<_>>();
+        assert_eq!(ids(&requests), vec![request_id]);
+        assert_eq!(ids(&mentions), vec![plain_id, foreign_id]);
+        assert!(requests
+            .iter()
+            .all(|i| i.category == FeedItemCategory::NeedsAction));
+        assert!(mentions
+            .iter()
+            .all(|i| i.category == FeedItemCategory::Mention));
+    }
+
+    #[test]
+    fn marked_mention_from_my_agent_needs_action() {
+        let me = Keys::generate();
+        let agent = Keys::generate();
+        let me_hex = me.public_key().to_hex();
+        assert_eq!(
+            category_for(&agent, agent_profile(&agent, &me, None), &me_hex, true),
+            FeedItemCategory::NeedsAction
+        );
+    }
+
+    #[test]
+    fn marked_forum_post_and_reply_from_my_agent_need_action() {
+        let me = Keys::generate();
+        let agent = Keys::generate();
+        let me_hex = me.public_key().to_hex();
+        let owners = agent_owner_pubkeys_from_profiles(&[agent_profile(&agent, &me, None)]);
+        for kind in [45001, 45003] {
+            let item = mention_item_of_kind(kind, &agent, &me_hex, true);
+            assert_eq!(
+                mention_feed_category(&item, &owners, &me_hex),
+                FeedItemCategory::NeedsAction,
+                "kind {kind}"
+            );
+        }
+    }
+
+    #[test]
+    fn unmarked_mention_from_my_agent_stays_a_mention() {
+        let me = Keys::generate();
+        let agent = Keys::generate();
+        let me_hex = me.public_key().to_hex();
+        assert_eq!(
+            category_for(&agent, agent_profile(&agent, &me, None), &me_hex, false),
+            FeedItemCategory::Mention
+        );
+    }
+
+    #[test]
+    fn marked_mention_from_another_owners_agent_stays_a_mention() {
+        let me = Keys::generate();
+        let other_owner = Keys::generate();
+        let agent = Keys::generate();
+        let me_hex = me.public_key().to_hex();
+        assert_eq!(
+            category_for(
+                &agent,
+                agent_profile(&agent, &other_owner, None),
+                &me_hex,
+                true
+            ),
+            FeedItemCategory::Mention
+        );
+    }
+
+    #[test]
+    fn marked_mention_with_forged_owner_claim_stays_a_mention() {
+        let me = Keys::generate();
+        let forger = Keys::generate();
+        let agent = Keys::generate();
+        let me_hex = me.public_key().to_hex();
+        let forged = agent_profile(&agent, &forger, Some(&me_hex));
+        assert_eq!(
+            category_for(&agent, forged, &me_hex, true),
+            FeedItemCategory::Mention
+        );
+    }
+
+    #[test]
+    fn marked_mention_from_a_person_stays_a_mention() {
+        let me = Keys::generate();
+        let person = Keys::generate();
+        let me_hex = me.public_key().to_hex();
+        assert_eq!(
+            category_for(&person, person_profile(&person), &me_hex, true),
+            FeedItemCategory::Mention
+        );
+    }
+}

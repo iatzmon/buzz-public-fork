@@ -75,6 +75,7 @@ class FeedItem {
         return 'Job failed';
       default:
         if (category == 'mention') return 'Mention';
+        if (category == 'needs_action') return 'Needs action';
         if (category == 'agent_activity') return 'Agent update';
         return 'Channel update';
     }

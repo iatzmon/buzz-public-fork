@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 
+import '../../shared/crypto/nip_oa.dart';
 import '../../shared/relay/relay.dart';
 import '../channels/channel.dart';
 import '../channels/channel_management_provider.dart';
@@ -28,6 +29,8 @@ final dmResurfaceActionProvider = Provider<DmResurfaceAction>(
 /// - mentions of me on user-visible channel kinds (also yields thread
 ///   replies, which the thread filter classifies from NIP-10 tags)
 /// - workflow approvals / needs-action events addressed to me
+/// - mentions marked `["needs_action", "1"]` by an agent I own (see
+///   [isOwnedAgentRequest])
 /// - agent job lifecycle events addressed to me (kinds 43001-43006)
 /// - recent DM messages from others (desktop surfaces DMs through p-tags;
 ///   mobile queries DM channels directly so untagged DM sends still appear)
@@ -49,7 +52,24 @@ class ActivityNotifier extends AsyncNotifier<HomeFeedResponse> {
     46012,
   ];
 
+  /// Base delay before retrying a failed request-author owner lookup; doubles
+  /// per attempt. Tests shorten it.
+  @visibleForTesting
+  static Duration ownerLookupRetryBaseDelay = const Duration(seconds: 2);
+  static const _ownerLookupMaxRetries = 6;
+
   void Function()? _unsubscribeAddressed;
+  // Verified owners of request authors, kept across fetches so a failed
+  // lookup never demotes a request that was already verified. Scoped to the
+  // relay + account (cleared with `_dmResurfaceScope`).
+  final Map<String, String> _requestAuthorOwners = {};
+  bool _ownerLookupFailed = false;
+  // Increments per owner lookup; a lookup that is no longer the latest (or
+  // belongs to an old generation) must not touch the kept owners or the
+  // failure/retry state.
+  int _ownerLookupSequence = 0;
+  int _ownerLookupRetryAttempt = 0;
+  Timer? _ownerLookupRetryTimer;
   final List<void Function()> _unsubscribeDms = [];
   final List<void Function()> _unsubscribeHiddenDms = [];
   Timer? _liveRefreshTimer;
@@ -82,6 +102,8 @@ class ActivityNotifier extends AsyncNotifier<HomeFeedResponse> {
     if (_dmResurfaceScope != currentScope) {
       _dmResurfaceScope = currentScope;
       _pendingDmResurfaceRetry.clear();
+      _requestAuthorOwners.clear();
+      _ownerLookupRetryAttempt = 0;
     }
     _clearLiveSubscriptions();
     ref.onDispose(() {
@@ -89,11 +111,12 @@ class ActivityNotifier extends AsyncNotifier<HomeFeedResponse> {
       _clearLiveSubscriptions();
     });
 
-    final response = await _fetch();
+    final response = await _fetch(generation);
     if (sessionState.status == SessionStatus.connected &&
         generation == _subscriptionGeneration) {
       unawaited(_subscribeLive(generation));
     }
+    _scheduleOwnerLookupRetryIfNeeded(generation);
     return response;
   }
 
@@ -390,9 +413,10 @@ class ActivityNotifier extends AsyncNotifier<HomeFeedResponse> {
       do {
         _refreshQueued = false;
         try {
-          final next = await _fetch();
+          final next = await _fetch(generation);
           if (generation != _subscriptionGeneration) return;
           state = AsyncData(next);
+          _scheduleOwnerLookupRetryIfNeeded(generation);
         } catch (error) {
           if (generation != _subscriptionGeneration) return;
           debugPrint(
@@ -412,6 +436,8 @@ class ActivityNotifier extends AsyncNotifier<HomeFeedResponse> {
   void _clearLiveSubscriptions() {
     _liveRefreshTimer?.cancel();
     _liveRefreshTimer = null;
+    _ownerLookupRetryTimer?.cancel();
+    _ownerLookupRetryTimer = null;
     _refreshInFlight = null;
     _refreshGeneration = null;
     _refreshQueued = false;
@@ -440,7 +466,7 @@ class ActivityNotifier extends AsyncNotifier<HomeFeedResponse> {
     return ids.join(',');
   }
 
-  Future<HomeFeedResponse> _fetch() async {
+  Future<HomeFeedResponse> _fetch(int generation) async {
     final myPk = ref.read(myPubkeyProvider);
     if (myPk == null) {
       return HomeFeedResponse(
@@ -508,6 +534,16 @@ class ActivityNotifier extends AsyncNotifier<HomeFeedResponse> {
     );
 
     const mentionKinds = {9, 40002, 1, 45001, 45003};
+    bool isMention(NostrEvent event) =>
+        mentionKinds.contains(event.kind) &&
+        isAddressedToMe(event) &&
+        isFromOther(event);
+    final ownerByAgent = await _fetchRequestAuthorOwners(
+      session,
+      generation,
+      events.where((event) => isMention(event) && hasNeedsActionMarker(event)),
+    );
+
     const needsActionKinds = {46010, 46011, 46012};
     const agentActivityKinds = {43001, 43002, 43003, 43004, 43005, 43006};
     final dmChannelIdSet = dmChannelIds.toSet();
@@ -536,12 +572,12 @@ class ActivityNotifier extends AsyncNotifier<HomeFeedResponse> {
     add(
       events.where(
         (event) =>
-            mentionKinds.contains(event.kind) &&
-            isAddressedToMe(event) &&
-            isFromOther(event),
+            isMention(event) &&
+            isOwnedAgentRequest(event, ownerByAgent: ownerByAgent, myPk: myPk),
       ),
-      'mention',
+      'needs_action',
     );
+    add(events.where(isMention), 'mention');
     add(
       events.where(
         (event) =>
@@ -617,6 +653,94 @@ class ActivityNotifier extends AsyncNotifier<HomeFeedResponse> {
     return events;
   }
 
+  /// Verified NIP-OA owners of request authors, keyed by lowercase agent
+  /// pubkey. Only authors of marked mentions are looked up, so the extra
+  /// profile query runs only when a request is present.
+  ///
+  /// A successful lookup refreshes the kept owners for those authors (a
+  /// revoked attestation drops out). A failed lookup (HTTP and websocket
+  /// both fail) keeps the owners verified earlier and sets
+  /// `_ownerLookupFailed`, so the caller schedules a bounded retry instead
+  /// of treating the failure as "no owners".
+  ///
+  /// Only the latest lookup of the current `generation` may change the kept
+  /// owners or `_ownerLookupFailed`. An older lookup that completes late
+  /// returns the kept owners unchanged, so it cannot restore an owner that a
+  /// newer lookup removed. A fetch from an old generation stops before it
+  /// takes a lookup number, so it cannot make the current lookup look stale.
+  Future<Map<String, String>> _fetchRequestAuthorOwners(
+    RelaySessionNotifier session,
+    int generation,
+    Iterable<NostrEvent> requests,
+  ) async {
+    if (generation != _subscriptionGeneration) {
+      return Map.of(_requestAuthorOwners);
+    }
+    final lookup = ++_ownerLookupSequence;
+    bool isLatest() =>
+        generation == _subscriptionGeneration && lookup == _ownerLookupSequence;
+
+    final authors = {
+      for (final event in requests) event.pubkey.toLowerCase(),
+    }.toList();
+    if (authors.isEmpty) {
+      if (isLatest()) _ownerLookupFailed = false;
+      return const {};
+    }
+
+    final filter = NostrFilters.profilesBatch(authors);
+    List<NostrEvent> profiles;
+    try {
+      profiles = await session.queryRelay([filter]);
+    } catch (httpError) {
+      try {
+        profiles = await session.fetchHistory(filter);
+      } catch (error) {
+        if (!isLatest()) return Map.of(_requestAuthorOwners);
+        debugPrint(
+          '[ActivityNotifier] request author lookup failed '
+          '(http: $httpError; websocket: $error); keeping verified owners '
+          'and retrying',
+        );
+        _ownerLookupFailed = true;
+        return Map.of(_requestAuthorOwners);
+      }
+    }
+
+    if (!isLatest()) return Map.of(_requestAuthorOwners);
+    _ownerLookupFailed = false;
+    final verified = agentOwnersFromProfiles(profiles);
+    for (final author in authors) {
+      final owner = verified[author];
+      if (owner == null) {
+        _requestAuthorOwners.remove(author);
+      } else {
+        _requestAuthorOwners[author] = owner;
+      }
+    }
+    return Map.of(_requestAuthorOwners);
+  }
+
+  /// After a fetch whose owner lookup failed, refetch with exponential
+  /// backoff up to [_ownerLookupMaxRetries] times. A successful lookup
+  /// resets the budget; live events and manual refresh still refetch after
+  /// the budget is spent.
+  void _scheduleOwnerLookupRetryIfNeeded(int generation) {
+    if (generation != _subscriptionGeneration) return;
+    if (!_ownerLookupFailed) {
+      _ownerLookupRetryAttempt = 0;
+      return;
+    }
+    if (_ownerLookupRetryAttempt >= _ownerLookupMaxRetries) return;
+    final delay = ownerLookupRetryBaseDelay * (1 << _ownerLookupRetryAttempt);
+    _ownerLookupRetryAttempt += 1;
+    _ownerLookupRetryTimer?.cancel();
+    _ownerLookupRetryTimer = Timer(
+      delay,
+      () => unawaited(_queueRefresh(generation)),
+    );
+  }
+
   FeedItem _feedItem(NostrEvent event, {required String category}) {
     return FeedItem(
       id: event.id,
@@ -645,6 +769,42 @@ class _PendingResurface {
 
   final int generation;
   bool retry = false;
+}
+
+/// Tag that marks a message as a request for its mentioned people to act.
+/// Mirrors `buzz_sdk::NEEDS_ACTION_TAG`.
+const needsActionTag = 'needs_action';
+
+/// Whether `event` carries the `["needs_action", "1"]` marker.
+bool hasNeedsActionMarker(NostrEvent event) => event.tags.any(
+  (tag) => tag.length > 1 && tag[0] == needsActionTag && tag[1] == '1',
+);
+
+/// Maps each agent pubkey (lowercase) to its verified NIP-OA owner, read from
+/// the agent's own kind:0 profile with [verifiedProfileOaOwnerPubkey].
+/// Profiles without a fully valid attestation are skipped, so a forged,
+/// duplicated, or condition-restricted owner claim maps to nothing.
+Map<String, String> agentOwnersFromProfiles(Iterable<NostrEvent> profiles) {
+  final owners = <String, String>{};
+  for (final profile in profiles) {
+    final owner = verifiedProfileOaOwnerPubkey(profile);
+    if (owner != null) owners[profile.pubkey.toLowerCase()] = owner;
+  }
+  return owners;
+}
+
+/// A mention is a needs-action request only when it carries the marker and
+/// its author is an agent whose verified owner is `myPk`. Marked mentions
+/// from people or from another owner's agent stay ordinary mentions.
+/// Mirrors desktop's `mention_feed_category`.
+bool isOwnedAgentRequest(
+  NostrEvent event, {
+  required Map<String, String> ownerByAgent,
+  required String myPk,
+}) {
+  if (!hasNeedsActionMarker(event)) return false;
+  final owner = ownerByAgent[event.pubkey.toLowerCase()];
+  return owner != null && owner.toLowerCase() == myPk.toLowerCase();
 }
 
 final activityProvider =

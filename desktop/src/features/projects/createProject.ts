@@ -219,6 +219,30 @@ async function finishCreate(
   return { channel, project };
 }
 
+const HOME_CHANNEL_TYPE_LABELS: Record<ProjectHomeChannelType, string> = {
+  stream: "Chat",
+  forum: "Forum",
+};
+
+/**
+ * A retry reuses the home channel an earlier attempt already created, and a
+ * channel's type cannot change. Refuse a retry that asks for the other type
+ * instead of silently finishing with the wrong one.
+ */
+function assertRetryKeepsHomeChannelType(
+  channel: Channel | undefined,
+  requested: ProjectHomeChannelType,
+) {
+  if (!channel || channel.channelType === requested) return;
+  const created =
+    channel.channelType === "forum" || channel.channelType === "stream"
+      ? HOME_CHANNEL_TYPE_LABELS[channel.channelType]
+      : channel.channelType;
+  throw new Error(
+    `This project's home channel was already created as ${created}. Choose ${created} to finish creating the project.`,
+  );
+}
+
 /** Creates the home channel, a bound default repository, and the NIP-MP project. */
 export async function createProject(
   input: CreateProjectInput,
@@ -241,6 +265,10 @@ export async function createProject(
   if (existingProject && !canResume) {
     throw new Error(`You already have a project named "${dtagPreview}".`);
   }
+  assertRetryKeepsHomeChannelType(
+    resume.channels.get(projectId),
+    input.homeChannelType ?? "stream",
+  );
   if (existingProject && !existingProject.legacy) {
     const cachedChannel = resume.channels.get(projectId) ?? null;
     const channelId =

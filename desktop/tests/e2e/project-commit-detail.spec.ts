@@ -580,6 +580,61 @@ test("project creation can retry after its repository publication fails", async 
   );
 });
 
+test("a project creation retry keeps its home channel type", async ({
+  page,
+}) => {
+  await enableProjectsFeature(page);
+  await page.addInitScript(() => {
+    window.__BUZZ_E2E_REJECT_PROJECT_EVENT_KINDS__ = [30621];
+  });
+  await installMockBridge(page);
+  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await page.getByTestId("open-projects-view").click();
+  await openCreateProjectDialog(page);
+  await page.getByTestId("create-project-name").fill("retry-type-project");
+  await page.getByTestId("create-project-submit").click();
+  await expect(page.getByText("mock project event rejection")).toBeVisible();
+
+  await page.getByTestId("create-project-home-type-option-forum").click();
+  await page.getByTestId("create-project-submit").click();
+  await expect(page.getByTestId("create-project-dialog")).toBeVisible();
+  await expect(
+    page.getByText(
+      "This project's home channel was already created as Chat. Choose Chat to finish creating the project.",
+    ),
+  ).toBeVisible();
+
+  await page.getByTestId("create-project-home-type-option-stream").click();
+  await page.getByTestId("create-project-submit").click();
+  await expect(page.getByTestId("create-project-dialog")).toBeHidden();
+  await expect(page.getByTestId("project-channel-home")).toBeVisible();
+  await expect(page.getByTestId("forum-post-list")).toHaveCount(0);
+});
+
+test("project creation offers only chat homes when forums are off", async ({
+  page,
+}) => {
+  await installMockBridge(page);
+  // The bridge enables every preview feature; this later script turns
+  // forums off again.
+  await page.addInitScript(() => {
+    window.localStorage.setItem(
+      "buzz-feature-overrides-v1",
+      JSON.stringify({ projects: true, forum: false }),
+    );
+  });
+  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await page.getByTestId("open-projects-view").click();
+  await openCreateProjectDialog(page);
+  await expect(page.getByTestId("create-project-name")).toBeVisible();
+  await expect(page.getByTestId("create-project-home-type-row")).toHaveCount(0);
+  await page.getByTestId("create-project-name").fill("chat-only-project");
+  await page.getByTestId("create-project-submit").click();
+  await expect(page.getByTestId("create-project-dialog")).toBeHidden();
+  await expect(page.getByTestId("project-channel-home")).toBeVisible();
+  await expect(page.getByTestId("forum-post-list")).toHaveCount(0);
+});
+
 test("project creation is idempotent after a lost publish acknowledgement", async ({
   page,
 }) => {

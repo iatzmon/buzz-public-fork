@@ -118,12 +118,27 @@ The `content` field decrypts to:
 ```json
 {
   "type":      "cancel_turn",
-  "channelId": "<channel_uuid>"
+  "channelId": "<channel_uuid>",
+  "turnId":    "<turn_id>",
+  "requestId": "<opaque_correlator>"
 }
 ```
 
 The only defined control type is `cancel_turn`. Implementations MUST ignore
 events with unrecognized `type` values.
+
+`turnId` and `requestId` are OPTIONAL. `turnId` is the `turnId` from the
+target turn's telemetry frames. When present, the agent MUST cancel only the
+in-flight turn with that `turnId` in `channelId`, and MUST NOT cancel any other
+turn. When absent, the frame names only a channel; an agent that runs several
+sessions in one channel (for example one per thread) MAY refuse it as
+ambiguous. Agents that do not support `turnId` ignore it and apply the
+channel-only behavior.
+
+The agent reports the outcome in a `control_result` telemetry frame whose
+payload echoes `type`, `requestId`, and `turnId`, with `status` one of `sent`,
+`no_active_turn` (the named turn has ended or was already stopped), or
+`ambiguous_target` (channel-only request with several candidate sessions).
 
 ## Ephemerality Contract
 
@@ -291,7 +306,9 @@ of decrypted payloads and MUST NOT log it at INFO level or above.
 ```json
 {
   "type":      "cancel_turn",
-  "channelId": "52a85618-0f8f-4542-94ec-599e6e1c6f2e"
+  "channelId": "52a85618-0f8f-4542-94ec-599e6e1c6f2e",
+  "turnId":    "0b7d3f52-6c1e-4f5f-9a51-2f4c8d0e9a13",
+  "requestId": "3e0c2a8e-8d4b-4c55-bb7a-1f6d2c9e4a70"
 }
 ```
 

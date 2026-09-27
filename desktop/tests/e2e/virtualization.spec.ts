@@ -142,8 +142,8 @@ test.describe("list virtualization", () => {
       `/#/channels/${WATERCOOLER_CHANNEL_ID}/posts/${FORUM_THREAD_ID}?replyId=${FORUM_DEEPLINK_REPLY_ID}`,
     );
 
-    // The deep-link target is the last of 25 replies — offscreen at open. Under
-    // content-visibility the row stays queryable, so scrollIntoView lands it.
+    // The deep-link target is the newest of 25 replies. Under
+    // content-visibility the row stays queryable, so scrolling lands it.
     const target = page.locator(
       `[data-forum-event-id="${FORUM_DEEPLINK_REPLY_ID}"]`,
     );

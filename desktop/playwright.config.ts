@@ -36,6 +36,7 @@ export default defineConfig({
         "**/auxiliary-pane-close-visibility.spec.ts",
         "**/channel-composer-overflow.spec.ts",
         "**/forum-activity.spec.ts",
+        "**/forum-order.spec.ts",
         "**/badge.spec.ts",
         "**/channel-browser.spec.ts",
         "**/channel-add-screenshots.spec.ts",

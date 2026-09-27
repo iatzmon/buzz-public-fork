@@ -86,7 +86,7 @@ test("shows an agent working on a reply on that post's card", async ({
   });
 });
 
-test("shows channel-level agent work above the post list", async ({ page }) => {
+test("shows channel-level agent work below the post list", async ({ page }) => {
   await page.goto("/");
   await openForum(page);
   await waitForMockLiveSubscription(page, FORUM, TYPING_KIND);

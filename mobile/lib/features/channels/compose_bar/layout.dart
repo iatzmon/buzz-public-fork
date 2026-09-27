@@ -325,17 +325,20 @@ class _ComposeBarLayout extends HookWidget {
   Widget _buildTextField(BuildContext context) {
     // Return keeps inserting a newline; hardware keyboards send with the
     // desktop chord instead. `send` owns the empty/uploading/sending guards.
-    return CallbackShortcuts(
-      bindings: {
+    return Shortcuts(
+      shortcuts: {
         for (final key in [
           LogicalKeyboardKey.enter,
           LogicalKeyboardKey.numpadEnter,
         ]) ...{
-          SingleActivator(key, meta: true): onSend,
-          SingleActivator(key, control: true): onSend,
+          SingleActivator(key, meta: true): const _SendDraftIntent(),
+          SingleActivator(key, control: true): const _SendDraftIntent(),
         },
       },
-      child: _buildTextInput(context),
+      child: Actions(
+        actions: {_SendDraftIntent: _SendDraftAction(controller, onSend)},
+        child: _buildTextInput(context),
+      ),
     );
   }
 
@@ -472,4 +475,27 @@ class _DragDownToDismissKeyboard extends HookWidget {
       child: child,
     );
   }
+}
+
+class _SendDraftIntent extends Intent {
+  const _SendDraftIntent();
+}
+
+/// Sends from the hardware keyboard chord, except while an input method is
+/// still composing. A disabled action leaves the key event to the IME, so
+/// provisional text is never submitted.
+class _SendDraftAction extends Action<_SendDraftIntent> {
+  _SendDraftAction(this.controller, this.onSend);
+
+  final TextEditingController controller;
+  final VoidCallback onSend;
+
+  @override
+  bool isEnabled(_SendDraftIntent intent) {
+    final composing = controller.value.composing;
+    return !composing.isValid || composing.isCollapsed;
+  }
+
+  @override
+  void invoke(_SendDraftIntent intent) => onSend();
 }

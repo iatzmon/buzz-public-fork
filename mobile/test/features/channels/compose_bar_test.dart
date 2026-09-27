@@ -1183,6 +1183,32 @@ void main() {
         await tester.pumpAndSettle();
         await chord(LogicalKeyboardKey.numpadEnter);
         expect(sent, ['from the keyboard', 'numpad']);
+
+        // An input method still composing keeps its provisional text.
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text: 'かな',
+            selection: TextSelection.collapsed(offset: 2),
+            composing: TextRange(start: 0, end: 2),
+          ),
+        );
+        await tester.pumpAndSettle();
+        await chord(LogicalKeyboardKey.enter);
+        expect(sent, ['from the keyboard', 'numpad']);
+        expect(
+          tester.widget<TextField>(find.byType(TextField)).controller!.text,
+          'かな',
+        );
+
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text: 'かな',
+            selection: TextSelection.collapsed(offset: 2),
+          ),
+        );
+        await tester.pumpAndSettle();
+        await chord(LogicalKeyboardKey.enter);
+        expect(sent, ['from the keyboard', 'numpad', 'かな']);
       });
     }
 

@@ -7,6 +7,7 @@ import 'package:lucide_icons_flutter/lucide_icons.dart';
 import '../../shared/mentions/agent_identity_provider.dart';
 import '../../shared/read_state/read_state_format.dart';
 import '../../shared/read_state/read_state_provider.dart';
+import '../../shared/read_state/read_state_time.dart';
 import '../../shared/theme/theme.dart';
 import '../../shared/widgets/avatar_image.dart';
 import '../../shared/widgets/modal_presentation.dart';
@@ -40,17 +41,12 @@ class ForumPostCard extends HookConsumerWidget {
   /// so only the author's own Delete stays available.
   final bool isArchived;
 
-  /// The forum channel's read marker (Unix seconds) captured once when the
-  /// post list opened; the new-reply baseline for posts never opened.
-  final int? channelReadSnapshot;
-
   const ForumPostCard({
     super.key,
     required this.post,
     required this.currentPubkey,
     required this.onTap,
     this.onDelete,
-    this.channelReadSnapshot,
     this.isArchived = false,
   });
 
@@ -122,7 +118,7 @@ class ForumPostCard extends HookConsumerWidget {
     final hasNewReplies = forumPostHasNewReplies(
       summary: summary,
       threadReadAt: threadReadAt,
-      channelReadSnapshot: channelReadSnapshot,
+      nowSeconds: currentUnixSeconds(),
     );
     // Joined so unrelated typing churn does not rebuild every card.
     final workingKey = ref.watch(

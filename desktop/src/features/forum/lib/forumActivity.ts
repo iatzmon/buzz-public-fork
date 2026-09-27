@@ -1,3 +1,4 @@
+import { READ_STATE_HORIZON_SECONDS } from "@/features/channels/readState/readStateFormat";
 import type { TypingIndicatorEntry } from "@/features/messages/useChannelTyping";
 import type { ForumThreadResponse, ThreadSummary } from "@/shared/api/types";
 
@@ -42,32 +43,28 @@ export function groupForumTypingByPost(
 }
 
 /**
- * Whether a forum post has replies newer than the viewer's last visit.
+ * Whether a forum post has replies newer than the viewer last read.
  *
- * `threadReadAt` is the post's own `thread:<postId>` read marker. When the
- * viewer never opened the post, `channelBaselineAt` (the forum's read marker as
- * it stood when the list opened) stands in, so replies posted after the last
- * visit to the forum count as new. With neither marker there is no baseline and
- * nothing is flagged, rather than flagging every old post at once.
+ * `threadReadAt` is the post's own `thread:<postId>` read marker, set when the
+ * viewer opens the post. A post without one stays flagged until it is opened:
+ * leaving and re-opening the forum does not clear it. Only replies newer than
+ * the read-state horizon count: post read markers older than it are dropped,
+ * so a missing marker cannot mean "never opened" past it.
  */
 export function hasUnreadForumReplies({
   lastReplyAt,
   threadReadAt,
-  channelBaselineAt,
+  nowSeconds,
 }: {
   lastReplyAt: number | null | undefined;
   threadReadAt: number | null;
-  channelBaselineAt: number | null;
+  nowSeconds: number;
 }): boolean {
   if (lastReplyAt === null || lastReplyAt === undefined) {
     return false;
   }
 
-  const baseline = threadReadAt ?? channelBaselineAt;
-  if (baseline === null) {
-    return false;
-  }
-
+  const baseline = threadReadAt ?? nowSeconds - READ_STATE_HORIZON_SECONDS;
   return lastReplyAt > baseline;
 }
 

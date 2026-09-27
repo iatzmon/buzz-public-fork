@@ -2,8 +2,9 @@ import { expect, test, type Locator, type Page } from "@playwright/test";
 
 import { installMockBridge } from "../helpers/bridge";
 
-// Desktop forums read like a conversation: the post list and a post's replies
-// run oldest first, open at the bottom, and follow new entries there. The mock
+// Desktop forums read like a conversation: the post list (by latest reply)
+// and a post's replies run oldest first, open at the bottom, and follow new
+// entries there. The mock
 // bridge returns posts and replies newest first, as the relay does.
 
 const FORUM = "watercooler";
@@ -105,7 +106,7 @@ test.beforeEach(async ({ page }) => {
   await installMockBridge(page);
 });
 
-test("the post list runs oldest first with the new-post box below it", async ({
+test("the post list runs by latest activity with the new-post box below it", async ({
   page,
 }) => {
   await openForum(page, { olderPosts: 10 });
@@ -115,9 +116,11 @@ test("the post list runs oldest first with the new-post box below it", async ({
   const cardIds = await cards.evaluateAll((els) =>
     els.map((el) => el.getAttribute("data-testid")),
   );
+  // The release post is older than the offsite post, but its newest reply is
+  // newer than both, so it sits last.
   expect(cardIds.slice(-2)).toEqual([
-    `forum-post-card-${RELEASE_POST}`,
     `forum-post-card-${OFFSITE_POST}`,
+    `forum-post-card-${RELEASE_POST}`,
   ]);
   await expect(cards.first()).toContainText("Older seeded post 1.");
 
@@ -127,7 +130,7 @@ test("the post list runs oldest first with the new-post box below it", async ({
   expect(await list.evaluate((el) => el.scrollTop)).toBeGreaterThan(0);
 
   const newest = await page
-    .getByTestId(`forum-post-card-${OFFSITE_POST}`)
+    .getByTestId(`forum-post-card-${RELEASE_POST}`)
     .boundingBox();
   const startPost = await page
     .getByRole("button", { name: "Start a new post..." })
@@ -152,6 +155,36 @@ test("a new post lands last and the list follows it to the bottom", async ({
   await expect(cards.last()).toContainText("Newest post goes at the bottom.");
   await expectPinnedToBottom(list);
   expect(await list.evaluate((el) => el.scrollTop)).toBeGreaterThan(0);
+});
+
+test("a new reply moves an older post to the bottom of the list", async ({
+  page,
+}) => {
+  test.setTimeout(60_000);
+  await openForum(page);
+  const cards = page.locator('[data-testid^="forum-post-card-"]');
+  await expect(cards.last()).toHaveAttribute(
+    "data-testid",
+    `forum-post-card-${RELEASE_POST}`,
+  );
+
+  await page.evaluate(
+    ({ channelName, parentEventId, pubkey }) =>
+      window.__BUZZ_E2E_EMIT_MOCK_MESSAGE__?.({
+        channelName,
+        content: "First reply on the offsite post.",
+        kind: 45003,
+        parentEventId,
+        pubkey,
+      }),
+    { channelName: FORUM, parentEventId: OFFSITE_POST, pubkey: ALICE_PUBKEY },
+  );
+
+  await expect(cards.last()).toHaveAttribute(
+    "data-testid",
+    `forum-post-card-${OFFSITE_POST}`,
+    { timeout: THREAD_POLL_TIMEOUT_MS },
+  );
 });
 
 test("a post opens at its newest reply, with replies oldest first", async ({

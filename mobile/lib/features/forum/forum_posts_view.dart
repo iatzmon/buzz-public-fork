@@ -5,7 +5,6 @@ import 'package:flutter_hooks/flutter_hooks.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 
-import '../../shared/read_state/read_state_provider.dart';
 import '../../shared/theme/theme.dart';
 import '../../shared/widgets/buzz_loading_indicator.dart';
 import '../../shared/widgets/frosted_app_bar.dart';
@@ -52,25 +51,6 @@ class ForumPostsView extends HookConsumerWidget {
     }, [channel.id]);
 
     final canPost = channel.isMember && !channel.isArchived;
-
-    // The channel read marker is the new-reply baseline for posts never
-    // opened. Capture it once, before the channel page marks the forum read
-    // on open, so replies stay flagged while the list is on screen.
-    final channelRead = ref.watch(
-      readStateProvider.select(
-        (state) => (
-          isReady: state.isReady,
-          readAt: state.effectiveTimestamp(channel.id),
-        ),
-      ),
-    );
-    final readSnapshot = useRef<({String channelId, int? readAt})?>(null);
-    if (channelRead.isReady && readSnapshot.value?.channelId != channel.id) {
-      readSnapshot.value = (channelId: channel.id, readAt: channelRead.readAt);
-    }
-    final channelReadSnapshot = readSnapshot.value?.channelId == channel.id
-        ? readSnapshot.value?.readAt
-        : null;
 
     // People writing without naming a post: a new post, or an agent harness
     // that does not yet tag the post it is replying to.
@@ -179,7 +159,6 @@ class ForumPostsView extends HookConsumerWidget {
                         key: ValueKey(post.eventId),
                         post: post,
                         currentPubkey: currentPubkey,
-                        channelReadSnapshot: channelReadSnapshot,
                         isArchived: channel.isArchived,
                         onTap: () => _openThread(context, post),
                         onDelete: (eventId, {required asModerator}) async {

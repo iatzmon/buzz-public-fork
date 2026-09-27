@@ -296,13 +296,60 @@ void main() {
         event(id: 'bounds', kind: 39006, content: '{"has_more":false}'),
       ]);
 
-      expect(response.posts.map((p) => p.eventId), ['p2', 'p1']);
-      expect(response.posts[0].threadSummary, isNull);
-      final summary = response.posts[1].threadSummary!;
+      // p1 is older, but its last reply is newer than p2.
+      expect(response.posts.map((p) => p.eventId), ['p1', 'p2']);
+      expect(response.posts[1].threadSummary, isNull);
+      final summary = response.posts[0].threadSummary!;
       expect(summary.replyCount, 2);
       expect(summary.descendantCount, 3);
       expect(summary.lastReplyAt, 3000);
       expect(summary.participants, ['bob', 'carol']);
+    });
+  });
+
+  group('forum post activity order', () {
+    ForumPost post(String id, int createdAt, [int? lastReplyAt]) => ForumPost(
+      eventId: id,
+      pubkey: 'alice',
+      content: '',
+      kind: 45001,
+      createdAt: createdAt,
+      channelId: 'c1',
+      tags: const [],
+      threadSummary: lastReplyAt == null
+          ? null
+          : ForumThreadSummary(
+              replyCount: 1,
+              descendantCount: 1,
+              lastReplyAt: lastReplyAt,
+              participants: const [],
+            ),
+    );
+
+    test('newest reply first; posts without replies use post time', () {
+      final posts = [
+        post('new-quiet', 300),
+        post('old-active', 100, 500),
+        post('middle-replied', 200, 250),
+      ]..sort(compareForumPostsByActivity);
+      expect(posts.map((p) => p.eventId), [
+        'old-active',
+        'new-quiet',
+        'middle-replied',
+      ]);
+    });
+
+    test('ties fall back to post time, then event id', () {
+      List<String> order(List<ForumPost> input) => ([
+        ...input,
+      ]..sort(compareForumPostsByActivity)).map((p) => p.eventId).toList();
+      final posts = [
+        post('b', 100, 400),
+        post('a', 100, 400),
+        post('c', 50, 400),
+      ];
+      expect(order(posts), ['a', 'b', 'c']);
+      expect(order(posts.reversed.toList()), ['a', 'b', 'c']);
     });
   });
 }

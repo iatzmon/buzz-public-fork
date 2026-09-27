@@ -59,9 +59,10 @@ class ProjectActivitySection extends HookConsumerWidget {
         address: ref.watch(projectTaskStoreProvider(address)),
     };
 
-    // Read message pages newest first. Each page starts at the oldest
-    // timestamp of the page before it. Items older than the last full page
-    // wait for the next page, so no unread message can hide between them.
+    // Read message pages newest first. Each page starts right after the last
+    // row of the page before it. Items older than the last full page wait for
+    // the next page, so no unread message can hide between them. A page that
+    // fails keeps its previous rows and shows an error with Retry.
     final messages = <String, NostrEvent>{};
     final changes = <NostrEvent>[];
     var pagesError = false;
@@ -69,16 +70,16 @@ class ProjectActivitySection extends HookConsumerWidget {
     var firstPagePending = false;
     var moreMessages = false;
     int? boundary;
-    int? until;
+    ProjectMessageCursor? after;
     for (var i = 0; i < pages.value; i++) {
       final async = ref.watch(
         projectMessagePageProvider(
-          projectMessagePageKey(channelNames.keys, until: until),
+          projectMessagePageKey(channelNames.keys, after: after),
         ),
       );
+      if (async.hasError) pagesError = true;
       final page = async.value;
       if (page == null) {
-        pagesError = async.hasError;
         pagePending = !async.hasError;
         firstPagePending = i == 0 && pagePending;
         break;
@@ -87,16 +88,13 @@ class ProjectActivitySection extends HookConsumerWidget {
         messages[message.id] = message;
       }
       changes.addAll(page.changes);
-      if (!page.full || page.oldest == null) {
+      if (!page.full || page.next == null) {
         boundary = null;
         break;
       }
-      final oldest = page.oldest!;
-      boundary = oldest;
+      after = page.next;
+      boundary = after!.createdAt;
       moreMessages = i == pages.value - 1;
-      // Keep the oldest second in the next page, unless the whole page shares
-      // one second: then step past it so reading always moves back in time.
-      until = until != null && oldest >= until ? oldest - 1 : oldest;
     }
 
     final eligible =

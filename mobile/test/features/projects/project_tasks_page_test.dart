@@ -59,6 +59,10 @@ CommunityMembershipSnapshot communityOwnersSnapshot =
     const CommunityMembershipSnapshot(snapshotFound: false, members: []);
 
 void main() {
+  // Channel message reads fail while this is set.
+  var failMessages = false;
+  setUp(() => failMessages = false);
+
   Future<ProviderContainer> pump(
     WidgetTester tester, {
     bool fail = false,
@@ -95,10 +99,13 @@ void main() {
               if (filter.kinds.contains(1621)) {
                 return [_event('1')];
               }
-              // Channel reads match kinds, tags, and until, and return the
-              // newest events first, like the relay.
+              // Channel reads match kinds, tags, and the relay's
+              // `(until, before_id)` cursor, and return rows newest first,
+              // then by id, like the relay.
               if (filter.tags['#h'] case final channels?) {
+                if (failMessages) throw StateError('Offline');
                 final ids = filter.tags['#e'];
+                final beforeId = filter.extensions['before_id'] as String?;
                 return ([
                       for (final e in history)
                         if (filter.kinds.contains(e.kind) &&
@@ -111,9 +118,16 @@ void main() {
                                       ids.contains(t[1]),
                                 )) &&
                             (filter.until == null ||
-                                e.createdAt <= filter.until!))
+                                e.createdAt < filter.until! ||
+                                (e.createdAt == filter.until! &&
+                                    (beforeId == null ||
+                                        e.id.compareTo(beforeId) > 0))))
                           e,
-                    ]..sort((a, b) => b.createdAt.compareTo(a.createdAt)))
+                    ]..sort(
+                      (a, b) => a.createdAt != b.createdAt
+                          ? b.createdAt.compareTo(a.createdAt)
+                          : a.id.compareTo(b.id),
+                    ))
                     .take(filter.limit)
                     .toList();
               }
@@ -737,6 +751,63 @@ void main() {
     expect(find.text('Message 0', skipOffstage: false), findsOneWidget);
     expect(find.text('Message 4', skipOffstage: false), findsOneWidget);
     expect(find.text('Message 5', skipOffstage: false), findsNothing);
+  });
+
+  testWidgets('Load more reaches messages that share one second', (
+    tester,
+  ) async {
+    await pump(
+      tester,
+      published: [],
+      history: [
+        for (var i = 0; i <= projectActivityPageSize; i++)
+          NostrEvent(
+            id: 'm$i'.padLeft(64, '0'),
+            pubkey: _carol,
+            createdAt: 1000,
+            kind: 9,
+            tags: const [
+              ['h', 'channel'],
+            ],
+            content: 'Tied $i',
+            sig: '0' * 128,
+          ),
+      ],
+      home: activity(),
+    );
+    final last = 'Tied $projectActivityPageSize';
+    expect(find.text(last, skipOffstage: false), findsNothing);
+    final more = find.byKey(const ValueKey('project-activity-more'));
+    await tester.ensureVisible(more);
+    await tester.pumpAndSettle();
+    await tester.tap(more);
+    await tester.pumpAndSettle();
+    expect(find.text(last, skipOffstage: false), findsOneWidget);
+    expect(find.text('Tied 0', skipOffstage: false), findsOneWidget);
+  });
+
+  testWidgets('a failed refresh keeps messages and shows Retry', (
+    tester,
+  ) async {
+    final history = [message(1)];
+    await pump(tester, published: [], history: history, home: activity());
+    expect(find.text('Message 1'), findsOneWidget);
+    expect(find.text('Retry'), findsNothing);
+    history.clear();
+    final container = ProviderScope.containerOf(
+      tester.element(find.byType(ProjectActivitySection)),
+    );
+    failMessages = true;
+    container.invalidate(projectMessagePageProvider);
+    await tester.pumpAndSettle();
+    expect(find.text('Message 1'), findsOneWidget);
+    expect(find.text('Channel messages could not be loaded.'), findsOneWidget);
+    failMessages = false;
+    history.add(message(2));
+    await tester.tap(find.text('Retry'));
+    await tester.pumpAndSettle();
+    expect(find.text('Message 2'), findsOneWidget);
+    expect(find.text('Channel messages could not be loaded.'), findsNothing);
   });
 
   testWidgets('a failed task load shows an error and Retry', (tester) async {

@@ -1,5 +1,3 @@
-import 'dart:math' as math;
-
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 
 import '../../shared/projects/project_task.dart';
@@ -215,7 +213,7 @@ class ProjectMessagePage {
     this.messages = const [],
     this.changes = const [],
     this.full = false,
-    this.oldest,
+    this.next,
   });
 
   /// Channel messages in this page.
@@ -227,19 +225,28 @@ class ProjectMessagePage {
   /// The relay returned a whole page, so older messages may exist.
   final bool full;
 
-  /// Oldest timestamp the relay returned for this page.
-  final int? oldest;
+  /// The last row in relay order (`created_at` descending, then `id`
+  /// ascending). The next page starts right after it. Null for an empty page.
+  final ProjectMessageCursor? next;
 }
 
-/// The page key: [channels] are the sorted channel ids joined by commas.
-/// `until` is the newest timestamp to read (inclusive); null reads the newest.
-typedef ProjectMessagePageKey = ({String channels, int? until});
+/// A position in the relay's message order: the relay's `(until, before_id)`
+/// cursor reads rows older than [createdAt], or at [createdAt] with an id
+/// greater than [id]. Messages that share one second stay reachable.
+typedef ProjectMessageCursor = ({int createdAt, String id});
 
-/// The page key for [channelIds], starting at [until].
+/// The page key: [channels] are the sorted channel ids joined by commas.
+/// `after` is the last row of the page before; null reads the newest.
+typedef ProjectMessagePageKey = ({
+  String channels,
+  ProjectMessageCursor? after,
+});
+
+/// The page key for [channelIds], starting after [after].
 ProjectMessagePageKey projectMessagePageKey(
   Iterable<String> channelIds, {
-  int? until,
-}) => (channels: (channelIds.toList()..sort()).join(','), until: until);
+  ProjectMessageCursor? after,
+}) => (channels: (channelIds.toList()..sort()).join(','), after: after);
 
 /// One page of messages in the project's channels, with the edits and
 /// deletions that name them. Pages read only message kinds, so edits and
@@ -258,7 +265,8 @@ final projectMessagePageProvider = FutureProvider.autoDispose
           kinds: EventKind.channelMessageEventKinds,
           tags: {'#h': channels},
           limit: projectActivityPageSize,
-          until: key.until,
+          until: key.after?.createdAt,
+          extensions: {'before_id': ?key.after?.id},
         ),
       );
       final messages = [
@@ -284,8 +292,14 @@ final projectMessagePageProvider = FutureProvider.autoDispose
         messages: messages,
         changes: changes,
         full: returned.length >= projectActivityPageSize,
-        oldest: returned.isEmpty
+        next: returned.isEmpty
             ? null
-            : returned.map((e) => e.createdAt).reduce(math.min),
+            : returned
+                  .map((e) => (createdAt: e.createdAt, id: e.id))
+                  .reduce(
+                    (a, b) => a.createdAt != b.createdAt
+                        ? (a.createdAt < b.createdAt ? a : b)
+                        : (a.id.compareTo(b.id) > 0 ? a : b),
+                  ),
       );
     });

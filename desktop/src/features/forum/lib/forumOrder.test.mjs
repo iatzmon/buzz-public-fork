@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { sortForumOldestFirst } from "./forumOrder.ts";
+import {
+  sortForumOldestFirst,
+  sortForumPostsByActivity,
+} from "./forumOrder.ts";
 
 test("relay newest-first events render oldest first", () => {
   const relayOrder = [
@@ -40,5 +43,43 @@ test("the input array is not changed", () => {
   assert.deepEqual(
     relayOrder.map((item) => item.eventId),
     ["newest", "oldest"],
+  );
+});
+
+test("posts order by their newest reply, the most recent first", () => {
+  const relayOrder = [
+    { eventId: "new-quiet", createdAt: 300, threadSummary: null },
+    {
+      eventId: "old-active",
+      createdAt: 100,
+      threadSummary: { lastReplyAt: 500 },
+    },
+    {
+      eventId: "middle-replied",
+      createdAt: 200,
+      threadSummary: { lastReplyAt: 250 },
+    },
+  ];
+
+  assert.deepEqual(
+    sortForumPostsByActivity(relayOrder).map((post) => post.eventId),
+    ["old-active", "new-quiet", "middle-replied"],
+  );
+});
+
+test("equal activity falls back to the newer post, then event id", () => {
+  const posts = [
+    { eventId: "b", createdAt: 100, threadSummary: { lastReplyAt: 400 } },
+    { eventId: "a", createdAt: 100, threadSummary: { lastReplyAt: 400 } },
+    { eventId: "c", createdAt: 50, threadSummary: { lastReplyAt: 400 } },
+  ];
+
+  assert.deepEqual(
+    sortForumPostsByActivity(posts).map((post) => post.eventId),
+    ["a", "b", "c"],
+  );
+  assert.deepEqual(
+    sortForumPostsByActivity([...posts].reverse()).map((post) => post.eventId),
+    ["a", "b", "c"],
   );
 });

@@ -45,61 +45,62 @@ test("one agent typing in two scopes of the same post is listed once", () => {
   assert.deepEqual(groups.byPostId.get(POST), ["agent"]);
 });
 
+const NOW = 1_790_539_200;
+const WEEK = 7 * 24 * 60 * 60;
+
 test("a reply newer than the post's own read marker is unread", () => {
   assert.equal(
     hasUnreadForumReplies({
-      lastReplyAt: 200,
-      threadReadAt: 100,
-      channelBaselineAt: 300,
+      lastReplyAt: NOW - 100,
+      threadReadAt: NOW - 200,
+      nowSeconds: NOW,
     }),
     true,
   );
 });
 
-test("the post's own read marker wins over the channel baseline", () => {
+test("a reply the post's read marker covers is read", () => {
   assert.equal(
     hasUnreadForumReplies({
-      lastReplyAt: 200,
-      threadReadAt: 200,
-      channelBaselineAt: 50,
+      lastReplyAt: NOW - 200,
+      threadReadAt: NOW - 200,
+      nowSeconds: NOW,
     }),
     false,
   );
 });
 
-test("an unopened post falls back to the channel baseline", () => {
+test("an unopened post stays unread however often the forum is visited", () => {
+  // No channel marker is consulted: only opening the post clears it.
+  for (const nowSeconds of [NOW, NOW + 60, NOW + 3_600]) {
+    assert.equal(
+      hasUnreadForumReplies({
+        lastReplyAt: NOW - 100,
+        threadReadAt: null,
+        nowSeconds,
+      }),
+      true,
+    );
+  }
+});
+
+test("an unopened post with only replies past the marker horizon is not flagged", () => {
   assert.equal(
     hasUnreadForumReplies({
-      lastReplyAt: 200,
+      lastReplyAt: NOW - WEEK - 1,
       threadReadAt: null,
-      channelBaselineAt: 150,
-    }),
-    true,
-  );
-  assert.equal(
-    hasUnreadForumReplies({
-      lastReplyAt: 100,
-      threadReadAt: null,
-      channelBaselineAt: 150,
+      nowSeconds: NOW,
     }),
     false,
   );
 });
 
-test("no baseline or no replies never flags a post", () => {
-  assert.equal(
-    hasUnreadForumReplies({
-      lastReplyAt: 200,
-      threadReadAt: null,
-      channelBaselineAt: null,
-    }),
-    false,
-  );
+test("a post without replies is never flagged", () => {
   assert.equal(
     hasUnreadForumReplies({
       lastReplyAt: null,
       threadReadAt: null,
-      channelBaselineAt: 10,
+      nowSeconds: NOW,
     }),
     false,
   );

@@ -36,6 +36,7 @@ import '../../shared/profile/user_cache_provider.dart';
 import '../pairing/pairing_page.dart';
 import '../projects/project_page.dart';
 import '../pairing/pairing_provider.dart';
+import 'agent_activity/sessions/sessions_page.dart';
 import 'channel.dart';
 import 'channel_actions_sheet.dart';
 import 'channel_detail_page.dart';
@@ -347,6 +348,14 @@ class ChannelsPage extends HookConsumerWidget {
           onTap: openCommunitySwitcher,
         ),
         actions: [
+          IconButton(
+            key: const Key('open-sessions-page'),
+            tooltip: 'Agent sessions',
+            icon: const Icon(LucideIcons.timer),
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute<void>(builder: (_) => const SessionsPage()),
+            ),
+          ),
           SizedBox(
             width: Grid.xl,
             height: Grid.xl,

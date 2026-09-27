@@ -26,6 +26,8 @@ import '../channels/channel_detail_page.dart';
 import '../channels/channel_management_provider.dart';
 import '../channels/channels_provider.dart';
 import '../channels/dm_channel_labels.dart';
+import '../forum/forum_models.dart';
+import '../forum/forum_thread_page.dart';
 import '../channels/message_content.dart';
 import '../../shared/read_state/read_state_format.dart';
 import '../../shared/read_state/read_state_provider.dart';
@@ -259,6 +261,43 @@ class ActivityPage extends HookConsumerWidget {
           : thread.parentId;
 
       if (!context.mounted) return;
+      // A forum channel page shows only the post list, so open the post itself.
+      // Replies (kind 9 or 45003) resolve to their root post.
+      final forumPostId = !resolvedChannel.isForum
+          ? null
+          : target.kind == 45001
+          ? target.id
+          : thread.rootId;
+      if (forumPostId != null) {
+        AdaptiveWorkspace.open(
+          context,
+          MaterialPageRoute<void>(
+            builder: (_) => ForumThreadPage(
+              channelId: resolvedChannel.id,
+              postEventId: forumPostId,
+              currentPubkey: myPk,
+              isMember: resolvedChannel.isMember,
+              isArchived: resolvedChannel.isArchived,
+              initialMessageId: target.id,
+              initialReply: forumPostId != target.id
+                  ? ThreadReply(
+                      eventId: target.id,
+                      pubkey: target.pubkey,
+                      content: target.content,
+                      kind: target.kind,
+                      createdAt: target.createdAt,
+                      channelId: resolvedChannel.id,
+                      tags: target.tags,
+                      parentEventId: thread.parentId,
+                      rootEventId: thread.rootId,
+                      depth: 0,
+                    )
+                  : null,
+            ),
+          ),
+        );
+        return;
+      }
       AdaptiveWorkspace.open(
         context,
         MaterialPageRoute<void>(

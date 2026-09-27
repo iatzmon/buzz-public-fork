@@ -6,10 +6,81 @@ import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:nostr/nostr.dart' as nostr;
 import 'package:buzz/features/channels/agent_activity/observer_models.dart';
 import 'package:buzz/features/channels/agent_activity/observer_subscription.dart';
+import 'package:buzz/features/channels/agent_activity/sessions/sessions_providers.dart';
 import 'package:buzz/shared/crypto/nip44.dart';
 import 'package:buzz/shared/relay/relay.dart';
 
 void main() {
+  test('a busy turn filling the frame buffer does not drop a quiet sibling '
+      'turn or any request IDs', () async {
+    final owner = nostr.Keys.generate();
+    final agent = nostr.Keys.generate();
+    final relay = _RecordingRelaySession();
+    final container = ProviderContainer(
+      overrides: [
+        relaySessionProvider.overrideWith(() => relay),
+        relayConfigProvider.overrideWith(
+          () => _FakeRelayConfigNotifier(nsec: owner.nsec),
+        ),
+      ],
+    );
+    addTearDown(container.dispose);
+    final sub = container.listen(activeTurnsProvider, (_, _) {});
+    addTearDown(sub.close);
+    await Future<void>.delayed(Duration.zero);
+
+    Map<String, dynamic> frame(int seq, String turn, String kind) => {
+      'seq': seq,
+      'timestamp': DateTime.utc(
+        2026,
+        9,
+        27,
+        12,
+      ).add(Duration(milliseconds: seq)).toIso8601String(),
+      'kind': kind,
+      'channelId': 'same-channel',
+      'turnId': turn,
+      'startedAt': '2026-09-27T12:00:00.000Z',
+      'payload': {
+        'cancelByTurnId': true,
+        if (kind == 'turn_started') 'triggeringEventIds': ['request-$turn'],
+      },
+    };
+    void emit(List<Map<String, dynamic>> frames) => relay.emit(
+      _observerEvent(
+        ownerKeychain: owner,
+        agentKeychain: agent,
+        payload: {
+          'seq': frames.last['seq'],
+          'timestamp': frames.last['timestamp'],
+          'kind': 'batch',
+          'payload': {'events': frames},
+        },
+      ),
+    );
+
+    emit([frame(1, 'quiet', 'turn_started'), frame(2, 'busy', 'turn_started')]);
+    for (var start = 3; start < 903; start += 100) {
+      emit([
+        for (var seq = start; seq < start + 100; seq++)
+          frame(seq, 'busy', 'turn_liveness'),
+      ]);
+    }
+
+    final relayState = container.read(observerRelayProvider);
+    expect(relayState.framesByAgent[agent.public], hasLength(800));
+    final turns = container.read(activeTurnsProvider);
+    expect(turns.map((t) => (t.turnId, t.triggeringEventIds.join(','))), [
+      ('quiet', 'request-quiet'),
+      ('busy', 'request-busy'),
+    ]);
+    expect(relayState.droppedTurnCount, 0);
+
+    // An ending frame still removes the evicted turn.
+    emit([frame(903, 'quiet', 'turn_completed')]);
+    expect(container.read(activeTurnsProvider).map((t) => t.turnId), ['busy']);
+  });
+
   test('provider initializes without circular dependency error', () {
     // Regression test: reading the provider should NOT throw
     // "Bad state: Tried to read the state of an uninitialized provider".

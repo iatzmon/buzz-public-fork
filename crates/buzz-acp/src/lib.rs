@@ -14,6 +14,7 @@ mod pool_lifecycle;
 mod prompt_framing;
 mod prompt_project;
 mod queue;
+mod recipient_routing;
 mod relay;
 mod scope;
 mod setup_mode;
@@ -598,15 +599,12 @@ impl AuthorizedNormalListenerEvent {
         self,
         rules: &[SubscriptionRule],
         agent_pubkey_hex: &str,
+        routing: &recipient_routing::RoutingContext<'_>,
     ) -> Option<NormalListenerIngress> {
         let (buzz_event, effective_author) = self.0.into_parts();
-        let matched = filter::match_event(
-            &buzz_event.event,
-            buzz_event.channel_id,
-            rules,
-            agent_pubkey_hex,
-        )
-        .await?;
+        let matched = routing
+            .match_subscription(&buzz_event, rules, agent_pubkey_hex)
+            .await?;
         Some(NormalListenerIngress {
             buzz_event,
             effective_author,
@@ -3570,7 +3568,12 @@ async fn run_harness(
                             };
                             let Some(ingress) =
                                 AuthorizedNormalListenerEvent(authorized_event)
-                                    .match_subscription(&rules, &pubkey_hex)
+                                    .match_subscription(&rules, &pubkey_hex, &recipient_routing::RoutingContext {
+                                        policy: config.recipient_policy,
+                                        rest: &ctx.rest_client,
+                                        channels: &ctx.channel_info,
+                                        owner: owner_cache.get(),
+                                    })
                                     .await
                             else {
                                 tracing::debug!("authorized event matched no rule — dropping");
@@ -9370,6 +9373,7 @@ mod build_mcp_servers_tests {
             kinds_override: None,
             channels_override: None,
             no_mention_filter: false,
+            recipient_policy: recipient_routing::RecipientPolicy::Legacy,
             config_path: std::path::PathBuf::from("./buzz-acp.toml"),
             context_message_limit: 12,
             max_turns_per_session: 0,
@@ -9634,6 +9638,7 @@ mod error_outcome_emission_tests {
             kinds_override: None,
             channels_override: None,
             no_mention_filter: false,
+            recipient_policy: recipient_routing::RecipientPolicy::Legacy,
             config_path: std::path::PathBuf::from("./buzz-acp.toml"),
             context_message_limit: 12,
             max_turns_per_session: 0,

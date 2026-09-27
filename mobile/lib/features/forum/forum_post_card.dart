@@ -5,25 +5,37 @@ import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 
 import '../../shared/mentions/agent_identity_provider.dart';
+import '../../shared/read_state/read_state_format.dart';
+import '../../shared/read_state/read_state_provider.dart';
 import '../../shared/theme/theme.dart';
 import '../../shared/widgets/avatar_image.dart';
 import '../../shared/widgets/modal_presentation.dart';
+import '../channels/channel_typing_provider.dart';
 import '../channels/message_content.dart';
 import '../../shared/profile/user_cache_provider.dart';
 import '../../shared/utils/string_utils.dart';
 import '../profile/user_profile_sheet.dart';
 import '../../shared/profile/user_profile.dart';
+import 'forum_activity.dart';
 import 'forum_models.dart';
+import 'forum_working_indicator.dart';
 
 /// Card displaying a forum post preview in the posts list.
 ///
 /// Long-press opens an action sheet (copy, delete) matching the stream
 /// message pattern from channel_detail_page.dart.
+///
+/// The card flags replies newer than the reader has seen (see
+/// [forumPostHasNewReplies]) and shows who is currently writing a reply.
 class ForumPostCard extends HookConsumerWidget {
   final ForumPost post;
   final String? currentPubkey;
   final VoidCallback onTap;
   final void Function(String eventId)? onDelete;
+
+  /// The forum channel's read marker (Unix seconds) captured once when the
+  /// post list opened; the new-reply baseline for posts never opened.
+  final int? channelReadSnapshot;
 
   const ForumPostCard({
     super.key,
@@ -31,6 +43,7 @@ class ForumPostCard extends HookConsumerWidget {
     required this.currentPubkey,
     required this.onTap,
     this.onDelete,
+    this.channelReadSnapshot,
   });
 
   @override
@@ -93,6 +106,29 @@ class ForumPostCard extends HookConsumerWidget {
         ? '${post.content.substring(0, 200)}...'
         : post.content;
     final summary = post.threadSummary;
+    final threadReadAt = ref.watch(
+      readStateProvider.select(
+        (state) => state.effectiveTimestamp(threadContextKey(post.eventId)),
+      ),
+    );
+    final hasNewReplies = forumPostHasNewReplies(
+      summary: summary,
+      threadReadAt: threadReadAt,
+      channelReadSnapshot: channelReadSnapshot,
+    );
+    // Joined so unrelated typing churn does not rebuild every card.
+    final workingKey = ref.watch(
+      channelTypingProvider(post.channelId).select(
+        (entries) => forumTypingPubkeys(
+          entries,
+          threadHeadId: post.eventId,
+          currentPubkey: currentPubkey,
+        ).join(','),
+      ),
+    );
+    final workingPubkeys = workingKey.isEmpty
+        ? const <String>[]
+        : workingKey.split(',');
 
     return GestureDetector(
       onTap: onTap,
@@ -193,39 +229,15 @@ class ForumPostCard extends HookConsumerWidget {
             // Thread summary
             if (summary != null && summary.replyCount > 0) ...[
               const SizedBox(height: Grid.xxs),
-              Row(
-                children: [
-                  Icon(
-                    LucideIcons.messageSquare,
-                    size: 14,
-                    color: context.colors.onSurfaceVariant,
-                  ),
-                  const SizedBox(width: Grid.half),
-                  Text(
-                    '${summary.replyCount} ${summary.replyCount == 1 ? 'reply' : 'replies'}',
-                    style: context.textTheme.labelSmall?.copyWith(
-                      color: context.colors.onSurfaceVariant,
-                    ),
-                  ),
-                  if (summary.lastReplyAt != null) ...[
-                    const SizedBox(width: Grid.half),
-                    Text(
-                      '\u00b7',
-                      style: context.textTheme.labelSmall?.copyWith(
-                        color: context.colors.onSurfaceVariant.withValues(
-                          alpha: 0.5,
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: Grid.half),
-                    Text(
-                      'last ${formatRelativeTime(summary.lastReplyAt!)}',
-                      style: context.textTheme.labelSmall?.copyWith(
-                        color: context.colors.onSurfaceVariant,
-                      ),
-                    ),
-                  ],
-                ],
+              _ReplySummary(summary: summary, hasNewReplies: hasNewReplies),
+            ],
+            if (workingPubkeys.isNotEmpty) ...[
+              const SizedBox(height: Grid.xxs),
+              ForumWorkingIndicator(
+                key: ValueKey('forum-post-working-${post.eventId}'),
+                channelId: post.channelId,
+                pubkeys: workingPubkeys,
+                scope: ForumWorkingScope.reply,
               ),
             ],
           ],
@@ -307,6 +319,80 @@ class ForumPostCard extends HookConsumerWidget {
             ),
             child: const Text('Delete'),
           ),
+        ],
+      ),
+    );
+  }
+}
+
+/// "N replies · last 5m ago", emphasized with a dot when replies are new.
+///
+/// One screen-reader stop: the label carries the count, recency, and the
+/// "new replies" flag; the dot and icon are decorative.
+class _ReplySummary extends StatelessWidget {
+  final ForumThreadSummary summary;
+  final bool hasNewReplies;
+
+  const _ReplySummary({required this.summary, required this.hasNewReplies});
+
+  @override
+  Widget build(BuildContext context) {
+    final countText =
+        '${summary.replyCount} ${summary.replyCount == 1 ? 'reply' : 'replies'}';
+    final lastReplyAt = summary.lastReplyAt;
+    final lastText = lastReplyAt == null
+        ? null
+        : 'last ${formatRelativeTime(lastReplyAt)}';
+    final textColor = hasNewReplies
+        ? context.colors.onSurface
+        : context.colors.onSurfaceVariant;
+    final textStyle = context.textTheme.labelSmall?.copyWith(
+      color: textColor,
+      fontWeight: hasNewReplies ? FontWeight.w700 : null,
+    );
+
+    return Semantics(
+      container: true,
+      label: [
+        countText,
+        ?lastText,
+        if (hasNewReplies) 'new replies',
+      ].join(', '),
+      excludeSemantics: true,
+      child: Row(
+        children: [
+          if (hasNewReplies) ...[
+            Container(
+              key: const ValueKey('forum-post-new-replies-dot'),
+              width: 8,
+              height: 8,
+              decoration: BoxDecoration(
+                color: context.colors.primary,
+                shape: BoxShape.circle,
+              ),
+            ),
+            const SizedBox(width: Grid.half),
+          ],
+          Icon(
+            LucideIcons.messageSquare,
+            size: 14,
+            color: hasNewReplies
+                ? context.colors.primary
+                : context.colors.onSurfaceVariant,
+          ),
+          const SizedBox(width: Grid.half),
+          Text(countText, style: textStyle),
+          if (lastText != null) ...[
+            const SizedBox(width: Grid.half),
+            Text(
+              '\u00b7',
+              style: context.textTheme.labelSmall?.copyWith(
+                color: context.colors.onSurfaceVariant.withValues(alpha: 0.5),
+              ),
+            ),
+            const SizedBox(width: Grid.half),
+            Text(lastText, style: textStyle),
+          ],
         ],
       ),
     );

@@ -244,15 +244,17 @@ class ForumThreadResponse {
   }
 
   /// Build from a root event and a list of reply events. Replies are sorted
-  /// oldest-first so the UI can render them top-down.
+  /// oldest-first so the UI can render them top-down. [postSummary] is the
+  /// relay's reply summary for the root, when it could be fetched.
   factory ForumThreadResponse.fromEvents({
     required NostrEvent root,
     required List<NostrEvent> replies,
+    ForumThreadSummary? postSummary,
   }) {
     final sortedReplies = replies.map(ThreadReply.fromEvent).toList()
       ..sort((a, b) => a.createdAt.compareTo(b.createdAt));
     return ForumThreadResponse(
-      post: ForumPost.fromEvent(root),
+      post: ForumPost.fromEvent(root, threadSummary: postSummary),
       replies: sortedReplies,
       totalReplies: sortedReplies.length,
       nextCursor: null,

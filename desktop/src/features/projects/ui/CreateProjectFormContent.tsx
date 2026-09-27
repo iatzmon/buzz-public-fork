@@ -61,6 +61,7 @@ export function CreateProjectFormContent({
         name: trimmedName,
         description: description.trim() || undefined,
         channelVisibility: settings.channelVisibility,
+        homeChannelType: settings.homeChannelType,
         projectVisibility: settings.projectVisibility,
         agents: settings.buildAgents(),
         templateId: settings.templateId,

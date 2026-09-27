@@ -494,6 +494,35 @@ test("creating a project opens its channel conversation", async ({ page }) => {
     .toBe(2);
 });
 
+test("creating a forum project opens its forum home", async ({ page }) => {
+  await enableProjectsFeature(page);
+  await installMockBridge(page);
+  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await page.getByTestId("open-projects-view").click();
+  await openCreateProjectDialog(page);
+  await expect(
+    page.getByTestId("create-project-home-type-option-stream"),
+  ).toHaveAttribute("aria-pressed", "true");
+  await page.getByTestId("create-project-home-type-option-forum").click();
+  await expect(
+    page.getByTestId("create-project-home-type-option-forum"),
+  ).toHaveAttribute("aria-pressed", "true");
+  await page.getByTestId("create-project-name").fill("forum-home-demo");
+  await page.getByTestId("create-project-submit").click();
+
+  await expect(page.getByTestId("create-project-dialog")).toBeHidden();
+  await expect(page.getByTestId("project-breadcrumb-project")).toHaveText(
+    "forum-home-demo",
+  );
+  await expect(page.getByTestId("forum-post-list")).toBeVisible();
+  await expect(
+    page.getByTestId("forum-list").getByTestId("channel-forum-home-demo"),
+  ).toBeVisible();
+  await expect(
+    page.getByTestId("sidebar-project-forum-home-demo"),
+  ).toBeVisible();
+});
+
 test("unsupported relays cannot create a channel-first project", async ({
   page,
 }) => {

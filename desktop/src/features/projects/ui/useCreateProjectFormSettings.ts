@@ -17,6 +17,7 @@ import {
   PROJECT_HOME_CHANNEL_TEMPLATE,
   PROJECT_HOME_TEMPLATE_ID,
 } from "@/features/projects/lib/projectHomeTemplate";
+import type { ProjectHomeChannelType } from "@/features/projects/createProject";
 import type { ProjectListingVisibility } from "@/features/projects/projectCreation";
 import type {
   AcpRuntime,
@@ -95,6 +96,8 @@ export function useCreateProjectFormSettings(
     React.useState<ChannelVisibility>("open");
   const [projectVisibility, setProjectVisibility] =
     React.useState<ProjectListingVisibility>("listed");
+  const [homeChannelType, setHomeChannelType] =
+    React.useState<ProjectHomeChannelType>("stream");
   const [agentPersonaId, setAgentPersonaId] = React.useState("");
   const [teamId, setTeamId] = React.useState("");
   const [templateId, setTemplateId] = React.useState(PROJECT_HOME_TEMPLATE_ID);
@@ -120,6 +123,7 @@ export function useCreateProjectFormSettings(
   React.useEffect(() => {
     if (!active) return;
     setChannelVisibility("open");
+    setHomeChannelType("stream");
     setProjectVisibility("listed");
     setAgentPersonaId("");
     setTeamId("");
@@ -164,6 +168,7 @@ export function useCreateProjectFormSettings(
     (template: ChannelTemplate) => {
       setTemplateId(template.id);
       setChannelVisibility(template.visibility);
+      setHomeChannelType(template.channelType);
       if (template.id !== PROJECT_HOME_TEMPLATE_ID) {
         onTemplateDescriptionChange?.(template.description ?? "");
       }
@@ -175,6 +180,7 @@ export function useCreateProjectFormSettings(
       if (!nextTemplateId) {
         setTemplateId("");
         setChannelVisibility("open");
+        setHomeChannelType("stream");
         onTemplateDescriptionChange?.("");
         return;
       }
@@ -190,11 +196,13 @@ export function useCreateProjectFormSettings(
     channelVisibility,
     handleTemplateCreated: applyTemplate,
     handleTemplateChange,
+    homeChannelType,
     personas,
     projectVisibility,
     runtimesAvailable: runtimesQuery.data.length > 0,
     setAgentPersonaId,
     setChannelVisibility,
+    setHomeChannelType,
     setProjectVisibility,
     setTeamId,
     teamId,

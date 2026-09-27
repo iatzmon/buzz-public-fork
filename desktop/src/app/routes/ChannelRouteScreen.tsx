@@ -302,6 +302,10 @@ export function ChannelRouteScreen({
         autoSendDraftKey={autoSendDraftKey}
         project={projectHome}
         projects={projectsQuery.data ?? [projectHome]}
+        selectedForumPostId={selectedPostId}
+        targetForumReplyId={targetReplyId}
+        targetSearchMessageId={activeSearchHighlight?.messageId}
+        targetSearchQuery={activeSearchHighlight?.query}
         targetMessageEvents={targetMessageEvents}
         targetMessageId={targetMessageId}
       />

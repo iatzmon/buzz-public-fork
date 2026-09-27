@@ -8,7 +8,7 @@ import 'package:buzz/features/forum/forum_posts_view.dart';
 import 'package:buzz/features/forum/forum_provider.dart';
 import 'package:buzz/features/profile/profile_provider.dart';
 import 'package:buzz/features/projects/project_page.dart';
-import 'package:buzz/features/projects/project_tasks_page.dart';
+import 'package:buzz/features/projects/project_tasks_view.dart';
 import 'package:buzz/shared/community/community_icon_provider.dart';
 import 'package:buzz/shared/profile/user_profile.dart';
 import 'package:buzz/shared/projects/project_read_models.dart';
@@ -16,6 +16,7 @@ import 'package:buzz/shared/projects/project_task_store.dart';
 import 'package:buzz/shared/projects/projects.dart';
 import 'package:buzz/shared/relay/relay.dart';
 import 'package:buzz/shared/theme/theme.dart';
+import 'package:buzz/shared/widgets/app_list.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
@@ -283,7 +284,7 @@ void main() {
   });
 
   testWidgets(
-    'opens a forum home, and its project button shows the repositories',
+    'opens a forum home, and its project button opens Tasks in one tap',
     (tester) async {
       final store = const ProjectSidebarMembershipStore().withSelection(
         docs,
@@ -304,8 +305,17 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.byType(ProjectPage), findsOneWidget);
-      expect(find.text('Forum Docs'), findsOneWidget);
+      // The project page opens on Tasks.
+      expect(find.byType(ProjectTasksSection), findsOneWidget);
+
+      await tester.tap(find.byKey(const ValueKey('project-tab-channels')));
+      await tester.pumpAndSettle();
+      expect(find.byType(ProjectTasksSection), findsNothing);
       expect(find.text('Project home · Forum'), findsOneWidget);
+
+      await tester.tap(find.byKey(const ValueKey('project-tab-repositories')));
+      await tester.pumpAndSettle();
+      expect(find.text('Forum Docs'), findsOneWidget);
     },
   );
 
@@ -328,12 +338,20 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.byType(ProjectPage), findsOneWidget);
+      await tester.tap(find.byKey(const ValueKey('project-tab-channels')));
+      await tester.pumpAndSettle();
       // The stream home is not visible to this viewer.
       expect(find.text('Unavailable channel'), findsOneWidget);
-      final homeRow = tester.widget<ListTile>(
-        find.byKey(const ValueKey('project-channel-$streamHomeChannel')),
+      final homeRow = tester.widget<AppListRowRaw>(
+        find.descendant(
+          of: find.byKey(const ValueKey('project-channel-$streamHomeChannel')),
+          matching: find.byType(AppListRowRaw),
+        ),
       );
-      expect(homeRow.enabled, isFalse);
+      expect(homeRow.onTap, isNull);
+
+      await tester.tap(find.byKey(const ValueKey('project-tab-repositories')));
+      await tester.pumpAndSettle();
       // GitHub repository: an "Open on GitHub" link.
       expect(
         find.byKey(const ValueKey('project-repository-open-buzz')),
@@ -449,7 +467,7 @@ void main() {
       expect(refreshes.count, 2);
     });
 
-    testWidgets('Tasks opens the project tasks with its repositories', (
+    testWidgets('the project page shows Tasks for its repositories', (
       tester,
     ) async {
       await _pumpChannels(
@@ -459,10 +477,8 @@ void main() {
       );
       await openPlatformPage(tester);
 
-      await tester.tap(find.byKey(const ValueKey('project-tasks')));
-      await tester.pumpAndSettle();
-      final page = tester.widget<ProjectTasksPage>(
-        find.byType(ProjectTasksPage),
+      final page = tester.widget<ProjectTasksSection>(
+        find.byKey(const ValueKey('project-tasks')),
       );
       expect(page.repositories, {
         repoAddress(bob, 'private-notes'): 'Private Notes',

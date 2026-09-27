@@ -1,17 +1,26 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_hooks/flutter_hooks.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../shared/projects/projects.dart';
+import '../../shared/relay/relay.dart';
 import '../../shared/theme/theme.dart';
 import '../../shared/widgets/adaptive_workspace.dart';
+import '../../shared/widgets/app_list.dart';
+import '../../shared/widgets/app_list_card.dart';
+import '../../shared/widgets/buzz_loading_indicator.dart';
+import '../../shared/widgets/frosted_app_bar.dart';
+import '../../shared/widgets/frosted_scaffold.dart';
 import '../channels/channel.dart';
 import '../channels/channel_detail_page.dart';
 import '../channels/channels_provider.dart';
+import 'project_task_visuals.dart';
 import 'project_tasks_page.dart';
+import 'project_tasks_view.dart';
 
 /// The channel with [channelId] from the loaded channel list, or null.
 Channel? findLoadedChannel(WidgetRef ref, String channelId) {
@@ -40,8 +49,10 @@ Future<void> openProject(
   await AdaptiveWorkspace.open(context, route);
 }
 
-/// A project's channels and repositories.
-class ProjectPage extends ConsumerWidget {
+enum _ProjectTab { tasks, channels, repositories }
+
+/// A project's tasks, channels, and repositories. Opens on Tasks.
+class ProjectPage extends HookConsumerWidget {
   const ProjectPage({super.key, required this.projectAddress});
 
   /// `30621:<owner>:<dtag>` coordinate of the project.
@@ -49,6 +60,7 @@ class ProjectPage extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final tab = useState(_ProjectTab.tasks);
     final snapshotAsync = ref.watch(activeProjectsProvider);
     final snapshot = snapshotAsync.value;
     final project = ref.watch(projectByAddressProvider(projectAddress));
@@ -56,6 +68,7 @@ class ProjectPage extends ConsumerWidget {
         .watch(projectSidebarMembershipProvider)
         .selectedAddresses
         .contains(projectAddress);
+    final viewer = ref.watch(myPubkeyProvider);
 
     Future<void> retry() async =>
         ref.read(activeProjectsNotifierProvider)?.refresh();
@@ -63,38 +76,31 @@ class ProjectPage extends ConsumerWidget {
     if (project == null) {
       final Widget body;
       if (snapshotAsync.hasError && !snapshotAsync.isLoading) {
-        body = Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Text(
-              'Projects could not be loaded.',
-              textAlign: TextAlign.center,
-            ),
-            const SizedBox(height: Grid.xs),
-            FilledButton(
-              key: const ValueKey('project-page-retry'),
-              onPressed: retry,
-              child: const Text('Retry'),
-            ),
-          ],
+        body = ProjectEmptyState(
+          icon: LucideIcons.cloudAlert,
+          isError: true,
+          message: 'Projects could not be loaded.',
+          action: FilledButton.icon(
+            key: const ValueKey('project-page-retry'),
+            onPressed: retry,
+            icon: const Icon(LucideIcons.refreshCcw, size: 16),
+            label: const Text('Retry'),
+          ),
         );
       } else if (snapshot == null || snapshotAsync.isLoading) {
-        body = const CircularProgressIndicator();
+        body = const BuzzLoadingIndicator(semanticLabel: 'Loading project');
       } else {
-        body = const Text(
-          'This project is not available. It may have been '
-          'deleted, or it belongs to another community.',
-          textAlign: TextAlign.center,
+        body = const ProjectEmptyState(
+          icon: LucideIcons.folderX,
+          message: 'This project is not available.',
+          detail:
+              'It may have been deleted, or it belongs to another community.',
         );
       }
-      return Scaffold(
-        appBar: AppBar(title: const Text('Project')),
-        body: Center(
-          child: Padding(
-            padding: const EdgeInsets.all(Grid.gutter),
-            child: body,
-          ),
-        ),
+      return FrostedScaffold(
+        useUtilitySurfaceTheme: true,
+        appBar: const FrostedAppBar(title: Text('Project')),
+        body: Center(child: body),
       );
     }
 
@@ -102,9 +108,90 @@ class ProjectPage extends ConsumerWidget {
     final channelsById = {for (final c in channels) c.id: c};
     final boundChannels = listProjectBoundChannels(project);
     final relayOrigin = snapshot?.scope.relayOrigin;
+    final repositories = {
+      for (final repository in project.repositories)
+        repository.repoAddress: repository.name,
+    };
+    final repositoryChannels = {
+      for (final repository in project.repositories)
+        repository.repoAddress: ?repository.channelId,
+    };
+    final repositoryCount =
+        project.repositories.length +
+        project.unavailableRepositoryAddresses.length;
 
-    return Scaffold(
-      appBar: AppBar(
+    Future<void> refresh() =>
+        Future.wait([retry(), refreshProjectTasks(ref, repositories.keys)]);
+
+    final Widget content = switch (tab.value) {
+      _ProjectTab.tasks =>
+        repositories.isEmpty
+            ? const ProjectEmptyState(
+                icon: LucideIcons.folderGit2,
+                message: 'Tasks need a repository in this project.',
+              )
+            : ProjectTasksSection(
+                key: const ValueKey('project-tasks'),
+                repositories: repositories,
+                channelId: project.projectChannelId,
+                repositoryChannels: repositoryChannels,
+              ),
+      _ProjectTab.channels =>
+        boundChannels.isEmpty
+            ? const ProjectEmptyState(
+                icon: LucideIcons.hash,
+                message: 'This project has no channels.',
+              )
+            : AppListCard(
+                dividerIndent: Grid.xs + 32 + Grid.xs,
+                verticalPadding: Grid.xxs,
+                children: [
+                  for (final bound in boundChannels)
+                    _ChannelRow(
+                      bound: bound,
+                      channel: channelsById[bound.channelId],
+                      repositoryName: _repositoryName(
+                        project,
+                        bound.repositoryId,
+                      ),
+                    ),
+                ],
+              ),
+      _ProjectTab.repositories =>
+        repositoryCount == 0
+            ? const ProjectEmptyState(
+                icon: LucideIcons.folderGit2,
+                message: 'This project has no repositories.',
+              )
+            : AppListCard(
+                dividerIndent: Grid.xs + 32 + Grid.xs,
+                verticalPadding: Grid.xxs,
+                children: [
+                  for (final repository in project.repositories)
+                    _RepositoryRow(
+                      repository: repository,
+                      relayOrigin: relayOrigin,
+                    ),
+                  if (project.unavailableRepositoryAddresses.isNotEmpty)
+                    AppListRowRaw(
+                      leading: const _RowIcon(icon: LucideIcons.folderX),
+                      title: Text(
+                        project.unavailableRepositoryAddresses.length == 1
+                            ? '1 repository is not available.'
+                            : '${project.unavailableRepositoryAddresses.length} '
+                                  'repositories are not available.',
+                        style: context.textTheme.bodyMedium?.copyWith(
+                          color: context.colors.onSurfaceVariant,
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+    };
+
+    return FrostedScaffold(
+      useUtilitySurfaceTheme: true,
+      appBar: FrostedAppBar(
         title: Text(project.name, maxLines: 1, overflow: TextOverflow.ellipsis),
         actions: [
           IconButton(
@@ -124,64 +211,53 @@ class ProjectPage extends ConsumerWidget {
           ),
         ],
       ),
+      floatingActionButton:
+          tab.value == _ProjectTab.tasks &&
+              viewer != null &&
+              repositories.isNotEmpty
+          ? NewProjectTaskButton(
+              onPressed: () => startProjectTask(
+                context,
+                ref,
+                repositories: repositories,
+                repositoryChannels: repositoryChannels,
+                channelId: project.projectChannelId,
+              ),
+            )
+          : null,
       body: RefreshIndicator(
-        onRefresh: retry,
+        edgeOffset: frostedAppBarHeight(context),
+        onRefresh: refresh,
         child: ListView(
-          padding: const EdgeInsets.only(bottom: Grid.lg),
+          physics: const AlwaysScrollableScrollPhysics(),
+          padding: EdgeInsets.only(
+            top: frostedAppBarHeight(context) + Grid.half,
+            bottom: MediaQuery.viewPaddingOf(context).bottom + Grid.xxxl,
+          ),
           children: [
             if (snapshotAsync.hasError && !snapshotAsync.isLoading)
-              _Notice(
+              ProjectNotice(
                 icon: LucideIcons.cloudAlert,
                 text: 'Could not refresh. This may be out of date.',
-                onRetry: retry,
+                actionLabel: 'Retry',
+                actionKey: const ValueKey('project-page-retry'),
+                onAction: retry,
               )
             else if (snapshot?.fromCache ?? false)
-              _Notice(
+              const ProjectNotice(
                 icon: LucideIcons.cloudOff,
                 text: 'Saved copy. It may be out of date.',
               ),
-            if (project.description.trim().isNotEmpty)
-              Padding(
-                padding: const EdgeInsets.fromLTRB(
-                  Grid.gutter,
-                  Grid.xs,
-                  Grid.gutter,
-                  Grid.xxs,
-                ),
-                child: Text(
-                  project.description.trim(),
-                  style: context.textTheme.bodyMedium,
-                ),
-              ),
-            _TasksRow(project: project),
-            const _SectionTitle('Channels'),
-            if (boundChannels.isEmpty)
-              const _EmptyRow('This project has no channels.')
-            else
-              for (final bound in boundChannels)
-                _ChannelRow(
-                  bound: bound,
-                  channel: channelsById[bound.channelId],
-                  repositoryName: _repositoryName(project, bound.repositoryId),
-                ),
-            const _SectionTitle('Repositories'),
-            if (project.repositories.isEmpty &&
-                project.unavailableRepositoryAddresses.isEmpty)
-              const _EmptyRow('This project has no repositories.')
-            else ...[
-              for (final repository in project.repositories)
-                _RepositoryRow(
-                  repository: repository,
-                  relayOrigin: relayOrigin,
-                ),
-              if (project.unavailableRepositoryAddresses.isNotEmpty)
-                _EmptyRow(
-                  project.unavailableRepositoryAddresses.length == 1
-                      ? '1 repository is not available.'
-                      : '${project.unavailableRepositoryAddresses.length} '
-                            'repositories are not available.',
-                ),
-            ],
+            _ProjectHero(
+              project: project,
+              channelCount: boundChannels.length,
+              repositoryCount: repositoryCount,
+            ),
+            _ProjectTabs(
+              selected: tab.value,
+              onSelected: (value) => tab.value = value,
+            ),
+            content,
           ],
         ),
       ),
@@ -197,125 +273,227 @@ String? _repositoryName(Project project, String? repositoryId) {
   return null;
 }
 
-class _SectionTitle extends StatelessWidget {
-  const _SectionTitle(this.label);
+class _ProjectTabs extends StatelessWidget {
+  const _ProjectTabs({required this.selected, required this.onSelected});
 
-  final String label;
+  final _ProjectTab selected;
+  final ValueChanged<_ProjectTab> onSelected;
+
+  static const _items = [
+    (tab: _ProjectTab.tasks, label: 'Tasks', icon: LucideIcons.listTodo),
+    (tab: _ProjectTab.channels, label: 'Channels', icon: LucideIcons.hash),
+    (
+      tab: _ProjectTab.repositories,
+      label: 'Repositories',
+      icon: LucideIcons.folderGit2,
+    ),
+  ];
 
   @override
   Widget build(BuildContext context) => Padding(
     padding: const EdgeInsets.fromLTRB(
       Grid.gutter,
-      Grid.sm,
-      Grid.gutter,
       Grid.xxs,
+      Grid.gutter,
+      Grid.half,
     ),
-    child: Semantics(
-      header: true,
-      child: Text(
-        label,
-        style: context.textTheme.titleSmall?.copyWith(
-          color: context.colors.onSurfaceVariant,
-          fontWeight: FontWeight.w600,
+    child: DecoratedBox(
+      decoration: BoxDecoration(
+        border: Border(
+          bottom: BorderSide(
+            color: context.colors.onSurface.withValues(alpha: 0.1),
+          ),
         ),
       ),
-    ),
-  );
-}
-
-class _EmptyRow extends StatelessWidget {
-  const _EmptyRow(this.text);
-
-  final String text;
-
-  @override
-  Widget build(BuildContext context) => Padding(
-    padding: const EdgeInsets.symmetric(
-      horizontal: Grid.gutter,
-      vertical: Grid.xxs,
-    ),
-    child: Text(
-      text,
-      style: context.textTheme.bodyMedium?.copyWith(
-        color: context.colors.onSurfaceVariant,
-      ),
-    ),
-  );
-}
-
-class _Notice extends StatelessWidget {
-  const _Notice({required this.icon, required this.text, this.onRetry});
-
-  final IconData icon;
-  final String text;
-  final VoidCallback? onRetry;
-
-  @override
-  Widget build(BuildContext context) => Padding(
-    padding: const EdgeInsets.fromLTRB(Grid.gutter, Grid.xs, Grid.gutter, 0),
-    child: Row(
-      children: [
-        Icon(icon, size: 16, color: context.colors.onSurfaceVariant),
-        const SizedBox(width: Grid.xxs),
-        Expanded(
-          child: Semantics(
-            liveRegion: onRetry != null,
-            child: Text(
-              text,
-              style: context.textTheme.bodySmall?.copyWith(
-                color: context.colors.onSurfaceVariant,
+      child: Row(
+        children: [
+          for (final item in _items)
+            Expanded(
+              child: _ProjectTabButton(
+                key: ValueKey('project-tab-${item.tab.name}'),
+                label: item.label,
+                icon: item.icon,
+                selected: item.tab == selected,
+                onTap: () => onSelected(item.tab),
               ),
             ),
-          ),
-        ),
-        if (onRetry case final onRetry?)
-          TextButton(
-            key: const ValueKey('project-page-retry'),
-            onPressed: onRetry,
-            child: const Text('Retry'),
-          ),
-      ],
+        ],
+      ),
     ),
   );
 }
 
-class _TasksRow extends StatelessWidget {
-  const _TasksRow({required this.project});
+class _ProjectTabButton extends StatelessWidget {
+  const _ProjectTabButton({
+    super.key,
+    required this.label,
+    required this.icon,
+    required this.selected,
+    required this.onTap,
+  });
 
-  final Project project;
+  final String label;
+  final IconData icon;
+  final bool selected;
+  final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
-    final repositories = project.repositories;
-    return ListTile(
-      key: const ValueKey('project-tasks'),
-      enabled: repositories.isNotEmpty,
-      leading: const Icon(LucideIcons.listTodo, size: 20),
-      title: const Text('Tasks'),
-      subtitle: repositories.isEmpty
-          ? const Text('Tasks need a repository in this project.')
-          : null,
-      trailing: const Icon(LucideIcons.chevronRight, size: 18),
-      onTap: repositories.isEmpty
-          ? null
-          : () => AdaptiveWorkspace.open(
-              context,
-              MaterialPageRoute<void>(
-                builder: (_) => ProjectTasksPage(
-                  repositories: {
-                    for (final repository in repositories)
-                      repository.repoAddress: repository.name,
-                  },
-                  channelId: project.projectChannelId,
-                  repositoryChannels: {
-                    for (final repository in repositories)
-                      repository.repoAddress: ?repository.channelId,
-                  },
-                ),
+    final color = selected
+        ? context.colors.onSurface
+        : context.colors.onSurfaceVariant;
+    return Semantics(
+      button: true,
+      selected: selected,
+      label: label,
+      excludeSemantics: true,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(Radii.md),
+        child: Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: Grid.twelve),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(icon, size: 16, color: color),
+                  const SizedBox(width: Grid.half + Grid.quarter),
+                  Flexible(
+                    child: Text(
+                      label,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: context.textTheme.labelLarge?.copyWith(
+                        color: color,
+                        fontWeight: selected
+                            ? FontWeight.w600
+                            : FontWeight.w500,
+                      ),
+                    ),
+                  ),
+                ],
               ),
             ),
+            AnimatedContainer(
+              duration: const Duration(milliseconds: 160),
+              height: 2,
+              margin: const EdgeInsets.symmetric(horizontal: Grid.xs),
+              decoration: BoxDecoration(
+                color: selected ? context.colors.onSurface : Colors.transparent,
+                borderRadius: BorderRadius.circular(Radii.full),
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
+}
+
+class _ProjectHero extends StatelessWidget {
+  const _ProjectHero({
+    required this.project,
+    required this.channelCount,
+    required this.repositoryCount,
+  });
+
+  final Project project;
+  final int channelCount;
+  final int repositoryCount;
+
+  @override
+  Widget build(BuildContext context) {
+    final description = project.description.trim();
+    final summary = [
+      channelCount == 1 ? '1 channel' : '$channelCount channels',
+      repositoryCount == 1 ? '1 repository' : '$repositoryCount repositories',
+    ].join(' · ');
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(
+        Grid.gutter,
+        Grid.xxs,
+        Grid.gutter,
+        Grid.xxs,
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            width: 52,
+            height: 52,
+            decoration: BoxDecoration(
+              color: context.colors.surfaceContainerHighest,
+              borderRadius: BorderRadius.circular(Radii.lg + Grid.half),
+            ),
+            child: Icon(
+              LucideIcons.folderKanban,
+              size: 24,
+              color: context.colors.onSurface,
+            ),
+          ),
+          const SizedBox(width: Grid.twelve),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  project.name,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: context.textTheme.titleLarge?.copyWith(
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                if (description.isNotEmpty) ...[
+                  const SizedBox(height: Grid.quarter),
+                  Text(
+                    description,
+                    maxLines: 3,
+                    overflow: TextOverflow.ellipsis,
+                    style: context.textTheme.bodyMedium?.copyWith(
+                      color: context.colors.onSurfaceVariant,
+                    ),
+                  ),
+                ],
+                const SizedBox(height: Grid.half),
+                Text(
+                  summary,
+                  style: context.textTheme.labelSmall?.copyWith(
+                    color: context.colors.onSurfaceVariant,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _RowIcon extends StatelessWidget {
+  const _RowIcon({required this.icon, this.enabled = true});
+
+  final IconData icon;
+  final bool enabled;
+
+  @override
+  Widget build(BuildContext context) => Container(
+    width: 32,
+    height: 32,
+    decoration: BoxDecoration(
+      color: context.colors.onSurface.withValues(alpha: 0.07),
+      borderRadius: BorderRadius.circular(Radii.md),
+    ),
+    child: Icon(
+      icon,
+      size: 16,
+      color: enabled
+          ? context.colors.onSurface
+          : context.colors.onSurfaceVariant,
+    ),
+  );
 }
 
 class _ChannelRow extends ConsumerWidget {
@@ -344,28 +522,43 @@ class _ChannelRow extends ConsumerWidget {
       if (channel == null) 'Not available to you',
       if (channel != null && !channel.isMember && channel.canJoin) 'Open',
     ].join(' · ');
+    final muted = context.textTheme.bodySmall?.copyWith(
+      color: context.colors.onSurfaceVariant,
+    );
 
-    return ListTile(
+    return KeyedSubtree(
       key: ValueKey('project-channel-${bound.channelId}'),
-      enabled: channel != null,
-      leading: Icon(
-        channel == null ? LucideIcons.hash : channelIcon(channel),
-        size: 20,
-      ),
-      title: Text(
-        channel == null ? 'Unavailable channel' : channel.name,
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-      ),
-      subtitle: subtitle.isEmpty ? null : Text(subtitle),
-      onTap: channel == null
-          ? null
-          : () => AdaptiveWorkspace.open(
-              context,
-              MaterialPageRoute<void>(
-                builder: (_) => ChannelDetailPage(channel: channel),
+      child: AppListRowRaw(
+        leading: _RowIcon(
+          icon: channel == null ? LucideIcons.hash : channelIcon(channel),
+          enabled: channel != null,
+        ),
+        title: Text(
+          channel == null ? 'Unavailable channel' : channel.name,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: context.textTheme.bodyLarge?.copyWith(
+            color: channel == null ? context.colors.onSurfaceVariant : null,
+          ),
+        ),
+        subtitle: subtitle.isEmpty ? null : Text(subtitle, style: muted),
+        trailing: channel == null
+            ? null
+            : Icon(
+                LucideIcons.chevronRight,
+                size: 18,
+                color: context.colors.onSurfaceVariant,
               ),
-            ),
+        verticalPadding: Grid.twelve,
+        onTap: channel == null
+            ? null
+            : () => AdaptiveWorkspace.open(
+                context,
+                MaterialPageRoute<void>(
+                  builder: (_) => ChannelDetailPage(channel: channel),
+                ),
+              ),
+      ),
     );
   }
 }
@@ -388,28 +581,39 @@ class _RepositoryRow extends StatelessWidget {
       UnresolvedRepoHost() => 'Location unknown',
     };
     final hostName = host is ExternalRepoHost ? host.host : null;
+    final muted = context.textTheme.bodySmall?.copyWith(
+      color: context.colors.onSurfaceVariant,
+    );
 
-    return ListTile(
+    return KeyedSubtree(
       key: ValueKey('project-repository-${repository.repoAddress}'),
-      leading: const Icon(LucideIcons.folderGit2, size: 20),
-      title: Text(
-        repository.name,
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
+      child: AppListRowRaw(
+        leading: const _RowIcon(icon: LucideIcons.folderGit2),
+        title: Text(
+          repository.name,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: context.textTheme.bodyLarge,
+        ),
+        subtitle: Text(
+          [?path, hostLabel].join('\n'),
+          maxLines: 2,
+          overflow: TextOverflow.ellipsis,
+          style: muted,
+        ),
+        trailing: externalUrl == null
+            ? null
+            : TextButton.icon(
+                key: ValueKey('project-repository-open-${repository.dtag}'),
+                style: TextButton.styleFrom(
+                  visualDensity: VisualDensity.compact,
+                ),
+                onPressed: () => _openExternal(context, externalUrl),
+                icon: const Icon(LucideIcons.externalLink, size: 14),
+                label: Text('Open on ${_shortHost(hostName)}'),
+              ),
+        verticalPadding: Grid.twelve,
       ),
-      subtitle: Text(
-        [?path, hostLabel].join('\n'),
-        maxLines: 2,
-        overflow: TextOverflow.ellipsis,
-      ),
-      isThreeLine: path != null,
-      trailing: externalUrl == null
-          ? null
-          : TextButton(
-              key: ValueKey('project-repository-open-${repository.dtag}'),
-              onPressed: () => _openExternal(context, externalUrl),
-              child: Text('Open on ${_shortHost(hostName)}'),
-            ),
     );
   }
 }

@@ -11,6 +11,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 final _owner = 'b' * 64;
 final _viewer = 'a' * 64;
+final _carol = 'c' * 64;
 final _repo = '30617:$_owner:app';
 final _secondRepo = '30617:$_owner:website';
 NostrEvent _event(
@@ -43,6 +44,7 @@ class _Profiles extends UserCacheNotifier {
   @override
   Map<String, UserProfile> build() => {
     _viewer: UserProfile(pubkey: _viewer, displayName: 'You'),
+    _carol: UserProfile(pubkey: _carol, displayName: 'Carol'),
   };
   @override
   Future<bool> preload(List<String> pubkeys) async => true;
@@ -56,6 +58,7 @@ void main() {
     Map<String, String>? repositories,
     bool accountSwitch = false,
     List<NostrEvent> history = const [],
+    String? viewer,
   }) async {
     SharedPreferences.setMockInitialValues({});
     final prefs = await SharedPreferences.getInstance();
@@ -67,7 +70,7 @@ void main() {
           (ref) =>
               accountSwitch && ref.watch(relayConfigProvider).nsec == 'second'
               ? 'd' * 64
-              : _viewer,
+              : viewer ?? _viewer,
         ),
         userCacheProvider.overrideWith(_Profiles.new),
         projectTaskTransportProvider.overrideWithValue(
@@ -149,30 +152,27 @@ void main() {
       expect(find.text('Save my task'), findsOneWidget);
       await tester.pageBack();
       await tester.pumpAndSettle();
-      expect(find.text('1 change(s) waiting for confirmation'), findsOneWidget);
+      expect(find.text('1 change is waiting to send.'), findsOneWidget);
       await tester.tap(find.byTooltip('Create task'));
       await tester.pumpAndSettle();
       expect(find.text('Save my task'), findsOneWidget);
       expect(find.text('Keep this body'), findsOneWidget);
     },
   );
-  testWidgets(
-    'repository switch does not show tasks from previous repository',
-    (tester) async {
-      await pump(
-        tester,
-        published: [],
-        repositories: {_repo: 'App', _secondRepo: 'Website'},
-      );
-      expect(find.text('Mobile project task'), findsOneWidget);
-      await tester.tap(find.text('App'));
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('Website').last);
-      await tester.pumpAndSettle();
-      expect(find.text('Mobile project task'), findsNothing);
-      expect(find.text('No tasks yet.'), findsOneWidget);
-    },
-  );
+  testWidgets('a multi-repository project lists each task once, labelled', (
+    tester,
+  ) async {
+    await pump(
+      tester,
+      published: [],
+      repositories: {_repo: 'App', _secondRepo: 'Website'},
+    );
+    // The relay returns the App task to both repository scans; only the App
+    // list keeps it.
+    expect(find.text('Mobile project task'), findsOneWidget);
+    expect(find.textContaining('App ·'), findsOneWidget);
+    expect(find.textContaining('Website'), findsNothing);
+  });
   for (final compose in [false, true]) {
     testWidgets(
       'same-community account switch hides ${compose ? 'compose' : 'detail'} actions',
@@ -251,5 +251,83 @@ void main() {
       find.text('Community or account changed. Reopen Tasks to continue.'),
       findsOneWidget,
     );
+  });
+  testWidgets('status filters split open and finished tasks', (tester) async {
+    await pump(
+      tester,
+      published: [],
+      history: [
+        _event(
+          '3',
+          kind: 1631,
+          tags: [
+            ['e', _event('1').id, '', 'root'],
+            ['a', _repo],
+          ],
+        ),
+      ],
+    );
+    expect(find.text('Mobile project task'), findsNothing);
+    expect(find.text('No open tasks.'), findsOneWidget);
+    await tester.tap(find.text('Finished (1)'));
+    await tester.pumpAndSettle();
+    expect(find.text('Mobile project task'), findsOneWidget);
+    expect(find.text('Done'), findsOneWidget);
+    await tester.tap(find.text('Assigned to me (0)'));
+    await tester.pumpAndSettle();
+    expect(find.text('No tasks assigned to you.'), findsOneWidget);
+  });
+  testWidgets('the owner assigns a channel member from the member sheet', (
+    tester,
+  ) async {
+    final published = <NostrEvent>[];
+    await pump(
+      tester,
+      published: published,
+      viewer: _owner,
+      history: [
+        _event(
+          '4',
+          kind: 39002,
+          tags: [
+            ['d', 'channel'],
+            ['p', _carol],
+          ],
+        ),
+      ],
+    );
+    await tester.tap(find.text('Mobile project task'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Assign a member'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Carol'));
+    await tester.pumpAndSettle();
+    expect(published.single.kind, 1);
+    expect(published.single.tags, contains(equals(['p', _carol])));
+    expect(published.single.tags, contains(equals(['t', 'assignment'])));
+  });
+  testWidgets('activity hides assignment changes the task state ignores', (
+    tester,
+  ) async {
+    List<List<String>> assign(String who) => [
+      ['e', _event('1').id, '', 'root'],
+      ['a', _repo],
+      ['p', who],
+      ['t', 'assignment'],
+    ];
+    await pump(
+      tester,
+      published: [],
+      history: [
+        // A member who is not the author or owner cannot assign Carol.
+        _event('5', kind: 1, signer: 'd' * 64, tags: assign(_carol)),
+        // The repository owner can.
+        _event('6', kind: 1, tags: assign(_viewer)),
+      ],
+    );
+    await tester.tap(find.text('Mobile project task'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('assigned Carol'), findsNothing);
+    expect(find.textContaining('assigned You'), findsOneWidget);
   });
 }

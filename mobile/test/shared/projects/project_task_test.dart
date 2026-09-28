@@ -251,6 +251,22 @@ void main() {
       expect(checked, [root().id]);
     },
   );
+  test('discovery keeps only tasks that verify as this repository', () async {
+    final other = event(
+      '1',
+      kind: 1621,
+      tags: [
+        ['a', '30617:$owner:unrelated'],
+      ],
+    );
+    final roots = await loadProjectTaskRoots(
+      repo,
+      (filter) async => [root()],
+      // A verifier that returns the event it checked earlier under this id.
+      verify: (events) async => [other],
+    );
+    expect(roots, isEmpty);
+  });
   test(
     'recipients and unauthorized assignment/status events do not confer authority',
     () {

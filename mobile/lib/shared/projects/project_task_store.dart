@@ -135,6 +135,8 @@ Future<List<NostrEvent>> loadProjectTaskRoots(
   Future<List<NostrEvent>> Function(NostrFilter) scan, {
   required Future<List<NostrEvent>> Function(List<NostrEvent>) verify,
 }) async {
+  bool inRepository(NostrEvent event) =>
+      event.kind == 1621 && event.getTagValue('a') == repoAddress;
   final roots = <String, NostrEvent>{};
   int? until;
   var limit = 500;
@@ -143,14 +145,18 @@ Future<List<NostrEvent>> loadProjectTaskRoots(
       NostrFilter(kinds: const [1621], limit: limit, until: until),
     );
     for (final event in page) {
-      if (event.kind == 1621 && event.getTagValue('a') == repoAddress) {
+      if (inRepository(event)) {
         roots[event.id] = event;
       }
     }
     if (roots.length >= 200 || page.length < limit) {
       final sorted = roots.values.toList()
         ..sort((a, b) => ProjectTask.compareEvents(b, a));
-      return verify(sorted.take(200).toList());
+      // Select again: verify may return the event it checked earlier
+      // under the same id.
+      return (await verify(
+        sorted.take(200).toList(),
+      )).where(inRepository).toList();
     }
     final oldest = page.map((e) => e.createdAt).reduce((a, b) => a < b ? a : b);
     if (until == null || oldest < until) {

@@ -11,6 +11,8 @@ use serde::Deserialize;
 
 const ISSUE_ASSIGNMENT_LABEL: &str = "assignment";
 const ISSUE_UNASSIGNMENT_LABEL: &str = "unassignment";
+/// NIP-43 relay membership list snapshot (relay-signed; clients cannot publish it).
+const KIND_RELAY_MEMBERSHIP_LIST: u32 = 13534;
 
 fn assignment_note_label(assignees: &[String], label: Option<&str>) -> Result<String, CliError> {
     if let Some(label) = label {
@@ -121,6 +123,60 @@ fn is_hex64(value: &str) -> bool {
     value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
+#[derive(Debug, Deserialize)]
+struct MembershipSnapshotEvent {
+    kind: u32,
+    created_at: u64,
+    tags: Vec<Vec<String>>,
+}
+
+/// Community owners from a kind:13534 snapshot: `["member", pk, role]` and
+/// `["p", pk, relay, role]` tags whose role is `owner`. The first tag for a
+/// pubkey wins, matching the Desktop parser. Admins are not included.
+fn community_owners_from_snapshot(tags: &[Vec<String>]) -> HashSet<String> {
+    let mut seen = HashSet::new();
+    let mut owners = HashSet::new();
+    for tag in tags {
+        let (pubkey, role) = match tag.as_slice() {
+            [name, pubkey, role, ..] if name == "member" => (pubkey, Some(role)),
+            [name, pubkey] if name == "member" => (pubkey, None),
+            [name, pubkey, _relay, role, ..] if name == "p" => (pubkey, Some(role)),
+            [name, pubkey, ..] if name == "p" => (pubkey, None),
+            _ => continue,
+        };
+        let pubkey = pubkey.trim().to_ascii_lowercase();
+        if !is_hex64(&pubkey) || !seen.insert(pubkey.clone()) {
+            continue;
+        }
+        if role.map(String::as_str) == Some("owner") {
+            owners.insert(pubkey);
+        }
+    }
+    owners
+}
+
+/// Load the community-owner set from the relay membership snapshot.
+///
+/// An open relay publishes no snapshot, which yields the empty set: exactly
+/// the pre-community-owner trust rules (issue author and repo owner only). A
+/// failed or unreadable lookup is an error, not an empty set, so the command
+/// never publishes on a guess about the signer's authority.
+async fn fetch_community_owners(client: &BuzzClient) -> Result<HashSet<String>, CliError> {
+    let filter = serde_json::json!({
+        "kinds": [KIND_RELAY_MEMBERSHIP_LIST],
+        "limit": 1
+    });
+    let response = client.query(&filter).await?;
+    let events = serde_json::from_str::<Vec<MembershipSnapshotEvent>>(&response)
+        .map_err(|error| CliError::Other(format!("parse community members: {error}")))?;
+    Ok(events
+        .into_iter()
+        .filter(|event| event.kind == KIND_RELAY_MEMBERSHIP_LIST)
+        .max_by_key(|event| event.created_at)
+        .map(|event| community_owners_from_snapshot(&event.tags))
+        .unwrap_or_default())
+}
+
 fn apply_assignment_operation(state: &mut AssignmentState, operation: ParsedAssignmentOperation) {
     if let Some(prior) = operation.prior.as_ref() {
         let Some(target) = operation.pubkeys.first() else {
@@ -140,10 +196,14 @@ fn apply_assignment_operation(state: &mut AssignmentState, operation: ParsedAssi
     }
 }
 
+/// Reduce trusted assignment operations for one issue. The issue author, repo
+/// owner, and `community_owners` (lowercase hex) may change anyone; everyone
+/// else may only change themselves.
 fn reduce_assignment_operations(
     issue_id: &str,
     issue_author: &str,
     repo_owner: &str,
+    community_owners: &HashSet<String>,
     events: &[AssignmentEvent],
 ) -> AssignmentState {
     let issue_author = issue_author.to_ascii_lowercase();
@@ -173,7 +233,8 @@ fn reduce_assignment_operations(
             .into_iter()
             .map(str::to_ascii_lowercase)
             .collect::<Vec<_>>();
-        let is_authoritative = signer == issue_author || signer == repo_owner;
+        let is_authoritative =
+            signer == issue_author || signer == repo_owner || community_owners.contains(&signer);
         let is_self_operation = pubkeys.len() == 1 && pubkeys[0] == signer;
         if !is_authoritative && !is_self_operation {
             continue;
@@ -300,8 +361,8 @@ async fn resolve_issue_repo_target(
 
 /// Publish an issue assignment: a kind:1 comment on the issue whose `p`
 /// tags are the assignees, labeled `t: assignment` (same event shape the
-/// Desktop app writes). Clients trust it when signed by the issue author
-/// or repo owner, or when it is a self-assignment.
+/// Desktop app writes). Clients trust it when signed by the issue author,
+/// the repo owner, or a community owner, or when it is a self-assignment.
 pub async fn cmd_assign_issue(
     client: &BuzzClient,
     issue: &str,
@@ -367,10 +428,22 @@ async fn publish_issue_assignment_operation(
         id: repo_id.to_string(),
     };
     let signer = client.keys().public_key().to_hex();
+    let community_owners = fetch_community_owners(client).await?;
+    // Community owners are authorities, so like the repo owner they never
+    // need a causal `prior`, even when naming themselves.
     let is_self_service = assignees.len() == 1
         && assignees[0].eq_ignore_ascii_case(&signer)
-        && !signer.eq_ignore_ascii_case(repo_owner);
-    let context = issue_assignment_context(client, issue, &repo, &signer, is_self_service).await?;
+        && !signer.eq_ignore_ascii_case(repo_owner)
+        && !community_owners.contains(&signer.to_ascii_lowercase());
+    let context = issue_assignment_context(
+        client,
+        issue,
+        &repo,
+        &signer,
+        is_self_service,
+        &community_owners,
+    )
+    .await?;
     let builder = match (operation, is_self_service) {
         (IssueAssignmentOperation::Assign, true) => {
             buzz_sdk::build_git_issue_assignment_with_prior(
@@ -410,6 +483,7 @@ async fn issue_assignment_context(
     repo: &GitRepoCoord,
     signer: &str,
     include_prior: bool,
+    community_owners: &HashSet<String>,
 ) -> Result<IssueAssignmentContext, CliError> {
     let root_filter = serde_json::json!({
         "kinds": [1621],
@@ -468,10 +542,16 @@ async fn issue_assignment_context(
         .max(latest.saturating_add(1));
     let prior = include_prior
         .then(|| {
-            reduce_assignment_operations(issue, &root.pubkey, &repo.owner, &comments)
-                .heads
-                .get(&signer.to_ascii_lowercase())
-                .cloned()
+            reduce_assignment_operations(
+                issue,
+                &root.pubkey,
+                &repo.owner,
+                community_owners,
+                &comments,
+            )
+            .heads
+            .get(&signer.to_ascii_lowercase())
+            .cloned()
         })
         .flatten();
     Ok(IssueAssignmentContext { created_at, prior })
@@ -688,15 +768,20 @@ pub async fn dispatch(cmd: crate::IssuesCmd, client: &BuzzClient) -> Result<(), 
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+
     use super::{
-        assignment_note_label, reduce_assignment_operations, AssignmentEvent, AssignmentQueryEvent,
-        ISSUE_ASSIGNMENT_LABEL, ISSUE_UNASSIGNMENT_LABEL,
+        assignment_note_label, community_owners_from_snapshot, reduce_assignment_operations,
+        AssignmentEvent, AssignmentQueryEvent, ISSUE_ASSIGNMENT_LABEL, ISSUE_UNASSIGNMENT_LABEL,
     };
 
     const ISSUE: &str = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
     const AUTHOR: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
     const OWNER: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     const VOLUNTEER: &str = "5555555555555555555555555555555555555555555555555555555555555555";
+    const COMMUNITY_OWNER: &str =
+        "9999999999999999999999999999999999999999999999999999999999999999";
+    const MEMBER: &str = "8888888888888888888888888888888888888888888888888888888888888888";
 
     fn assignment_event(
         pubkey: &str,
@@ -771,6 +856,7 @@ mod tests {
             ISSUE,
             AUTHOR,
             OWNER,
+            &HashSet::new(),
             &[
                 assignment_event(VOLUNTEER, &"2".repeat(64), true, 1_000, None),
                 assignment_event(OWNER, &owner_unassign, false, 200, None),
@@ -784,6 +870,7 @@ mod tests {
             ISSUE,
             AUTHOR,
             OWNER,
+            &HashSet::new(),
             &[
                 assignment_event(VOLUNTEER, &"4".repeat(64), false, 1_000, None),
                 assignment_event(OWNER, &owner_assign, true, 200, None),
@@ -801,6 +888,7 @@ mod tests {
             ISSUE,
             AUTHOR,
             OWNER,
+            &HashSet::new(),
             &[
                 assignment_event(OWNER, &owner_assign, true, 200, None),
                 assignment_event(VOLUNTEER, &self_unassign, false, 300, Some(&owner_assign)),
@@ -815,6 +903,7 @@ mod tests {
             ISSUE,
             AUTHOR,
             OWNER,
+            &HashSet::new(),
             &[
                 assignment_event(OWNER, &owner_unassign, false, 200, None),
                 assignment_event(VOLUNTEER, &self_assign, true, 300, Some(&owner_unassign)),
@@ -832,6 +921,7 @@ mod tests {
             ISSUE,
             AUTHOR,
             OWNER,
+            &HashSet::new(),
             &[
                 assignment_event(OWNER, &initial_assign, true, 100, None),
                 assignment_event(OWNER, &owner_unassign, false, 200, None),
@@ -841,5 +931,88 @@ mod tests {
 
         assert!(!state.assignees.contains(VOLUNTEER));
         assert_eq!(state.heads.get(VOLUNTEER), Some(&owner_unassign));
+    }
+
+    #[test]
+    fn community_owner_may_change_other_assignees() {
+        let owners = HashSet::from([COMMUNITY_OWNER.to_string()]);
+        let owner_assign = "1".repeat(64);
+        let state = reduce_assignment_operations(
+            ISSUE,
+            AUTHOR,
+            OWNER,
+            &owners,
+            &[assignment_event(
+                COMMUNITY_OWNER,
+                &owner_assign,
+                true,
+                200,
+                None,
+            )],
+        );
+        assert!(state.assignees.contains(VOLUNTEER));
+        assert_eq!(state.heads.get(VOLUNTEER), Some(&owner_assign));
+
+        // An uncaused future-dated self-unassignment loses to the community
+        // owner, exactly as it does to the repo owner.
+        let state = reduce_assignment_operations(
+            ISSUE,
+            AUTHOR,
+            OWNER,
+            &owners,
+            &[
+                assignment_event(VOLUNTEER, &"2".repeat(64), false, 1_000, None),
+                assignment_event(COMMUNITY_OWNER, &owner_assign, true, 200, None),
+            ],
+        );
+        assert!(state.assignees.contains(VOLUNTEER));
+    }
+
+    #[test]
+    fn community_owner_is_untrusted_without_owner_set_and_members_stay_untrusted() {
+        let state = reduce_assignment_operations(
+            ISSUE,
+            AUTHOR,
+            OWNER,
+            &HashSet::new(),
+            &[assignment_event(
+                COMMUNITY_OWNER,
+                &"1".repeat(64),
+                true,
+                200,
+                None,
+            )],
+        );
+        assert!(state.assignees.is_empty());
+
+        let owners = HashSet::from([COMMUNITY_OWNER.to_string()]);
+        let state = reduce_assignment_operations(
+            ISSUE,
+            AUTHOR,
+            OWNER,
+            &owners,
+            &[assignment_event(MEMBER, &"2".repeat(64), true, 200, None)],
+        );
+        assert!(state.assignees.is_empty());
+    }
+
+    #[test]
+    fn community_owners_parse_member_and_p_tags_with_owner_role_only() {
+        let admin = "c".repeat(64);
+        let p_owner = "d".repeat(64);
+        let tag = |values: &[&str]| values.iter().map(|value| value.to_string()).collect();
+        let owners = community_owners_from_snapshot(&[
+            tag(&["member", &COMMUNITY_OWNER.to_ascii_uppercase(), "owner"]),
+            tag(&["p", &p_owner, "wss://relay.example", "owner"]),
+            tag(&["member", &admin, "admin"]),
+            tag(&["member", MEMBER]),
+            // First tag for a pubkey wins; a later owner claim is ignored.
+            tag(&["p", MEMBER, "", "owner"]),
+            tag(&["member", "not-hex", "owner"]),
+        ]);
+        assert_eq!(
+            owners,
+            HashSet::from([COMMUNITY_OWNER.to_string(), p_owner])
+        );
     }
 }

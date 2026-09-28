@@ -4,6 +4,8 @@ import test from "node:test";
 import {
   canManageCommunityMembers,
   loadRelayMembershipLookup,
+  relayMembersFromEvent,
+  relayOwnerPubkeys,
   shouldWarnMissingMembershipSnapshot,
 } from "./relayMembers.ts";
 
@@ -111,4 +113,29 @@ test("an available snapshot never warns", () => {
     }),
     false,
   );
+});
+
+test("community owners are relay-role owners only, from member and p tags", () => {
+  const owner = "a".repeat(64);
+  const pOwner = "b".repeat(64);
+  const admin = "c".repeat(64);
+  const member = "d".repeat(64);
+  const members = relayMembersFromEvent({
+    id: "e".repeat(64),
+    kind: 13534,
+    pubkey: "f".repeat(64),
+    created_at: 1,
+    content: "",
+    sig: "",
+    tags: [
+      ["member", owner.toUpperCase(), "owner"],
+      ["p", pOwner, "wss://relay.example", "owner"],
+      ["member", admin, "admin"],
+      ["member", member, "member"],
+    ],
+  });
+
+  assert.deepEqual(relayOwnerPubkeys(members), [owner, pOwner]);
+  assert.deepEqual(relayOwnerPubkeys(undefined), []);
+  assert.deepEqual(relayOwnerPubkeys([]), []);
 });

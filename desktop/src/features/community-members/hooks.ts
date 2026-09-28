@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import * as React from "react";
 
 import {
   addRelayMember,
@@ -6,6 +7,7 @@ import {
   getMyRelayMembership,
   getMyRelayMembershipLookup,
   listRelayMembers,
+  relayOwnerPubkeys,
   removeRelayMember,
 } from "@/shared/api/relayMembers";
 import type { RelayMember } from "@/shared/api/types";
@@ -23,6 +25,18 @@ export function useRelayMembersQuery(enabled = true) {
     queryFn: listRelayMembers,
     staleTime: 30_000,
   });
+}
+
+/**
+ * Sorted lowercase pubkeys of community owners (relay role `owner`). Empty
+ * while membership is loading, unavailable (open relay), or failed.
+ */
+export function useCommunityOwnerPubkeys(): string[] {
+  const membersQuery = useRelayMembersQuery();
+  return React.useMemo(
+    () => relayOwnerPubkeys(membersQuery.data),
+    [membersQuery.data],
+  );
 }
 
 export function useMyRelayMembershipQuery() {

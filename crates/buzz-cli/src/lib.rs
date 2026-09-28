@@ -1852,9 +1852,10 @@ pub enum IssuesCmd {
         #[arg(long = "to")]
         to: Vec<String>,
     },
-    /// Assign an issue to one or more people or agents. Only assignments
-    /// signed by the issue author or repo owner are trusted by clients;
-    /// anyone may assign themselves (sole assignee = your own pubkey).
+    /// Assign an issue to one or more people or agents. Assignments of other
+    /// people are trusted by clients when signed by the issue author, the
+    /// repository owner, or a community owner; anyone may assign themselves
+    /// (sole assignee = your own pubkey).
     Assign {
         /// Issue event id (64-char hex)
         #[arg(long)]
@@ -1873,8 +1874,9 @@ pub enum IssuesCmd {
         #[arg(long)]
         label: Option<String>,
     },
-    /// Remove one or more assignees from an issue. Issue authors and repo
-    /// owners may remove anyone; other users may remove only themselves.
+    /// Remove one or more assignees from an issue. Issue authors, repository
+    /// owners, and community owners may remove anyone; other users may remove
+    /// only themselves.
     Unassign {
         /// Issue event id (64-char hex)
         #[arg(long)]

@@ -1335,9 +1335,10 @@ pub fn build_git_issue(
 /// Tag layout: `["e", <issue>, "", "root"]`, `["a", <repo>]`, one `["p", ..]`
 /// per assignee, and `["t", "assignment"]`.
 ///
-/// Clients only trust assignments signed by the issue author or the repo
-/// owner (who may assign anyone), or a self-assignment whose sole assignee
-/// is the signer. Assignments from other signers are ignored on read.
+/// Clients only trust assignments signed by the issue author, the repo
+/// owner, or a community owner (relay role `owner`), who may assign anyone,
+/// or a self-assignment whose sole assignee is the signer. Assignments from
+/// other signers are ignored on read.
 pub fn build_git_issue_assignment(
     repo: &GitRepoCoord,
     issue_id: &str,
@@ -1371,8 +1372,9 @@ pub fn build_git_issue_assignment_with_prior(
 /// Build an issue unassignment note (kind:1) whose `p` tags name the people
 /// being removed and whose operation label is `t: unassignment`.
 ///
-/// Clients trust unassignments signed by the issue author or repository owner,
-/// or a self-unassignment whose sole `p` tag is the signer.
+/// Clients trust unassignments signed by the issue author, the repository
+/// owner, or a community owner, or a self-unassignment whose sole `p` tag is
+/// the signer.
 pub fn build_git_issue_unassignment(
     repo: &GitRepoCoord,
     issue_id: &str,

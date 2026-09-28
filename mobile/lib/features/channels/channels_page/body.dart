@@ -127,6 +127,7 @@ class _SliverChannelsList extends HookConsumerWidget {
       currentPubkey: currentPubkey,
     );
 
+    final projectsVisible = _projectsSectionVisible(ref);
     final starredExpanded = useState(true);
     final channelsExpanded = useState(true);
     final forumsExpanded = useState(true);
@@ -262,6 +263,7 @@ class _SliverChannelsList extends HookConsumerWidget {
                 onSortModeChange: (mode) => setSortMode('starred', mode),
                 onSelectChannel: onSelectChannel,
               ),
+            _ProjectsSection(showTopDivider: starredStreamChannels.isNotEmpty),
             // User-defined sections for stream channels, in user-defined order.
             for (final section in userSections)
               _CustomChannelSection(
@@ -284,6 +286,7 @@ class _SliverChannelsList extends HookConsumerWidget {
                 isLast: userSections.last.id == section.id,
                 showTopDivider:
                     starredStreamChannels.isNotEmpty ||
+                    projectsVisible ||
                     userSections.first.id != section.id,
                 onToggle: () => toggleSection(section.id),
                 onRename: () async {
@@ -362,7 +365,9 @@ class _SliverChannelsList extends HookConsumerWidget {
               title: 'Channels',
               icon: LucideIcons.hash,
               showTopDivider:
-                  starredStreamChannels.isNotEmpty || userSections.isNotEmpty,
+                  starredStreamChannels.isNotEmpty ||
+                  projectsVisible ||
+                  userSections.isNotEmpty,
               expanded: channelsExpanded.value,
               onToggle: () => channelsExpanded.value = !channelsExpanded.value,
               channels: ungroupedStreamChannels,

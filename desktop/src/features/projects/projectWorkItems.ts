@@ -83,13 +83,17 @@ function groupByRepoAddress(events: RelayEvent[]): Map<string, RelayEvent[]> {
 
 type FetchEventsInput = Parameters<(typeof relayClient)["fetchEvents"]>[0];
 
-/** Loads aggregate issue and pull-request data with bounded relay fan-out. */
+/**
+ * Loads aggregate issue and pull-request data with bounded relay fan-out.
+ * `communityOwners` are trusted for issue status and assignment (not PRs).
+ */
 export async function fetchProjectsWorkItems<TProject extends ProjectReference>(
   projects: TProject[],
   fetchEvents: (
     filter: FetchEventsInput,
   ) => Promise<RelayEvent[]> = relayClient.fetchEvents.bind(relayClient),
   signal?: AbortSignal,
+  communityOwners: readonly string[] = [],
 ): Promise<ProjectsWorkItemsResult<TProject>> {
   const repoAddresses = [
     ...new Set(
@@ -210,6 +214,7 @@ export async function fetchProjectsWorkItems<TProject extends ProjectReference>(
           ),
           statusesByRepo.get(repository.repoAddress) ?? [],
           commentsByRepo.get(repository.repoAddress) ?? [],
+          communityOwners,
         ).map((issue) => ({ issue, project, repository })),
       ),
     )

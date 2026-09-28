@@ -91,7 +91,7 @@ export function IssueAssigneeFacepile({
 
 /** Assignee avatars and the assignment picker for an issue.
  *
- * The issue author, repo owner, or managed-agent owner
+ * The issue author, repo owner, community owner, or managed-agent owner
  * (`canAssignOthers`) get the full people/agent picker. Everyone else
  * who is signed in gets a self-assign button — readers trust an
  * assignment whose only assignee is its signer (see `projectIssues.mjs`).

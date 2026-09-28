@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import * as React from "react";
 
+import { useCommunityOwnerPubkeys } from "@/features/community-members/hooks";
 import { relayClient } from "@/shared/api/relayClient";
 import { getRelaySelf } from "@/features/moderation/lib/relaySelf";
 import { signRelayEvent } from "@/shared/api/tauri";
@@ -202,6 +203,7 @@ export async function fetchRepoState(
 
 async function fetchProjectIssues(
   project: Repository,
+  communityOwners: readonly string[],
 ): Promise<ProjectIssue[]> {
   const issuePromise = relayClient.fetchEvents({
     kinds: [KIND_GIT_ISSUE],
@@ -239,6 +241,7 @@ async function fetchProjectIssues(
     issueEvents,
     statusEvents,
     mergeEventsById(commentEvents, assignmentEvents),
+    communityOwners,
   );
 }
 
@@ -803,14 +806,41 @@ export function useProjectLocalRepositoriesQuery(reposDir?: string | null) {
   });
 }
 
+/**
+ * Issue trust depends on the community-owner set, which is the last element of
+ * issue query keys. While only that set changes (membership finished loading),
+ * keep showing the previous result instead of flashing back to loading.
+ */
+function onlyCommunityOwnersChanged(
+  previousKey: readonly unknown[] | undefined,
+  nextKey: readonly unknown[],
+): boolean {
+  return (
+    previousKey !== undefined &&
+    JSON.stringify(previousKey.slice(0, -1)) ===
+      JSON.stringify(nextKey.slice(0, -1))
+  );
+}
+
 export function useProjectIssuesQuery(project: Repository | null | undefined) {
+  const communityOwners = useCommunityOwnerPubkeys();
+  const queryKey = [
+    "project",
+    project?.id ?? "none",
+    "issues",
+    communityOwners,
+  ] as const;
   return useQuery({
     enabled: Boolean(project),
-    queryKey: ["project", project?.id ?? "none", "issues"],
+    queryKey,
     queryFn: () => {
       if (!project) throw new Error("No project selected.");
-      return fetchProjectIssues(project);
+      return fetchProjectIssues(project, communityOwners);
     },
+    placeholderData: (previous, previousQuery) =>
+      onlyCommunityOwnersChanged(previousQuery?.queryKey, queryKey)
+        ? previous
+        : undefined,
     staleTime: 30_000,
   });
 }
@@ -831,23 +861,30 @@ export function useProjectPullRequestsQuery(
 
 /** Loads cross-project issues and pull requests with partial-failure metadata. */
 export function useProjectsWorkItemsQuery(projects: Project[]) {
+  const communityOwners = useCommunityOwnerPubkeys();
+  const queryKey = [
+    "projects",
+    "work-items",
+    projects.map((project) => project.id),
+    // Repo attach/detach changes the fan-out inputs without changing
+    // project ids; keying on addresses too prevents a pre-attach result
+    // from serving as fresh for the whole staleTime window.
+    projects
+      .flatMap((project) =>
+        project.repositories.map((repository) => repository.repoAddress),
+      )
+      .sort(),
+    communityOwners,
+  ] as const;
   return useQuery({
     enabled: projects.length > 0,
-    queryKey: [
-      "projects",
-      "work-items",
-      projects.map((project) => project.id),
-      // Repo attach/detach changes the fan-out inputs without changing
-      // project ids; keying on addresses too prevents a pre-attach result
-      // from serving as fresh for the whole staleTime window.
-      projects
-        .flatMap((project) =>
-          project.repositories.map((repository) => repository.repoAddress),
-        )
-        .sort(),
-    ],
+    queryKey,
     queryFn: ({ signal }) =>
-      fetchProjectsWorkItems(projects, undefined, signal),
+      fetchProjectsWorkItems(projects, undefined, signal, communityOwners),
+    placeholderData: (previous, previousQuery) =>
+      onlyCommunityOwnersChanged(previousQuery?.queryKey, queryKey)
+        ? previous
+        : undefined,
     staleTime: PROJECT_WORK_ITEMS_STALE_TIME_MS,
   });
 }

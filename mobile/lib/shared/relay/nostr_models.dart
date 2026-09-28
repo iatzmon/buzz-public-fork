@@ -29,6 +29,12 @@ abstract final class EventKind {
   static const readState = 30078;
   static const eventReminder = 30300;
   static const userStatus = 30315;
+
+  /// Kind:30617 NIP-34 repository announcement.
+  static const repoAnnouncement = 30617;
+
+  /// Kind:30621 NIP-MP project announcement grouping repositories.
+  static const projectAnnouncement = 30621;
   static const dmVisibility = 30622;
   static const streamMessageV2 = 40002;
   static const channelThreadSummary = 39005;

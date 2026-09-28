@@ -270,6 +270,41 @@ test("an assignment older than 600 newer comments still reduces to an assignee",
   );
 });
 
+test("fetchProjectsWorkItems trusts community-owner assignments and statuses", async () => {
+  const communityOwner = "c".repeat(64);
+  const issue = makeIssue();
+  const ownerAssignment = {
+    ...makeAssignment(eventId(7), 200),
+    pubkey: communityOwner,
+  };
+  const ownerClosed = {
+    id: eventId(8),
+    kind: 1632,
+    pubkey: communityOwner,
+    created_at: 300,
+    content: "",
+    tags: [
+      ["e", ISSUE_ID, "", "root"],
+      ["a", REPO_ADDRESS],
+    ],
+  };
+  const { fetchEvents } = makeRelayModel([issue, ownerAssignment, ownerClosed]);
+  const projects = [{ repositories: [{ repoAddress: REPO_ADDRESS }] }];
+
+  const trusted = await fetchProjectsWorkItems(
+    projects,
+    fetchEvents,
+    undefined,
+    [communityOwner],
+  );
+  assert.deepEqual(trusted.issues.items[0].issue.assignees, [ASSIGNEE]);
+  assert.equal(trusted.issues.items[0].issue.status, "Closed");
+
+  const untrusted = await fetchProjectsWorkItems(projects, fetchEvents);
+  assert.deepEqual(untrusted.issues.items[0].issue.assignees, []);
+  assert.equal(untrusted.issues.items[0].issue.status, "Backlog");
+});
+
 test("a failed assignment query surfaces as a failed section instead of silent loss", async () => {
   const issue = makeIssue();
   const fetchEvents = async (filter) => {

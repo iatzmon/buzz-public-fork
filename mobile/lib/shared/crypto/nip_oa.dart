@@ -72,9 +72,27 @@ final _lowercaseHex = RegExp(r'^[0-9a-f]+$');
 ///   wall-clock time.
 String? verifiedProfileOaOwnerPubkey(NostrEvent profile) {
   if (profile.kind != 0) return null;
+  final tag = _singleCanonicalAuthTag(profile);
+  if (tag == null) return null;
+  if (!_validEventSignature(profile)) return null;
+  return _attestedOwner(tag, profile);
+}
 
+/// The verified NIP-OA owner attested by the `auth` tag of `event`, with the
+/// same tag rules as [verifiedProfileOaOwnerPubkey] (exactly one `auth` tag,
+/// canonical lowercase hex, every condition holding for `event`), for any
+/// event kind.
+///
+/// Does not check the event's own id and signature: callers pass events that
+/// are already verified.
+String? attestedOaOwnerPubkey(NostrEvent event) {
+  final tag = _singleCanonicalAuthTag(event);
+  return tag == null ? null : _attestedOwner(tag, event);
+}
+
+List<String>? _singleCanonicalAuthTag(NostrEvent event) {
   final authTags = [
-    for (final tag in profile.tags)
+    for (final tag in event.tags)
       if (tag.isNotEmpty && tag[0] == 'auth') tag,
   ];
   if (authTags.length != 1) return null;
@@ -83,12 +101,13 @@ String? verifiedProfileOaOwnerPubkey(NostrEvent profile) {
   if (!_lowercaseHex.hasMatch(tag[1]) || !_lowercaseHex.hasMatch(tag[3])) {
     return null;
   }
+  return tag;
+}
 
-  if (!_validEventSignature(profile)) return null;
-
-  final owner = verifiedOaOwnerPubkey([tag], profile.pubkey);
+String? _attestedOwner(List<String> tag, NostrEvent event) {
+  final owner = verifiedOaOwnerPubkey([tag], event.pubkey);
   if (owner == null) return null;
-  return _conditionsHold(tag[2], profile) ? owner : null;
+  return _conditionsHold(tag[2], event) ? owner : null;
 }
 
 bool _validEventSignature(NostrEvent event) {

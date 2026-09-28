@@ -54,15 +54,23 @@ export const PROJECT_ISSUE_STATUS: {
 export function getTag(event: RelayEvent, name: string): string | undefined;
 export function getAllTags(event: RelayEvent, name: string): string[];
 export function getImetaTags(event: RelayEvent): string[][];
+/**
+ * Reduce an issue root and its related events into a {@link ProjectIssue}.
+ * `communityOwners` (lowercase hex pubkeys with the relay `owner` role) are
+ * trusted like the issue author and repo owner for status and assignment.
+ */
 export function eventToProjectIssue(
   issue: RelayEvent,
   statusEvents?: RelayEvent[],
   commentEvents?: RelayEvent[],
+  communityOwners?: Iterable<string>,
 ): ProjectIssue;
+/** Reduce issue roots into issues, newest activity first. */
 export function projectIssueEventsToIssues(
   issueEvents: RelayEvent[],
   statusEvents?: RelayEvent[],
   commentEvents?: RelayEvent[],
+  communityOwners?: Iterable<string>,
 ): ProjectIssue[];
 export function nextProjectIssueCommentCreatedAt(
   issue: ProjectIssue,

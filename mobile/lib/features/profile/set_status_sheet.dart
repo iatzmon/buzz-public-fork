@@ -1,5 +1,4 @@
 import 'package:flutter/cupertino.dart';
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_hooks/flutter_hooks.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
@@ -17,6 +16,7 @@ import '../../shared/widgets/modal_presentation.dart';
 import '../channels/emoji_picker.dart';
 import 'user_status.dart';
 import 'user_status_provider.dart';
+import '../../shared/utils/native_platform.dart';
 
 const _emojiWellSize = 48.0;
 const _emojiGlyphSize = 28.0;
@@ -425,7 +425,7 @@ Future<DateTime?> _showNativeDateTimePicker(
   final minimum = now.add(const Duration(minutes: 5));
   final safeInitial = initial.isAfter(minimum) ? initial : minimum;
 
-  if (defaultTargetPlatform == TargetPlatform.iOS) {
+  if (isNativeIos) {
     var selected = safeInitial;
     return showCupertinoModalPopup<DateTime>(
       context: context,

@@ -8,6 +8,7 @@ import '../../shared/theme/theme.dart';
 import '../../shared/widgets/buzz_sheet_header.dart';
 import '../../shared/widgets/ios_glass_navigation_button.dart';
 import 'profile_provider.dart';
+import '../../shared/utils/native_platform.dart';
 
 /// Flutter fallback sheet for editing one profile text field.
 class ProfileTextEditSheet extends HookWidget {
@@ -68,7 +69,7 @@ class ProfileTextEditSheet extends HookWidget {
       }
     }
 
-    final closeButton = Theme.of(context).platform == TargetPlatform.iOS
+    final closeButton = usesNativeIos(context)
         ? IosGlassNavigationButton(
             key: const ValueKey('profile-field-close'),
             icon: IosGlassNavigationIcon.close,

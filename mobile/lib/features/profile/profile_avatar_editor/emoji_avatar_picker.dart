@@ -179,11 +179,7 @@ class _EmojiMode extends HookConsumerWidget {
                                       padding: EdgeInsets.zero,
                                       gridDelegate:
                                           SliverGridDelegateWithFixedCrossAxisCount(
-                                            crossAxisCount:
-                                                defaultTargetPlatform ==
-                                                    TargetPlatform.iOS
-                                                ? 8
-                                                : 7,
+                                            crossAxisCount: isNativeIos ? 8 : 7,
                                           ),
                                       itemCount: visibleEmoji.length,
                                       itemBuilder: (context, index) {
@@ -314,7 +310,7 @@ class _AvatarSkinToneSelector extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final selected = _skinTones[_validSkinTone(value)];
-    if (defaultTargetPlatform == TargetPlatform.iOS) {
+    if (isNativeIos) {
       return IosNativeSkinToneControl(
         key: const ValueKey('emoji-avatar-skin-tone'),
         value: value,

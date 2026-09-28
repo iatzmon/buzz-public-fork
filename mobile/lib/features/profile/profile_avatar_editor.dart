@@ -29,6 +29,7 @@ import 'emoji_avatar_tile.dart';
 import 'image_avatar_capture.dart';
 import 'profile_avatar_crop_page.dart';
 import 'profile_avatar_draft.dart';
+import '../../shared/utils/native_platform.dart';
 
 part 'profile_avatar_editor/emoji_avatar_picker.dart';
 
@@ -466,7 +467,7 @@ class ProfileAvatarEditor extends HookConsumerWidget {
                   scale: Tween(begin: 0.96, end: 1.0).animate(curvedEntrance),
                   child: Builder(
                     builder: (context) {
-                      if (defaultTargetPlatform == TargetPlatform.iOS) {
+                      if (isNativeIos) {
                         return IosNativeSegmentedControl(
                           key: const ValueKey('avatar-mode-control'),
                           items: const ['Image', 'Emoji', 'Animated'],

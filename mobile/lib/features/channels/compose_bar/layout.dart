@@ -284,8 +284,7 @@ class _ComposeBarLayout extends HookWidget {
           BorderRadius.circular(Radii.full),
           Curves.easeInOutCubic.transform(recordingTransition.value),
         )!;
-        final usesIosConcentricSurface =
-            defaultTargetPlatform == TargetPlatform.iOS;
+        final usesIosConcentricSurface = isNativeIos;
         final voiceNoteInsetProgress = hasVoiceNoteAttachment
             ? 1.0
             : recordingTransition.value;
@@ -352,7 +351,7 @@ class _ComposeBarLayout extends HookWidget {
       // Flutter's Cupertino magnifier rebuilds its overlay on every
       // selection-handle update. Keep the iOS handles and native edit menu,
       // but let the handles track the finger directly here.
-      magnifierConfiguration: defaultTargetPlatform == TargetPlatform.iOS
+      magnifierConfiguration: isNativeIos
           ? TextMagnifierConfiguration.disabled
           : null,
       contentInsertionConfiguration: ContentInsertionConfiguration(

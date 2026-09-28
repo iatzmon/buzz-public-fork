@@ -8,6 +8,7 @@ import 'buzz_navigation_metrics.dart';
 import 'directional_transition_scope.dart';
 import 'frosted_scroll_under_scope.dart';
 import 'ios_glass_navigation_button.dart';
+import '../utils/native_platform.dart';
 
 /// Minimum height of the frosted app bar content area below the safe area.
 const _kBarContentMinHeight = buzzNavigationRowHeight;
@@ -186,7 +187,7 @@ class FrostedAppBar extends StatelessWidget {
         leading == null &&
         automaticallyImplyLeading &&
         canPop &&
-        Theme.of(context).platform == TargetPlatform.iOS;
+        usesNativeIos(context);
     final effectiveIconColor = iconColor ?? context.colors.primary;
 
     final effectiveLeading =

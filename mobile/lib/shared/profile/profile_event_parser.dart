@@ -1,4 +1,4 @@
-import 'dart:isolate';
+import 'package:flutter/foundation.dart';
 
 import '../crypto/nip_oa.dart';
 import '../relay/nostr_models.dart';
@@ -15,9 +15,10 @@ typedef ParsedProfileEvent = ({
 ///
 /// Capture only the event batch here, never a provider or its surrounding
 /// context. NIP-OA verification performs synchronous elliptic-curve work.
+/// The web build has no isolates, so there [compute] runs on the UI thread.
 Future<List<ParsedProfileEvent>> parseProfileEventBatch(
   List<NostrEvent> events,
-) => Isolate.run(() => _parseBatch(events));
+) => compute(_parseBatch, events);
 
 List<ParsedProfileEvent> _parseBatch(List<NostrEvent> events) {
   final latest = <String, NostrEvent>{};

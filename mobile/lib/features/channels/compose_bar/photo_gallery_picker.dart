@@ -21,7 +21,7 @@ class _PhotoGalleryPicker extends StatelessWidget {
       onChoosePhotos: onChoosePhotos,
       onChooseAllPhotos: onChooseAllPhotos,
     );
-    if (defaultTargetPlatform != TargetPlatform.iOS) return fallback;
+    if (!isNativeIos) return fallback;
     return _IOSInlinePhotoPicker(
       onBack: onBack,
       onPickAllPhotos: onPickAllPhotos,
@@ -160,7 +160,7 @@ class _RecentPhotoGalleryPicker extends HookConsumerWidget {
             height: 40,
             child: Row(
               children: [
-                if (Theme.of(context).platform == TargetPlatform.iOS)
+                if (usesNativeIos(context))
                   IosGlassNavigationButton(
                     key: const ValueKey('photo-gallery-back'),
                     icon: IosGlassNavigationIcon.back,

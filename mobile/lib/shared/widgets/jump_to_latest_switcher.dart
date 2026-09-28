@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'jump_to_latest_button.dart';
+import '../utils/native_platform.dart';
 
 /// Whether channel Latest should remain hidden at the effective timeline tail.
 ///
@@ -36,7 +37,7 @@ class JumpToLatestSwitcher extends StatelessWidget {
             onPressed: onPressed,
           )
         : SizedBox.shrink(key: ValueKey('$id-jump-to-latest-hidden'));
-    if (Theme.of(context).platform == TargetPlatform.iOS) {
+    if (usesNativeIos(context)) {
       return KeyedSubtree(
         key: ValueKey('$id-jump-to-latest-switcher'),
         child: child,

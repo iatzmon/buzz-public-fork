@@ -48,6 +48,7 @@ import 'send_message_provider.dart';
 import 'small_avatar.dart';
 import 'sticky_date_header.dart';
 import 'timeline_message.dart';
+import '../../shared/utils/native_platform.dart';
 
 part 'thread_detail_page/nested_thread_summary_row.dart';
 part 'thread_detail_page/message_list.dart';
@@ -820,8 +821,7 @@ class ThreadDetailPage extends HookConsumerWidget {
       }
     });
     final usesNativeIosGlassBackButton =
-        Navigator.canPop(context) &&
-        Theme.of(context).platform == TargetPlatform.iOS;
+        Navigator.canPop(context) && usesNativeIos(context);
 
     return FrostedScaffold(
       resizeToAvoidBottomInset: !usesFixedAndroidImeViewport,

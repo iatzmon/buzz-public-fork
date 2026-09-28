@@ -52,7 +52,7 @@ Future<String> _transcodePickedVideoToMp4(String filePath) async {
   if (result == null || result.isEmpty) {
     throw Exception('Failed to convert video to MP4.');
   }
-  if (defaultTargetPlatform == TargetPlatform.android) {
+  if (isNativeAndroid) {
     final source = File(result);
     final destination = File(
       '$result.faststart-${DateTime.now().microsecondsSinceEpoch}.mp4',
@@ -81,7 +81,7 @@ Future<String> _packagePickedVoiceNoteForUpload(String filePath) async {
   if (result == null || result.isEmpty) {
     throw Exception('Failed to prepare voice note for upload.');
   }
-  if (defaultTargetPlatform == TargetPlatform.android) {
+  if (isNativeAndroid) {
     final source = File(result);
     final destination = File(
       '$result.faststart-${DateTime.now().microsecondsSinceEpoch}.mp4',

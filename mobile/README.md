@@ -183,6 +183,27 @@ flutter test --dart-define=BUZZ_PUSH_GATEWAY_URL=https://push.example
 
 Or from the repo root: `just mobile-check` and `just mobile-test`.
 
+## Web build
+
+The same app builds for the browser:
+
+```bash
+flutter build web --base-href /app/
+```
+
+`--base-href` must match the path the app is served under. Serve `build/web`
+from the relay's own origin, or add the page's origin to the
+relay's `BUZZ_CORS_ORIGINS`. The relay rejects HTTP calls from other origins.
+Sign in with a pairing code from Desktop (Settings, mobile pairing, copy code).
+
+Not available in the browser yet: attachment upload, voice notes, camera,
+sharing, push notifications and the app badge.
+
+The browser reports its own platform (iOS in Safari on iPhone and iPad), but the
+web build has none of the app's native code. Gate native views and method
+channels on `isNativeIos`, `isNativeAndroid` or `usesNativeIos(context)` from
+`lib/shared/utils/native_platform.dart`, not on the platform alone.
+
 ## Android release signing
 
 Android release builds fail unless all upload-key inputs are supplied through the

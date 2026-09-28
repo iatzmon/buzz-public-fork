@@ -1,6 +1,5 @@
 import 'dart:async';
 
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_hooks/flutter_hooks.dart';
@@ -27,6 +26,7 @@ import '../../shared/widgets/ios_glass_navigation_action.dart';
 import '../../shared/widgets/immediate_page_route.dart';
 import '../../shared/widgets/modal_presentation.dart';
 import 'theme_picker_page.dart';
+import '../../shared/utils/native_platform.dart';
 
 part 'settings_page/community_section.dart';
 part 'settings_page/connection_section.dart';
@@ -150,7 +150,7 @@ class SettingsPage extends HookConsumerWidget {
         automaticallyImplyLeading: false,
         horizontalInset: Grid.gutter,
         showBottomDivider: false,
-        leading: Theme.of(context).platform == TargetPlatform.iOS
+        leading: usesNativeIos(context)
             ? IosGlassNavigationButton(
                 key: const ValueKey('settings-ios-glass-close'),
                 icon: IosGlassNavigationIcon.close,
@@ -175,7 +175,7 @@ class SettingsPage extends HookConsumerWidget {
                 ),
               ),
         actions: [
-          if (Theme.of(context).platform == TargetPlatform.iOS)
+          if (usesNativeIos(context))
             IosGlassNavigationAction(
               key: const ValueKey('settings-edit-profile'),
               label: 'Edit',

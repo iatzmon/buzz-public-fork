@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:app_badge_plus/app_badge_plus.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_hooks/flutter_hooks.dart';
 
@@ -362,11 +363,11 @@ class App extends HookConsumerWidget {
 
     void applyBadge(UnreadBadgeState state) {
       if (state.highPriorityCount > 0) {
-        AppBadgePlus.updateBadge(state.highPriorityCount);
+        _setAppBadge(state.highPriorityCount);
       } else if (state.generalUnreadCount > 0) {
-        AppBadgePlus.updateBadge(1);
+        _setAppBadge(1);
       } else {
-        AppBadgePlus.updateBadge(0);
+        _setAppBadge(0);
       }
     }
 
@@ -374,7 +375,7 @@ class App extends HookConsumerWidget {
       if (ageSignalState != AgeSignalState.restricted) {
         applyBadge(ref.read(unreadBadgeProvider));
       } else {
-        AppBadgePlus.updateBadge(0);
+        _setAppBadge(0);
       }
       return null;
     }, [ageSignalState]);
@@ -462,4 +463,10 @@ class _SplashScreen extends StatelessWidget {
       ),
     );
   }
+}
+
+/// Sets the launcher icon badge. Browsers have no app badge plugin.
+void _setAppBadge(int count) {
+  if (kIsWeb) return;
+  AppBadgePlus.updateBadge(count);
 }

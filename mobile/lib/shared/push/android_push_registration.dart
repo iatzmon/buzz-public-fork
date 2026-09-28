@@ -11,15 +11,14 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'android_push_delivery.dart';
 import 'dev_push_lease.dart';
 import 'push_bridge.dart';
+import '../utils/native_platform.dart';
 
 /// Opt-in build flag. Android builds require matching external Firebase resources.
 const androidPushBuildEnabled = bool.fromEnvironment(
   'BUZZ_ANDROID_FCM_ENABLED',
 );
 bool get isAndroidPushBuild =>
-    !kIsWeb &&
-    defaultTargetPlatform == TargetPlatform.android &&
-    androidPushBuildEnabled;
+    !kIsWeb && isNativeAndroid && androidPushBuildEnabled;
 final androidPushToken = ValueNotifier<String?>(null);
 final androidPushError = ValueNotifier<String?>(null);
 const _storage = FlutterSecureStorage();

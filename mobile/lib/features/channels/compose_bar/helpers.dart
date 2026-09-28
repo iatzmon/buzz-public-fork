@@ -141,7 +141,7 @@ void _expandComposer({
   WidgetsBinding.instance.addPostFrameCallback((_) {
     if (context.mounted && isExpanded.value) focusNode.requestFocus();
   });
-  if (defaultTargetPlatform != TargetPlatform.android) return;
+  if (!isNativeAndroid) return;
   androidImeFallbackTimer.value?.cancel();
   if (view.viewInsets.bottom > 0) {
     androidImeTransitionStarted.value = true;

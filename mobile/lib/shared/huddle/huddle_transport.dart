@@ -3,16 +3,16 @@ import 'dart:collection';
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
-import 'package:web_socket_channel/io.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
+import '../relay/web_socket_connect.dart';
 import 'huddle_auth.dart';
 import 'huddle_wire.dart';
 
 typedef HuddleWebSocketFactory = WebSocketChannel Function(Uri uri);
 
 WebSocketChannel _openHuddleWebSocket(Uri uri) =>
-    IOWebSocketChannel.connect(uri, pingInterval: const Duration(seconds: 30));
+    connectWebSocket(uri, pingInterval: const Duration(seconds: 30));
 
 enum HuddleTransportPhase {
   idle,

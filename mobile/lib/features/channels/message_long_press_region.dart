@@ -1,11 +1,11 @@
 import 'dart:math' as math;
 import 'dart:ui' as ui;
 
-import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_hooks/flutter_hooks.dart';
+import '../../shared/utils/native_platform.dart';
 
 const _iosMessageLongPressDuration = Duration(milliseconds: 200);
 const _maxMessageSnapshotDimension = 2048.0;
@@ -192,9 +192,7 @@ class _MessageLongPressRegion extends HookWidget {
           LongPressGestureRecognizer:
               GestureRecognizerFactoryWithHandlers<LongPressGestureRecognizer>(
                 () => LongPressGestureRecognizer(
-                  duration: defaultTargetPlatform == TargetPlatform.iOS
-                      ? _iosMessageLongPressDuration
-                      : null,
+                  duration: isNativeIos ? _iosMessageLongPressDuration : null,
                 ),
                 (recognizer) {
                   recognizer.onLongPressStart = (_) => recognize();

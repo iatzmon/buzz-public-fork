@@ -1,6 +1,5 @@
 import 'dart:async';
 
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_hooks/flutter_hooks.dart';
@@ -26,6 +25,7 @@ import 'profile_avatar_editor.dart';
 import 'profile_avatar_draft.dart';
 import 'profile_provider.dart';
 import 'profile_text_editor.dart';
+import '../../shared/utils/native_platform.dart';
 
 /// Edits the current user's public profile metadata.
 class ProfileEditPage extends HookConsumerWidget {
@@ -110,7 +110,7 @@ class ProfileEditPage extends HookConsumerWidget {
       required Future<void> Function(String value) onSave,
       bool multiline = false,
     }) async {
-      if (defaultTargetPlatform == TargetPlatform.iOS) {
+      if (isNativeIos) {
         final sheetTheme = utilitySurfaceThemeData(Theme.of(context));
         try {
           await IosProfileTextEditor.presentUntilSaved(
@@ -297,7 +297,7 @@ class ProfileEditPage extends HookConsumerWidget {
             ),
           ),
           leading: isEditingAvatar.value
-              ? defaultTargetPlatform == TargetPlatform.iOS
+              ? isNativeIos
                     ? IosGlassNavigationButton(
                         key: const ValueKey('avatar-editor-back'),
                         icon: IosGlassNavigationIcon.back,
@@ -317,7 +317,7 @@ class ProfileEditPage extends HookConsumerWidget {
               : null,
           actions: isEditingAvatar.value
               ? [
-                  if (defaultTargetPlatform == TargetPlatform.iOS)
+                  if (isNativeIos)
                     IosGlassNavigationAction(
                       key: const ValueKey('avatar-save'),
                       label: 'Save',

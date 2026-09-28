@@ -19,6 +19,7 @@ import '../../shared/theme/theme.dart';
 import '../../shared/widgets/buzz_sheet_header.dart';
 import '../../shared/widgets/modal_presentation.dart';
 import 'recent_emoji_provider.dart';
+import '../../shared/utils/native_platform.dart';
 
 part 'emoji_picker/search_field.dart';
 part 'emoji_picker/category_rail.dart';
@@ -40,7 +41,7 @@ void showEmojiPicker({
   required void Function(String emoji) onSelect,
   VoidCallback? onDismiss,
 }) {
-  if (defaultTargetPlatform == TargetPlatform.iOS) {
+  if (isNativeIos) {
     unawaited(
       _presentIosEmojiPicker(
         context: context,

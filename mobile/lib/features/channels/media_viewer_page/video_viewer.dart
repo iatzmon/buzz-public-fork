@@ -52,7 +52,7 @@ class MediaVideoViewerPage extends HookConsumerWidget {
         // keep Android on its streaming path. iOS uses the authenticated local
         // copy below because AVPlayer can drop those headers after the first
         // request.
-        if (Platform.isAndroid) {
+        if (!kIsWeb && Platform.isAndroid) {
           VideoPlayerController? streamingController;
           try {
             streamingController = VideoPlayerController.networkUrl(

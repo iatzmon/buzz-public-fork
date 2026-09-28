@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:math' as math;
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:http/http.dart' as http;
@@ -468,7 +469,7 @@ class DeviceVoiceNotePlayerController extends VoiceNotePlayerController {
        _client = client,
        _temporaryDirectory = temporaryDirectory ?? getTemporaryDirectory,
        _requiresAuthenticatedLocalFile =
-           requiresAuthenticatedLocalFile ?? Platform.isIOS,
+           requiresAuthenticatedLocalFile ?? (!kIsWeb && Platform.isIOS),
        _downloadTimeout = downloadTimeout,
        _maxDownloadBytes = maxDownloadBytes,
        _player = player ?? _DeviceVoiceNoteAudioPlayerBackend() {

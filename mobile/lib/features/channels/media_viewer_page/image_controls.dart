@@ -271,7 +271,7 @@ class _MediaViewerCloseButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    if (Theme.of(context).platform == TargetPlatform.iOS) {
+    if (usesNativeIos(context)) {
       return IosGlassNavigationButton(
         icon: IosGlassNavigationIcon.close,
         semanticLabel: tooltip,

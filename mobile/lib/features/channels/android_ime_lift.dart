@@ -1,7 +1,7 @@
 import 'dart:math' show max;
 
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import '../../shared/utils/native_platform.dart';
 
 /// Android keeps the message viewport fixed while the IME animates. Only this
 /// small wrapper follows the frame-by-frame inset; timelines apply the final
@@ -31,5 +31,4 @@ class AndroidImeLift extends StatelessWidget {
 
 /// Whether channel and thread scaffolds should keep a fixed viewport while
 /// Android IME insets animate, with their composer lifted independently.
-bool get usesFixedAndroidImeViewport =>
-    defaultTargetPlatform == TargetPlatform.android;
+bool get usesFixedAndroidImeViewport => isNativeAndroid;

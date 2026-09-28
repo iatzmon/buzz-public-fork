@@ -16,6 +16,7 @@ import 'animated_image_sanitizer.dart';
 import 'media_auth.dart';
 import 'mp4_fast_start.dart';
 import 'relay_provider.dart';
+import '../utils/native_platform.dart';
 
 part 'media_upload/platform_bindings.dart';
 part 'media_upload/helpers.dart';
@@ -940,10 +941,7 @@ bool _shouldSanitizePickedImage(String mimeType) {
 }
 
 bool _supportsNativeUploadImageProcessing() {
-  return switch (defaultTargetPlatform) {
-    TargetPlatform.android || TargetPlatform.iOS => true,
-    _ => false,
-  };
+  return isNativeAndroid || isNativeIos;
 }
 
 bool _hasHeicFileExtension(XFile pickedImage) {

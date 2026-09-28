@@ -80,6 +80,7 @@ import 'sticky_date_header.dart';
 import 'thread_detail_page.dart';
 import 'thread_replies_provider.dart';
 import 'timeline_message.dart';
+import '../../shared/utils/native_platform.dart';
 
 part 'channel_detail_page/message_list.dart';
 part 'channel_detail_page/system_rows.dart';
@@ -522,8 +523,7 @@ class ChannelDetailPage extends HookConsumerWidget {
       isDm: resolvedChannel.isDm,
     );
     final usesNativeIosGlassBackButton =
-        Navigator.canPop(context) &&
-        Theme.of(context).platform == TargetPlatform.iOS;
+        Navigator.canPop(context) && usesNativeIos(context);
     final readTimestamp = _channelReadTimestamp(
       channel: resolvedChannel,
       messagesState: messagesState,

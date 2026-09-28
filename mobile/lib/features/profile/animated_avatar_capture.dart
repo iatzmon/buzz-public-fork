@@ -24,6 +24,7 @@ import 'camera_disposal_barrier.dart';
 import 'avatar_editor_option_button.dart';
 import 'animated_avatar_orientation.dart';
 import 'profile_avatar_draft.dart';
+import '../../shared/utils/native_platform.dart';
 
 part 'animated_avatar_capture/review_controls.dart';
 part 'animated_avatar_capture/capture_controls.dart';
@@ -162,7 +163,7 @@ class AnimatedAvatarCapture extends HookConsumerWidget {
             selected,
             ResolutionPreset.medium,
             enableAudio: false,
-            imageFormatGroup: defaultTargetPlatform == TargetPlatform.iOS
+            imageFormatGroup: isNativeIos
                 ? ImageFormatGroup.bgra8888
                 : ImageFormatGroup.yuv420,
           );

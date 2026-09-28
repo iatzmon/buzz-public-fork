@@ -3,7 +3,6 @@ import 'dart:convert';
 import 'dart:math';
 
 import 'package:flutter/widgets.dart';
-import 'package:flutter/foundation.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 
 import '../../shared/community/community_provider.dart';
@@ -22,6 +21,7 @@ import 'thread_follows/thread_follows_provider.dart';
 import 'unread_badge/is_high_priority_event.dart';
 import 'unread_badge/observed_unread_event.dart';
 import 'unread_badge/should_notify_for_event.dart';
+import '../../shared/utils/native_platform.dart';
 
 part 'channel_directory.dart';
 part 'channel_push_cache.dart';

@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:nostr/nostr.dart' as nostr;
 
 import '../relay/nostr_models.dart';
+import '../utils/native_platform.dart';
 
 const _pushPresentationChannel = MethodChannel('buzz/push');
 const _maximumAvatarSourceBytes = 512 * 1024;
@@ -54,7 +55,7 @@ Future<void> cacheBuzzPushProfileEvents(
   String communityID,
   Iterable<NostrEvent> events,
 ) async {
-  if (defaultTargetPlatform != TargetPlatform.iOS || communityID.isEmpty) {
+  if (!isNativeIos || communityID.isEmpty) {
     return;
   }
   final batch = events.toList(growable: false);
@@ -86,9 +87,7 @@ Future<void> cacheBuzzPushChannelEvents(
   Iterable<NostrEvent> metadataEvents,
   Iterable<NostrEvent> membershipEvents,
 ) async {
-  if (defaultTargetPlatform != TargetPlatform.iOS ||
-      communityID == null ||
-      communityID.isEmpty) {
+  if (!isNativeIos || communityID == null || communityID.isEmpty) {
     return;
   }
   final batch = (
@@ -243,7 +242,7 @@ Future<void> cacheBuzzPushAvatarFromLoadedBytes(
   String sourceURL,
   Uint8List sourceBytes,
 ) async {
-  if (defaultTargetPlatform != TargetPlatform.iOS ||
+  if (!isNativeIos ||
       communityID.isEmpty ||
       sourceBytes.isEmpty ||
       sourceBytes.length > _maximumAvatarSourceBytes ||

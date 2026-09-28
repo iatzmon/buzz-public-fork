@@ -9,7 +9,7 @@ class _ShutterButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final reduceMotion = MediaQuery.disableAnimationsOf(context);
-    final isIos = defaultTargetPlatform == TargetPlatform.iOS;
+    final isIos = isNativeIos;
     final content = SizedBox(
       key: const ValueKey('image-camera-shutter-morph'),
       width: _shutterSize,

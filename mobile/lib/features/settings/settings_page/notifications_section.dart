@@ -5,14 +5,13 @@ class _NotificationsSection extends HookConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    if (defaultTargetPlatform != TargetPlatform.iOS &&
-        defaultTargetPlatform != TargetPlatform.android) {
+    if (!isNativeIos && !isNativeAndroid) {
       return const SizedBox.shrink();
     }
     final pushError = useValueListenable(androidPushError);
     final community = ref.watch(activeCommunityProvider).value;
     if (community == null) return const SizedBox.shrink();
-    final android = defaultTargetPlatform == TargetPlatform.android;
+    final android = isNativeAndroid;
     final platformName = android ? 'Android' : 'iOS';
     if (android ? !androidPushBuildEnabled : !Env.pushGatewayConfigured) {
       return AppListCard(

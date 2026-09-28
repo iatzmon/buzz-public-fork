@@ -1,6 +1,5 @@
 import 'dart:async';
 
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_hooks/flutter_hooks.dart';
@@ -11,6 +10,7 @@ import '../../shared/theme/theme.dart';
 import '../../shared/widgets/modal_presentation.dart';
 import 'ios_profile_text_editor.dart';
 import 'profile_provider.dart';
+import '../../shared/utils/native_platform.dart';
 
 /// Opens the current user's display-name editor from a profile action surface.
 Future<void> showProfileDisplayNameEditor(BuildContext context) async {
@@ -94,7 +94,7 @@ Future<void> _showProfileTextEditor({
   required Future<void> Function(String value) onSave,
   bool multiline = false,
 }) async {
-  if (defaultTargetPlatform == TargetPlatform.iOS) {
+  if (isNativeIos) {
     final sheetTheme = utilitySurfaceThemeData(Theme.of(context));
     try {
       await IosProfileTextEditor.presentUntilSaved(

@@ -49,7 +49,7 @@ class _IOSAttachmentPopoverCoordinator {
     required VoidCallback onVoiceNote,
     required VoidCallback onFiles,
   }) async {
-    if (defaultTargetPlatform != TargetPlatform.iOS) return false;
+    if (!isNativeIos) return false;
     if (_activeOwner case final activeOwner?) {
       if (identical(activeOwner, owner)) return true;
       if (!_didPresent) _clearOwner(activeOwner);

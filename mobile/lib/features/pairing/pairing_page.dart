@@ -14,6 +14,7 @@ import '../../shared/widgets/ios_glass_navigation_button.dart';
 import '../../shared/widgets/tappable_flapping_bee.dart';
 import 'pairing_provider.dart';
 import 'pairing_qr_scanner.dart';
+import '../../shared/utils/native_platform.dart';
 
 part 'pairing_page/onboarding_background.dart';
 part 'pairing_page/pairing_welcome_view.dart';
@@ -95,10 +96,10 @@ class PairingPage extends HookConsumerWidget {
         ? AppBar(
             foregroundColor: _onboardingInk,
             systemOverlayStyle: onboardingSystemOverlayStyle,
-            leadingWidth: Theme.of(context).platform == TargetPlatform.iOS
+            leadingWidth: usesNativeIos(context)
                 ? Grid.quarter + iosGlassChannelHeaderLeadingWidth
                 : null,
-            leading: Theme.of(context).platform == TargetPlatform.iOS
+            leading: usesNativeIos(context)
                 ? Padding(
                     padding: const EdgeInsets.only(left: Grid.quarter),
                     child: IosGlassNavigationButton(

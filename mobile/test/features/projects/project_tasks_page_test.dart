@@ -92,7 +92,8 @@ void main() {
         userCacheProvider.overrideWith(_Profiles.new),
         projectTaskTransportProvider.overrideWithValue(
           ProjectTaskTransport(
-            query: (filter) async {
+            verify: (events) async => events,
+            scan: (filter) async {
               if (failTasks && !filter.tags.containsKey('#h')) {
                 throw StateError('Offline');
               }

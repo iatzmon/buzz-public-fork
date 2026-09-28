@@ -14,22 +14,58 @@ import 'project_task.dart';
 /// Injectable relay boundary used by task history and durable writes.
 class ProjectTaskTransport {
   const ProjectTaskTransport({
-    required this.query,
+    required this.scan,
+    required this.verify,
     required this.publish,
     required this.sign,
   });
-  final Future<List<NostrEvent>> Function(NostrFilter) query;
+
+  /// Reads events from the relay without checking their signatures. Use it
+  /// only to choose which events to pass to [verify].
+  final Future<List<NostrEvent>> Function(NostrFilter) scan;
+
+  /// Checks the signatures of [scan] events. Throws when one fails.
+  final Future<List<NostrEvent>> Function(List<NostrEvent>) verify;
   final Future<void> Function(NostrEvent) publish;
   final NostrEvent Function(int, String, List<List<String>>, int) sign;
+
+  /// Reads events from the relay and checks every signature.
+  Future<List<NostrEvent>> query(NostrFilter filter) async =>
+      verify(await scan(filter));
 }
 
 /// The isolate captures only public events, never the provider or signing key.
-/// The web build has no isolates, so there [compute] runs on the UI thread.
+/// The web build has no isolates, so it checks the events in slices instead.
 Future<List<NostrEvent>> verifyProjectTaskEvents(List<NostrEvent> events) =>
-    compute(_verifyProjectTaskEvents, events);
+    kIsWeb
+    ? verifyProjectTaskEventsInSlices(events)
+    : compute(_verifyProjectTaskEvents, events);
 
 List<NostrEvent> _verifyProjectTaskEvents(List<NostrEvent> events) {
   for (final event in events) {
+    nostr.Event.fromMap(event.toJson());
+  }
+  return events;
+}
+
+/// After this much work, [verifyProjectTaskEventsInSlices] lets the page draw
+/// and handle input before the next event. One signature check can take
+/// longer than this on its own.
+const _browserYieldThreshold = Duration(milliseconds: 8);
+
+/// The web build's [verifyProjectTaskEvents]. The browser runs it on the
+/// page's only thread, where one signature check takes about 60 ms, so it
+/// lets the page run after each [_browserYieldThreshold] of work.
+@visibleForTesting
+Future<List<NostrEvent>> verifyProjectTaskEventsInSlices(
+  List<NostrEvent> events,
+) async {
+  final slice = Stopwatch()..start();
+  for (final event in events) {
+    if (slice.elapsed > _browserYieldThreshold) {
+      await Future<void>.delayed(Duration.zero);
+      slice.reset();
+    }
     nostr.Event.fromMap(event.toJson());
   }
   return events;
@@ -46,9 +82,14 @@ final projectTaskTransportProvider = Provider<ProjectTaskTransport>((ref) {
   }
 
   return ProjectTaskTransport(
-    query: (filter) async {
+    scan: (filter) async {
       checkContext();
       final events = await session.queryRelay([filter]);
+      checkContext();
+      return events;
+    },
+    verify: (events) async {
+      checkContext();
       final pending = events
           .where((event) => !verifiedEvents.containsKey(event.id))
           .toList();
@@ -87,15 +128,18 @@ final projectTaskTransportProvider = Provider<ProjectTaskTransport>((ref) {
 
 /// Scan SQL-filtered issue pages before selecting a repository. Relays that
 /// post-filter #a after LIMIT can otherwise return a false empty project.
+/// The pages hold the tasks of every repository, so [scan] reads them
+/// unchecked and only the returned tasks go through [verify].
 Future<List<NostrEvent>> loadProjectTaskRoots(
   String repoAddress,
-  Future<List<NostrEvent>> Function(NostrFilter) query,
-) async {
+  Future<List<NostrEvent>> Function(NostrFilter) scan, {
+  required Future<List<NostrEvent>> Function(List<NostrEvent>) verify,
+}) async {
   final roots = <String, NostrEvent>{};
   int? until;
   var limit = 500;
   for (var pageNumber = 0; pageNumber < 40; pageNumber++) {
-    final page = await query(
+    final page = await scan(
       NostrFilter(kinds: const [1621], limit: limit, until: until),
     );
     for (final event in page) {
@@ -106,7 +150,7 @@ Future<List<NostrEvent>> loadProjectTaskRoots(
     if (roots.length >= 200 || page.length < limit) {
       final sorted = roots.values.toList()
         ..sort((a, b) => ProjectTask.compareEvents(b, a));
-      return sorted.take(200).toList();
+      return verify(sorted.take(200).toList());
     }
     final oldest = page.map((e) => e.createdAt).reduce((a, b) => a < b ? a : b);
     if (until == null || oldest < until) {
@@ -328,10 +372,17 @@ class ProjectTaskStore extends Notifier<ProjectTaskState> {
     final revision = _revision;
     state = state.copyWith(loading: true);
     try {
-      final roots = await loadProjectTaskRoots(repoAddress, (filter) {
-        if (!_current(generation)) throw StateError('Task view changed.');
-        return transport.query(filter);
-      });
+      final roots = await loadProjectTaskRoots(
+        repoAddress,
+        (filter) {
+          if (!_current(generation)) throw StateError('Task view changed.');
+          return transport.scan(filter);
+        },
+        verify: (events) {
+          if (!_current(generation)) throw StateError('Task view changed.');
+          return transport.verify(events);
+        },
+      );
       final history = await loadProjectTaskHistory(
         roots.map((e) => e.id).toList(),
         (filter) {

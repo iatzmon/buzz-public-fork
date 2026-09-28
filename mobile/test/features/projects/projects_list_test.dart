@@ -161,7 +161,8 @@ Future<SharedPreferences> _pumpChannels(
         ),
         projectTaskTransportProvider.overrideWithValue(
           ProjectTaskTransport(
-            query: query ?? (_) async => const [],
+            scan: query ?? (_) async => const [],
+            verify: (events) async => events,
             publish: (_) async {},
             sign: (_, _, _, _) => throw UnimplementedError(),
           ),

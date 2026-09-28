@@ -98,16 +98,20 @@ void main() {
         secretKey: '1'.padLeft(64, '0'),
         createdAt: 100,
       ).toMap();
-      final events = await verifyProjectTaskEvents([
-        NostrEvent.fromJson(signed),
-      ]);
-      expect(events.single.content, 'Authentic');
-      await expectLater(
-        verifyProjectTaskEvents([
-          NostrEvent.fromJson({...signed, 'content': 'Altered'}),
-        ]),
-        throwsA(isA<Exception>()),
-      );
+      for (final verify in [
+        verifyProjectTaskEvents,
+        verifyProjectTaskEventsInSlices,
+      ]) {
+        final events = await verify([NostrEvent.fromJson(signed)]);
+        expect(events.single.content, 'Authentic');
+        await expectLater(
+          verify([
+            NostrEvent.fromJson(signed),
+            NostrEvent.fromJson({...signed, 'content': 'Altered'}),
+          ]),
+          throwsA(isA<Exception>()),
+        );
+      }
     },
   );
   test(
@@ -138,6 +142,8 @@ void main() {
         transport.query(const NostrFilter(kinds: [1621])),
         throwsA(isA<Exception>()),
       );
+      final scanned = await transport.scan(const NostrFilter(kinds: [1621]));
+      await expectLater(transport.verify(scanned), throwsA(isA<Exception>()));
       session.events = [NostrEvent.fromJson(signed)];
       expect(
         (await transport.query(
@@ -212,26 +218,37 @@ void main() {
     'repository discovery reaches older tasks behind other repositories',
     () async {
       var calls = 0;
-      final roots = await loadProjectTaskRoots(repo, (filter) async {
-        expect(filter.tags, isEmpty);
-        calls++;
-        if (calls == 1) {
-          return [
-            for (var i = 0; i < 500; i++)
-              event(
-                '$i',
-                kind: 1621,
-                time: 1000 - i,
-                tags: [
-                  ['a', '30617:$owner:unrelated'],
-                ],
-              ),
-          ];
-        }
-        return [root()];
-      });
+      final checked = <String>[];
+      final roots = await loadProjectTaskRoots(
+        repo,
+        (filter) async {
+          expect(filter.tags, isEmpty);
+          calls++;
+          if (calls == 1) {
+            return [
+              for (var i = 0; i < 500; i++)
+                event(
+                  '$i',
+                  kind: 1621,
+                  time: 1000 - i,
+                  tags: [
+                    ['a', '30617:$owner:unrelated'],
+                  ],
+                ),
+            ];
+          }
+          return [root()];
+        },
+        verify: (events) async {
+          checked.addAll(events.map((e) => e.id));
+          return events;
+        },
+      );
       expect(calls, 2);
       expect(roots.single.id, root().id);
+      // Other repositories' tasks are never checked: in the browser each
+      // signature check blocks the page for about 60 ms.
+      expect(checked, [root().id]);
     },
   );
   test(
@@ -527,7 +544,8 @@ void main() {
     Future<List<NostrEvent>> Function(NostrFilter)? query,
     Future<void> Function(NostrEvent)? publish,
   }) => ProjectTaskTransport(
-    query: query ?? (_) async => [],
+    scan: query ?? (_) async => [],
+    verify: (events) async => events,
     publish: publish ?? (_) async {},
     sign: (kind, content, tags, time) =>
         event('99', kind: kind, content: content, tags: tags, time: time),

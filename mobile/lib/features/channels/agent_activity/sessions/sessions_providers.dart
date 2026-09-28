@@ -138,12 +138,18 @@ String? describeTurnActivity(List<TranscriptItem> items) {
 
 /// Usage per session id for one agent, from the agent's NIP-AM reports of
 /// the last [sessionUsageLookback]. Refreshes every [sessionUsageRefresh].
-/// A failed read is an error state, never an empty result. Verifying and
-/// decrypting the reports runs on a worker isolate ([decodeSessionUsage]).
+/// A failed read is an error state, never an empty result. On devices,
+/// verifying and decrypting the reports runs on a worker isolate
+/// ([decodeSessionUsage]). The web build has no worker isolate, so it uses
+/// [decodeSessionUsageInBrowser].
 final agentSessionUsageProvider = FutureProvider.autoDispose
     .family<Map<String, SessionUsage>, String>((ref, agentPubkey) async {
       final timer = Timer(sessionUsageRefresh, ref.invalidateSelf);
       ref.onDispose(timer.cancel);
+      // True once this build is replaced (refresh) or disposed. Ref.mounted
+      // stays true across a rebuild, so it cannot stop a replaced build.
+      var retired = false;
+      ref.onDispose(() => retired = true);
 
       final privHex = _ownerPrivkey(ref.watch(relayConfigProvider).nsec);
       final owner = nostr.Keys(privHex).public;
@@ -161,14 +167,17 @@ final agentSessionUsageProvider = FutureProvider.autoDispose
         ),
       ]);
 
-      return compute(
-        decodeSessionUsage,
-        SessionUsageBatch(
-          ownerPrivkeyHex: privHex,
-          ownerPubkey: owner,
-          agentPubkey: agent,
-          events: events,
-        ),
+      final batch = SessionUsageBatch(
+        ownerPrivkeyHex: privHex,
+        ownerPubkey: owner,
+        agentPubkey: agent,
+        events: events,
+      );
+      if (!kIsWeb) return compute(decodeSessionUsage, batch);
+      return decodeSessionUsageInBrowser(
+        batch,
+        verifiedReports: ref.read(verifiedUsageReportsProvider),
+        isCancelled: () => retired,
       );
     });
 
@@ -211,14 +220,101 @@ Map<String, SessionUsage> decodeSessionUsage(SessionUsageBatch batch) {
   return sumSessionUsage(metrics);
 }
 
-/// Verifies and decrypts one kind 44200 event from [agentPubkey] to the
+/// Usage reports whose signature passed in this browser tab, as `id:sig`.
+/// A report is checked once, not again on every refresh.
+final verifiedUsageReportsProvider = Provider<Set<String>>((ref) => {});
+
+/// Upper bound on [verifiedUsageReportsProvider]; it is emptied when full.
+const maxVerifiedUsageReports = 5000;
+
+/// After this much work, [decodeSessionUsageInBrowser] lets the page draw
+/// and handle input before the next report. One signature check can take
+/// longer than this on its own.
+const _browserYieldThreshold = Duration(milliseconds: 8);
+
+/// The web build's [decodeSessionUsage], with the same checks in the same
+/// order: signature first, then decryption. The browser runs it on the
+/// page's only thread, where one signature check takes about 60 ms. To keep
+/// the page responsive it
+/// - checks each report's signature once per tab ([verifiedReports]); a
+///   recorded report must still have an id that matches its fields;
+/// - lets the page run after each [_browserYieldThreshold] of work;
+/// - stops as soon as [isCancelled] is true, before any further check.
+Future<Map<String, SessionUsage>> decodeSessionUsageInBrowser(
+  SessionUsageBatch batch, {
+  required Set<String> verifiedReports,
+  bool Function() isCancelled = _neverCancelled,
+  bool Function(NostrEvent event) hasValidSignature = eventHasValidSignature,
+}) async {
+  if (isCancelled()) return const {};
+  bool checkOnce(NostrEvent event) {
+    final key = '${event.id}:${event.sig}';
+    if (verifiedReports.contains(key)) return eventIdMatches(event);
+    if (!hasValidSignature(event)) return false;
+    if (verifiedReports.length >= maxVerifiedUsageReports) {
+      verifiedReports.clear();
+    }
+    verifiedReports.add(key);
+    return true;
+  }
+
+  final conversationKey = getConversationKey(
+    batch.ownerPrivkeyHex,
+    batch.agentPubkey,
+  );
+  final seen = <String>{};
+  final metrics = <TurnMetric>[];
+  final slice = Stopwatch()..start();
+  for (final event in batch.events) {
+    if (slice.elapsed > _browserYieldThreshold) {
+      await Future<void>.delayed(Duration.zero);
+      slice.reset();
+    }
+    if (isCancelled()) return const {};
+    if (!seen.add(event.id)) continue;
+    final metric = decodeTurnMetric(
+      event,
+      conversationKey: conversationKey,
+      ownerPubkey: batch.ownerPubkey,
+      agentPubkey: batch.agentPubkey,
+      hasValidSignature: checkOnce,
+    );
+    if (metric != null) metrics.add(metric);
+  }
+  return sumSessionUsage(metrics);
+}
+
+bool _neverCancelled() => false;
+
+/// Whether [event]'s id and signature are valid.
+bool eventHasValidSignature(NostrEvent event) => _nostrEvent(event).isValid();
+
+/// Whether [event]'s id is the hash of its fields. With a matching id, a
+/// signature that passed for the same `id:sig` is valid for this event.
+bool eventIdMatches(NostrEvent event) =>
+    _nostrEvent(event).getEventId() == event.id;
+
+nostr.Event _nostrEvent(NostrEvent event) => nostr.Event(
+  event.id,
+  event.pubkey,
+  event.createdAt,
+  event.kind,
+  event.tags,
+  event.content,
+  event.sig,
+  verify: false,
+);
+
+/// Verifies, then decrypts, one kind 44200 event from [agentPubkey] to the
 /// owner. Returns null for anything that fails a check (NIP-AM: ignore
-/// events that fail to verify, decrypt, or parse).
+/// events that fail to verify, decrypt, or parse). Decrypts only after
+/// [hasValidSignature] passes (NIP-44).
 TurnMetric? decodeTurnMetric(
   NostrEvent event, {
   required Uint8List conversationKey,
   required String ownerPubkey,
   required String agentPubkey,
+  bool Function(NostrEvent event) hasValidSignature = eventHasValidSignature,
 }) {
   if (event.kind != EventKind.agentTurnMetric ||
       event.pubkey.toLowerCase() != agentPubkey ||
@@ -227,15 +323,7 @@ TurnMetric? decodeTurnMetric(
     return null;
   }
   try {
-    nostr.Event(
-      event.id,
-      event.pubkey,
-      event.createdAt,
-      event.kind,
-      event.tags,
-      event.content,
-      event.sig,
-    );
+    if (!hasValidSignature(event)) return null;
     final json = jsonDecode(nip44Decrypt(conversationKey, event.content));
     return json is Map<String, dynamic> ? TurnMetric.fromJson(json) : null;
   } catch (_) {

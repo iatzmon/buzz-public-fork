@@ -478,6 +478,52 @@ void main() {
       'Closed',
     );
   });
+  test('status notes join comments in Activity from any signer', () {
+    final target = [
+      ['e', root().id, '', 'root'],
+    ];
+    final task = ProjectTask.fromEvents(root(), [
+      event('2', kind: 1111, time: 2, tags: target, content: 'A comment'),
+      event(
+        '3',
+        kind: 1630,
+        signer: owner,
+        time: 3,
+        tags: target,
+        content: 'Next: open the PR',
+      ),
+      event('4', kind: 1631, signer: owner, time: 4, tags: target),
+      event(
+        '5',
+        kind: 1632,
+        signer: stranger,
+        time: 1,
+        tags: target,
+        content: 'Untrusted note',
+      ),
+      event(
+        '6',
+        kind: 1631,
+        signer: owner,
+        time: 5,
+        tags: [
+          ['e', 'f' * 64],
+        ],
+        content: 'Another task',
+      ),
+    ]);
+    expect(task.statusNotes.map((e) => e.content), [
+      'Untrusted note',
+      'Next: open the PR',
+    ]);
+    expect(task.activity.map((e) => e.content), [
+      'Untrusted note',
+      'A comment',
+      'Next: open the PR',
+    ]);
+    expect(task.comments.map((e) => e.content), ['A comment']);
+    expect(task.status, 'Done');
+  });
   test(
     'write guard refuses assignment of others and emits real operation tags',
     () {

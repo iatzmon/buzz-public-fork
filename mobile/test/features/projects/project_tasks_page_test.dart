@@ -290,6 +290,43 @@ void main() {
     expect(tester.takeException(), isNull);
     expect(find.text('Unassigned'), findsOneWidget);
   });
+  testWidgets('task detail shows notes posted with status changes', (
+    tester,
+  ) async {
+    await pump(
+      tester,
+      published: [],
+      history: [
+        _event(
+          '2',
+          kind: 1630,
+          tags: [
+            ['e', _event('1').id, '', 'root'],
+            ['a', _repo],
+          ],
+          content: 'Next: open the PR',
+        ),
+        _event(
+          '3',
+          kind: 1632,
+          signer: _carol,
+          tags: [
+            ['e', _event('1').id, '', 'root'],
+            ['a', _repo],
+          ],
+          content: 'Carol thinks this is a duplicate',
+        ),
+      ],
+    );
+    await tester.tap(find.text('Mobile project task'));
+    await tester.pumpAndSettle();
+    expect(find.text('No activity yet.'), findsNothing);
+    expect(find.text('Next: open the PR'), findsOneWidget);
+    expect(find.textContaining('set to Open'), findsOneWidget);
+    // Carol cannot manage the task: her note shows, her status does not.
+    expect(find.text('Carol thinks this is a duplicate'), findsOneWidget);
+    expect(find.textContaining('closed'), findsNothing);
+  });
   testWidgets('community switch hides an open task and its action controls', (
     tester,
   ) async {

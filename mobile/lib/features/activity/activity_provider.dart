@@ -59,6 +59,7 @@ class ActivityNotifier extends AsyncNotifier<HomeFeedResponse> {
   static const _ownerLookupMaxRetries = 6;
 
   void Function()? _unsubscribeAddressed;
+  final List<void Function()> _unsubscribeChannelMentions = [];
   // Verified owners of request authors, kept across fetches so a failed
   // lookup never demotes a request that was already verified. Scoped to the
   // relay + account (cleared with `_dmResurfaceScope`).
@@ -90,10 +91,11 @@ class ActivityNotifier extends AsyncNotifier<HomeFeedResponse> {
   Future<HomeFeedResponse> build() async {
     ref.watch(relayConfigProvider);
     final sessionState = ref.watch(relaySessionProvider);
-    // React to the DM channel set (loading → data, membership changes) so a
-    // cold start where channels resolve after the first fetch still surfaces
-    // DMs without a manual refresh.
-    ref.watch(channelsProvider.select(_dmChannelKey));
+    // React to the joined channel set (loading → data, membership changes)
+    // so a cold start where channels resolve after the first fetch still
+    // surfaces DMs, and the live channel subscriptions cover every joined
+    // channel, without a manual refresh.
+    ref.watch(channelsProvider.select(_memberChannelKey));
 
     final generation = ++_subscriptionGeneration;
     final currentPubkey = ref.read(myPubkeyProvider)?.toLowerCase();
@@ -146,6 +148,27 @@ class ActivityNotifier extends AsyncNotifier<HomeFeedResponse> {
 
       final channels =
           ref.read(channelsProvider).asData?.value ?? const <Channel>[];
+
+      // The relay never fans a channel event out to a subscription without
+      // `#h`, so the `#p` subscription above only sees channel-less events.
+      // Mentions, approvals and job events posted in a channel need the same
+      // `#p` filter scoped to each joined channel, batched under the cap.
+      final memberChannelIds = [
+        for (final channel in channels)
+          if (channel.isMember) channel.id,
+      ];
+      final mentionUnsubscribers = await _subscribeChannelBatches(
+        session,
+        generation,
+        channelIds: memberChannelIds,
+        kinds: _addressedKinds,
+        since: since,
+        recipient: myPk,
+        onEvent: (event) => _handleAddressedLiveEvent(event, generation),
+      );
+      if (mentionUnsubscribers == null) return;
+      _unsubscribeChannelMentions.addAll(mentionUnsubscribers);
+
       final dmChannelIds = [
         for (final channel in channels)
           if (channel.isDm && channel.isMember) channel.id,
@@ -198,8 +221,9 @@ class ActivityNotifier extends AsyncNotifier<HomeFeedResponse> {
 
   /// Subscribes to a channel-scoped live feed split into batches that never
   /// exceed [kMaxExplicitChannelValues] explicit `#h` values, since the relay
-  /// rejects a REQ that does. Each batch is its own subscription owned by
-  /// [generation]. The generation is checked before every `subscribe` and
+  /// rejects a REQ that does. A non-null [recipient] adds a `#p` filter for
+  /// that pubkey. Each batch is its own subscription owned by [generation].
+  /// The generation is checked before every `subscribe` and
   /// immediately after each await, so teardown mid-setup disposes everything
   /// this call already opened and stops issuing REQs. A single batch's
   /// rejection is isolated so later batches still register.
@@ -214,6 +238,7 @@ class ActivityNotifier extends AsyncNotifier<HomeFeedResponse> {
     required List<String> channelIds,
     required List<int> kinds,
     required int since,
+    String? recipient,
     required void Function(NostrEvent) onEvent,
   }) async {
     final unsubscribers = <void Function()>[];
@@ -239,7 +264,10 @@ class ActivityNotifier extends AsyncNotifier<HomeFeedResponse> {
         final unsubscribe = await session.subscribe(
           NostrFilter(
             kinds: kinds,
-            tags: {'#h': batch},
+            tags: {
+              '#h': batch,
+              if (recipient != null) '#p': [recipient],
+            },
             since: since,
             limit: 100,
           ),
@@ -443,6 +471,10 @@ class ActivityNotifier extends AsyncNotifier<HomeFeedResponse> {
     _refreshQueued = false;
     _unsubscribeAddressed?.call();
     _unsubscribeAddressed = null;
+    for (final unsubscribe in _unsubscribeChannelMentions) {
+      unsubscribe();
+    }
+    _unsubscribeChannelMentions.clear();
     for (final unsubscribe in _unsubscribeDms) {
       unsubscribe();
     }
@@ -453,15 +485,15 @@ class ActivityNotifier extends AsyncNotifier<HomeFeedResponse> {
     _unsubscribeHiddenDms.clear();
   }
 
-  /// Stable identity for the joined DM channel set: null while channels are
-  /// loading, otherwise the sorted member-DM ids. Keeps unrelated channel
-  /// updates from refetching the feed.
-  static String? _dmChannelKey(AsyncValue<List<Channel>> channels) {
+  /// Stable identity for the joined channel set: null while channels are
+  /// loading, otherwise the sorted member channel ids (DMs included). Keeps
+  /// unrelated channel updates from refetching the feed.
+  static String? _memberChannelKey(AsyncValue<List<Channel>> channels) {
     final value = channels.asData?.value;
     if (value == null) return null;
     final ids = [
       for (final channel in value)
-        if (channel.isDm && channel.isMember) channel.id,
+        if (channel.isMember) channel.id,
     ]..sort();
     return ids.join(',');
   }

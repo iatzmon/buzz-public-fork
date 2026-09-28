@@ -158,6 +158,15 @@ class _RecordingSessionNotifier extends RelaySessionNotifier {
         subscription.filter.tags['#h']!,
   ];
 
+  /// Every registered channel-scoped subscription addressed to a recipient
+  /// (`#h` plus `#p`), in order.
+  List<NostrFilter> get channelMentionSubscriptions => [
+    for (final subscription in _subscriptions)
+      if (subscription.filter.tags.containsKey('#h') &&
+          subscription.filter.tags.containsKey('#p'))
+        subscription.filter,
+  ];
+
   /// The `#h` value lists of every registered visible-DM subscription (kind 9
   /// only), in order.
   List<List<String>> get visibleDmSubscriptionBatches => [
@@ -168,9 +177,14 @@ class _RecordingSessionNotifier extends RelaySessionNotifier {
         subscription.filter.tags['#h']!,
   ];
 
+  /// Delivers [event] to live subscriptions the way the relay fans it out:
+  /// an event in a channel (`h` tag) reaches only subscriptions with `#h`, and
+  /// a channel-less event reaches only subscriptions without `#h`.
   void emit(NostrEvent event) {
     _history.add(event);
+    final inChannel = event.tags.any((tag) => tag.length > 1 && tag[0] == 'h');
     for (final subscription in List.of(_subscriptions)) {
+      if (subscription.filter.tags.containsKey('#h') != inChannel) continue;
       if (_matches(subscription.filter, event)) {
         subscription.onEvent(event);
       }
@@ -219,6 +233,18 @@ Channel _dmChannel(String id) => Channel(
   name: 'dm',
   channelType: 'dm',
   visibility: 'private',
+  description: '',
+  createdBy: 'x',
+  createdAt: DateTime(2025),
+  memberCount: 2,
+  isMember: true,
+);
+
+Channel _channel(String id) => Channel(
+  id: id,
+  name: id,
+  channelType: 'stream',
+  visibility: 'open',
   description: '',
   createdBy: 'x',
   createdAt: DateTime(2025),
@@ -793,7 +819,7 @@ void main() {
           myPubkeyProvider.overrideWithValue('me_pk'),
           relaySessionProvider.overrideWith(() => session),
           channelsProvider.overrideWith(
-            () => _FixedChannelsNotifier(const <Channel>[]),
+            () => _FixedChannelsNotifier([_channel('channel-1')]),
           ),
         ],
       );
@@ -821,6 +847,87 @@ void main() {
       await Future<void>.delayed(const Duration(milliseconds: 100));
 
       expect(container.read(inboxItemsProvider).single.id, 'live-mention');
+    },
+  );
+
+  test('subscribes to mentions in every joined channel', () async {
+    final session = _RecordingSessionNotifier();
+    final container = ProviderContainer(
+      overrides: [
+        relayConfigProvider.overrideWith(_FixedRelayConfigNotifier.new),
+        myPubkeyProvider.overrideWithValue('me_pk'),
+        relaySessionProvider.overrideWith(() => session),
+        channelsProvider.overrideWith(
+          () => _FixedChannelsNotifier([
+            _channel('channel-1'),
+            _channel('channel-2'),
+            _dmChannel('dm1'),
+            Channel(
+              id: 'not-joined',
+              name: 'not-joined',
+              channelType: 'stream',
+              visibility: 'open',
+              description: '',
+              createdBy: 'x',
+              createdAt: DateTime(2025),
+              memberCount: 2,
+              isMember: false,
+            ),
+          ]),
+        ),
+      ],
+    );
+    addTearDown(container.dispose);
+
+    await container.read(channelsProvider.future);
+    await container.read(activityProvider.future);
+    await _waitFor(() => session.channelMentionSubscriptions.isNotEmpty);
+
+    final subscription = session.channelMentionSubscriptions.single;
+    expect(subscription.tags['#h'], ['channel-1', 'channel-2', 'dm1']);
+    expect(subscription.tags['#p'], ['me_pk']);
+    expect(subscription.kinds, containsAll([9, 40002, 45001, 45003]));
+  });
+
+  test(
+    'a channel mention reaches Activity once the channel is joined',
+    () async {
+      final session = _RecordingSessionNotifier();
+      late _FixedChannelsNotifier channels;
+      final container = ProviderContainer(
+        overrides: [
+          relayConfigProvider.overrideWith(_FixedRelayConfigNotifier.new),
+          myPubkeyProvider.overrideWithValue('me_pk'),
+          relaySessionProvider.overrideWith(() => session),
+          channelsProvider.overrideWith(
+            () => channels = _FixedChannelsNotifier(const <Channel>[]),
+          ),
+        ],
+      );
+      addTearDown(container.dispose);
+      // Keep Activity listened to, as the open page does, so the channel
+      // change rebuilds it.
+      container.listen(activityProvider, (_, _) {});
+
+      await container.read(channelsProvider.future);
+      await container.read(activityProvider.future);
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+
+      session.emit(_mentionEvent('before-join', 1_700_000_001));
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      expect(container.read(inboxItemsProvider), isEmpty);
+
+      channels.setChannels([_channel('channel-1')]);
+      await _waitFor(() => session.channelMentionSubscriptions.isNotEmpty);
+      // Joining rebuilds the feed, which fetches the earlier mention.
+      await _waitFor(() => container.read(inboxItemsProvider).length == 1);
+
+      session.emit(_mentionEvent('after-join', 1_700_000_002));
+      await _waitFor(() => container.read(inboxItemsProvider).length == 2);
+      expect(container.read(inboxItemsProvider).map((item) => item.id), [
+        'after-join',
+        'before-join',
+      ]);
     },
   );
 
@@ -1229,7 +1336,7 @@ void main() {
           myPubkeyProvider.overrideWithValue('me_pk'),
           relaySessionProvider.overrideWith(() => session),
           channelsProvider.overrideWith(
-            () => _FixedChannelsNotifier(const <Channel>[]),
+            () => _FixedChannelsNotifier([_channel('channel-1')]),
           ),
         ],
       );
@@ -1267,7 +1374,7 @@ void main() {
         myPubkeyProvider.overrideWithValue('me_pk'),
         relaySessionProvider.overrideWith(() => session),
         channelsProvider.overrideWith(
-          () => _FixedChannelsNotifier(const <Channel>[]),
+          () => _FixedChannelsNotifier([_channel('channel-1')]),
         ),
       ],
     );
@@ -1305,7 +1412,7 @@ void main() {
         myPubkeyProvider.overrideWithValue('me_pk'),
         relaySessionProvider.overrideWith(() => session),
         channelsProvider.overrideWith(
-          () => _FixedChannelsNotifier(const <Channel>[]),
+          () => _FixedChannelsNotifier([_channel('channel-1')]),
         ),
       ],
     );
@@ -1610,6 +1717,8 @@ class _FixedChannelsNotifier extends ChannelsNotifier {
 
   @override
   Future<List<Channel>> build() async => channels;
+
+  void setChannels(List<Channel> next) => state = AsyncData(next);
 }
 
 class _DeferredChannelsNotifier extends ChannelsNotifier {

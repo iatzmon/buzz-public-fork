@@ -1,6 +1,8 @@
 import 'dart:async' show Timer, unawaited;
 import 'dart:math' show cos, min, pi, sin;
 
+import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:flutter/gestures.dart' show PointerDeviceKind;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_hooks/flutter_hooks.dart';
@@ -322,11 +324,18 @@ class BeeRefreshIndicator extends HookConsumerWidget {
     final eyeShakeOffset = showEyeEmoji && !reducedMotion
         ? sin(eyeShakeProgress * 2 * pi) * 0.75
         : 0.0;
-    final scrollBehavior = ScrollConfiguration.of(context).copyWith(
+    final baseScrollBehavior = ScrollConfiguration.of(context);
+    final scrollBehavior = baseScrollBehavior.copyWith(
       overscroll: false,
       physics: const BouncingScrollPhysics(
         parent: AlwaysScrollableScrollPhysics(),
       ),
+      // A desktop browser has no touch drag to pull with, and trackpad swipes
+      // arrive as scroll-wheel signals that never overscroll. Let a mouse drag
+      // pull the list so refresh is reachable there too.
+      dragDevices: kIsWeb
+          ? {...baseScrollBehavior.dragDevices, PointerDeviceKind.mouse}
+          : null,
     );
 
     return Stack(

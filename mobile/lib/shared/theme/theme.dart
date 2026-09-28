@@ -17,3 +17,4 @@ export 'theme_pairs.dart';
 export 'theme_provider.dart';
 export 'text_theme.dart' show bodyExtraSmallTextStyle;
 export 'utility_surface_theme.dart';
+export 'web_status_bar_color.dart';

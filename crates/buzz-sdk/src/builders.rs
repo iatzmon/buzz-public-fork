@@ -1453,6 +1453,42 @@ fn build_git_issue_assignee_operation(
         tags.push(tag(&["prior", &prior])?);
     }
 
+    // Self-assignment names the signer in a `p` tag. nostr 0.44 drops
+    // same-pubkey `p` tags by default, which would leave an assignment with
+    // no assignee, so opt in explicitly.
+    Ok(EventBuilder::new(Kind::Custom(1), content)
+        .tags(tags)
+        .allow_self_tagging())
+}
+
+/// Build a plain issue comment (kind:1) — the event shape the Desktop app
+/// writes from a task's comment box, so it shows in the task's Activity.
+///
+/// Tag layout: `["e", <issue>, "", "root"]`, `["a", <repo>]`, and one
+/// `["p", ..]` per recipient.
+pub fn build_git_issue_comment(
+    repo: &GitRepoCoord,
+    issue_id: &str,
+    content: &str,
+    recipients: &[String],
+) -> Result<EventBuilder, SdkError> {
+    check_content(content, 64 * 1024)?;
+    if content.trim().is_empty() {
+        return Err(SdkError::InvalidInput("comment cannot be empty".into()));
+    }
+    let issue = check_hex_exact(issue_id, 64, "issue")?;
+    let a_value = repo.to_a_tag_value()?;
+    let mut normalized = recipients
+        .iter()
+        .map(|recipient| check_pubkey_hex(recipient, "recipient"))
+        .collect::<Result<Vec<_>, _>>()?;
+    normalized.sort();
+    normalized.dedup();
+
+    let mut tags = vec![tag(&["e", &issue, "", "root"])?, tag(&["a", &a_value])?];
+    for recipient in &normalized {
+        tags.push(tag(&["p", recipient])?);
+    }
     Ok(EventBuilder::new(Kind::Custom(1), content).tags(tags))
 }
 
@@ -4172,6 +4208,58 @@ mod tests {
             .filter(|tag| tag.as_slice().first().map(String::as_str) == Some("p"))
             .count();
         assert_eq!(p_count, 2);
+    }
+
+    #[test]
+    fn git_issue_self_assignment_keeps_signer_p_tag() {
+        let keys = Keys::generate();
+        let me = keys.public_key().to_hex();
+        let repo = GitRepoCoord {
+            owner: me.clone(),
+            id: "repo".to_string(),
+        };
+        let issue = "b".repeat(64);
+        for builder in [
+            build_git_issue_assignment(&repo, &issue, std::slice::from_ref(&me), "Assigned")
+                .unwrap(),
+            build_git_issue_unassignment(&repo, &issue, std::slice::from_ref(&me), "Unassigned")
+                .unwrap(),
+        ] {
+            let ev = builder.sign_with_keys(&keys).expect("sign");
+            assert_eq!(ev.pubkey.to_hex(), me);
+            assert!(has_tag(&ev, "p", &me), "self p tag must survive signing");
+        }
+    }
+
+    #[test]
+    fn git_issue_comment_layout() {
+        let owner = "a".repeat(64);
+        let repo = GitRepoCoord {
+            owner: owner.clone(),
+            id: "repo".to_string(),
+        };
+        let issue = "b".repeat(64);
+        let ev = sign(
+            build_git_issue_comment(
+                &repo,
+                &issue,
+                "Next action changed.",
+                &[owner.clone(), owner.to_uppercase(), "d".repeat(64)],
+            )
+            .unwrap(),
+        );
+        assert_eq!(ev.kind.as_u16(), 1);
+        assert_eq!(ev.content, "Next action changed.");
+        assert!(has_tag(&ev, "e", &issue));
+        assert!(has_tag(&ev, "a", &format!("30617:{owner}:repo")));
+        assert!(has_tag(&ev, "p", &owner));
+        assert!(has_tag(&ev, "p", &"d".repeat(64)));
+        assert!(!ev
+            .tags
+            .iter()
+            .any(|tag| tag.as_slice().first().map(String::as_str) == Some("t")));
+        assert!(build_git_issue_comment(&repo, &issue, "  ", &[]).is_err());
+        assert!(build_git_issue_comment(&repo, "zz", "x", &[]).is_err());
     }
 
     #[test]

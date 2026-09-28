@@ -1852,6 +1852,28 @@ pub enum IssuesCmd {
         #[arg(long = "to")]
         to: Vec<String>,
     },
+    /// Add a comment to an issue. It shows in the task's Activity in Buzz
+    /// Desktop, like a comment typed there. Use it for progress notes, next
+    /// actions and corrections; a status note (`issues status --content`)
+    /// is not shown as a comment.
+    Comment {
+        /// Issue event id (64-char hex)
+        #[arg(long)]
+        issue: String,
+        /// Repo owner pubkey (64-char hex)
+        #[arg(long)]
+        repo_owner: String,
+        /// Repo identifier (d-tag)
+        #[arg(long)]
+        repo_id: String,
+        /// Comment body, markdown. Use '-' to read from stdin.
+        #[arg(long)]
+        content: String,
+        /// Additional recipient pubkey(s) besides the repo owner — can be
+        /// specified multiple times
+        #[arg(long = "to")]
+        to: Vec<String>,
+    },
     /// Assign an issue to one or more people or agents. Assignments of other
     /// people are trusted by clients when signed by the issue author, the
     /// repository owner, or a community owner; anyone may assign themselves
@@ -2561,7 +2583,7 @@ mod tests {
         );
         assert_eq!(
             names(&cmd, "issues"),
-            vec!["assign", "create", "get", "list", "status", "unassign"]
+            vec!["assign", "comment", "create", "get", "list", "status", "unassign"]
         );
         assert_eq!(names(&cmd, "media"), vec!["get"]);
         assert_eq!(names(&cmd, "upload"), vec!["file"]);
@@ -2590,7 +2612,7 @@ mod tests {
             ("dms", 4),
             ("emoji", 5),
             ("feed", 1),
-            ("issues", 6),
+            ("issues", 7),
             ("media", 1),
             ("messages", 8),
             ("pack", 2),

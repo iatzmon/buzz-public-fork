@@ -84,6 +84,10 @@ class Channel {
   bool get isPrivate => visibility == 'private';
   bool get canJoin => visibility == 'open' && !isArchived && !isMember && !isDm;
 
+  /// Whether the viewer may post here: a member of a channel that is not
+  /// archived. The channel and forum views show their composer only then.
+  bool get canPost => isMember && !isArchived;
+
   /// Whether [selfRole] may add *another* identity here, mirroring the relay's
   /// kind:9000 authority (`validate_admin_event` + `add_member`): DMs never,
   /// open channels always, private channels for any active member. Elevated

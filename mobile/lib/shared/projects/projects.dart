@@ -15,8 +15,11 @@
 /// - [listProjectBoundChannels] — the home, related, and repository channels.
 /// - [projectRepoPresentation] — Buzz-hosted vs external host and the
 ///   "Open on `host`" link for a repository.
+/// - [ProjectApp] / [projectAppsFromTags] — web apps linked with `buzz-app`
+///   tags.
 library;
 
+export 'project_apps.dart';
 export 'project_bound_channels.dart';
 export 'project_enumeration.dart' show ProjectsLoadException;
 export 'project_home.dart'

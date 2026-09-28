@@ -105,6 +105,39 @@ Ingest bounds metadata cardinality and length; it interprets no metadata value. 
 - `buzz-visibility` absent or holding any value other than `listed` or `unlisted` → treated as `listed`. An unrecognized token MUST NOT hide a project: a typo in a metadata field is not a privacy signal, and treating it as one would make a project vanish for reasons its author cannot see.
 - `buzz-channel` absent, or naming a channel the viewer cannot resolve or read → the project renders without a channel link. It MUST NOT be dropped from the collection, and the unresolvable value MUST NOT be surfaced as a broken link.
 
+### Project apps (`buzz-app`)
+
+A project MAY link web apps with a repeatable client-convention tag:
+
+```jsonc
+["buzz-app", "https://side-hustles.example.com/", "Side Hustles"]
+```
+
+| Element | Meaning |
+|---------|---------|
+| 1 | The app URL. Clients accept only an absolute `https:` URL with a host, no user info, and at most 2048 characters. |
+| 2 | Optional display label. Clients fall back to the URL host when it is absent or blank. |
+
+This is not an envelope rule: the relay does not validate `buzz-app` (an unrecognized tag, per [Event Format](#event-format)), so a malformed tag never rejects the project. Every client MUST read it the same way:
+
+- Skip a tag whose URL fails the check above. A skipped tag MUST NOT hide the project or its other apps.
+- A URL that repeats an earlier tag's URL is skipped; the first tag wins.
+- Read at most 20 apps, in tag order; later tags are ignored.
+- Writers that republish a project MUST keep its `buzz-app` tags unless the edit removes an app. `buzz projects update --add-app <url> [--app-label <label>]` and `--remove-app <url>` edit them and keep every other tag.
+
+**Showing an app.** Buzz shows an app in the project's Apps tab. The web client embeds it in an iframe with `sandbox="allow-scripts allow-same-origin allow-forms allow-popups"` and an empty `allow` list; native clients open it in the browser. The app keeps its own origin, so it cannot read Buzz's storage or the user's key.
+
+**Talking to Buzz.** An embedded app may send JSON-RPC 2.0 requests with `window.parent.postMessage`, using the [MCP Apps](https://github.com/modelcontextprotocol/ext-apps/blob/main/specification/2026-01-26/apps.mdx) method names. Buzz accepts a message only when its `origin` is the embedded app's origin, its `source` is that app's iframe, and the project still lists the app. It ignores anything that is not a JSON-RPC 2.0 request, and notifications (no `id`).
+
+| Method | Params | Buzz does |
+|--------|--------|-----------|
+| `ui/message` | `{"role": "user", "content": {"type": "text", "text": "…"}}` (a list of text blocks is also accepted) | Puts the text into an unsent draft in the project's home channel composer (after any draft already there) and opens it; a forum home opens its new-post composer. Buzz never sends it: the user presses send. |
+| `ui/open-link` | `{"url": "…"}` | Opens `buzz://` channel and message links inside Buzz and `https:` links in a new browser tab. Refuses every other link with `-32000 Policy violation`. |
+
+Success replies `{"jsonrpc": "2.0", "id": <id>, "result": {}}`. Malformed params reply `-32602`, a refused request `-32000` with a reason, and any other method `-32601 Method not found`.
+
+A project signer chooses which apps its project links; anyone may publish a project. An app can therefore only draft text for the user to read and send, and open links the user can already open.
+
 ### Member coordinates
 
 A member `a` tag follows NIP-01's `a` tag grammar: `["a", "<coordinate>"]` or `["a", "<coordinate>", "<relay-url>"]`. Ingest validates the tag's arity — exactly two or three elements — and the coordinate in element 1. The relay URL is opaque: it is never parsed and never a rejection cause by content. A fourth element has no meaning in this grammar and is rejected rather than ignored, so a writer cannot smuggle unbounded data into a position no consumer reads.

@@ -27,16 +27,22 @@ class ForumPostsView extends HookConsumerWidget {
   final Channel channel;
   final String? currentPubkey;
 
+  /// Opens with the new-post composer showing (and its saved draft), when
+  /// the viewer can post.
+  final bool startComposing;
+
   const ForumPostsView({
     super.key,
     required this.channel,
     required this.currentPubkey,
+    this.startComposing = false,
   });
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final postsAsync = ref.watch(forumPostsProvider(channel.id));
-    final isComposing = useState(false);
+    final canPost = channel.canPost;
+    final isComposing = useState(startComposing && canPost);
     // A queued attachment can finish after this view is popped. Capture the
     // app-level provider container instead of retaining the route's WidgetRef.
     final providerContainer = ProviderScope.containerOf(context, listen: false);
@@ -49,8 +55,6 @@ class ForumPostsView extends HookConsumerWidget {
       });
       return timer.cancel;
     }, [channel.id]);
-
-    final canPost = channel.isMember && !channel.isArchived;
 
     // People writing without naming a post: a new post, or an agent harness
     // that does not yet tag the post it is replying to.

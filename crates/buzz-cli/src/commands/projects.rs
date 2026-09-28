@@ -596,6 +596,9 @@ pub async fn cmd_update(
     clear_channel: bool,
     visibility: Option<&str>,
     clear_visibility: bool,
+    add_app: Option<&str>,
+    app_label: Option<&str>,
+    remove_apps: &[String],
 ) -> Result<(), CliError> {
     // Guard: at least one mutation required. The clap `ArgGroup` with
     // `required(true).multiple(true)` enforces this at parse time; this
@@ -608,14 +611,20 @@ pub async fn cmd_update(
         || channel.is_some()
         || clear_channel
         || visibility.is_some()
-        || clear_visibility;
+        || clear_visibility
+        || add_app.is_some()
+        || !remove_apps.is_empty();
     if !has_mutation {
         return Err(CliError::Usage(
             "buzz projects update requires at least one of: \
              --name, --clear-name, --description, --clear-description, \
-             --channel, --clear-channel, --visibility, --clear-visibility"
+             --channel, --clear-channel, --visibility, --clear-visibility, \
+             --add-app, --remove-app"
                 .into(),
         ));
+    }
+    if app_label.is_some() && add_app.is_none() {
+        return Err(CliError::Usage("--app-label requires --add-app".into()));
     }
 
     validate_project_slug(slug)?;
@@ -625,6 +634,7 @@ pub async fn cmd_update(
     if let Some(vis) = visibility {
         validate_visibility(vis)?;
     }
+    let app_changes = AppChanges::parse(add_app, app_label, remove_apps)?;
 
     let head = fetch_own_project(client, slug)
         .await?
@@ -675,11 +685,162 @@ pub async fn cmd_update(
     if let Some(vis) = visibility {
         tags.push(make_tag(&["buzz-visibility", vis])?);
     }
+    let tags = app_changes.apply(slug, tags)?;
 
     let builder = build_project_with_tags(&head.content, tags)
         .map_err(|e| CliError::Other(format!("envelope validation failed: {e}")))?
         .custom_created_at(next_ts);
     submit_project(client, builder, None).await
+}
+
+// ── Project apps (`buzz-app` tags) ────────────────────────────────────────────
+
+/// Repeatable project tag linking a web app: `["buzz-app", <url>, <label>]`.
+/// A client convention (see `docs/nips/NIP-MP.md`); the relay passes it
+/// through as an unrecognized tag.
+const PROJECT_APP_TAG: &str = "buzz-app";
+
+/// Clients read at most this many apps per project.
+const PROJECT_APP_CAP: usize = 20;
+
+/// Longest app URL clients accept, in characters.
+const PROJECT_APP_URL_MAX_LEN: usize = 2048;
+
+/// Longest `--app-label`, in bytes (matches the `name` tag bound).
+const PROJECT_APP_LABEL_MAX_LEN: usize = 256;
+
+/// Normalize a project app URL, or fail with a usage error.
+///
+/// Accepts only absolute `https:` URLs with a host and no user info, the same
+/// rule clients use before they show an app.
+fn normalize_app_url(raw: &str) -> Result<String, CliError> {
+    let raw = raw.trim();
+    if raw.chars().count() > PROJECT_APP_URL_MAX_LEN {
+        return Err(CliError::Usage(format!(
+            "app URL exceeds {PROJECT_APP_URL_MAX_LEN} characters"
+        )));
+    }
+    let url = url::Url::parse(raw)
+        .map_err(|e| CliError::Usage(format!("invalid app URL {raw:?}: {e}")))?;
+    if url.scheme() != "https" {
+        return Err(CliError::Usage(format!("app URL must use https: {raw:?}")));
+    }
+    if url.host_str().is_none_or(str::is_empty) {
+        return Err(CliError::Usage(format!("app URL has no host: {raw:?}")));
+    }
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err(CliError::Usage(format!(
+            "app URL must not contain credentials: {raw:?}"
+        )));
+    }
+    Ok(url.to_string())
+}
+
+/// The normalized URL of a `buzz-app` tag, or its raw value when it does not
+/// parse (so a malformed tag can still be matched and removed verbatim).
+fn app_tag_url(tag: &Tag) -> Option<String> {
+    if tag_name(tag) != Some(PROJECT_APP_TAG) {
+        return None;
+    }
+    let value = tag_value(tag)?;
+    Some(normalize_app_url(value).unwrap_or_else(|_| value.trim().to_string()))
+}
+
+/// Validated `--add-app` / `--app-label` / `--remove-app` flags.
+#[derive(Debug, Default)]
+struct AppChanges {
+    /// Normalized URL and optional label to add or relabel.
+    add: Option<(String, Option<String>)>,
+    /// Normalized URLs to remove.
+    remove: Vec<String>,
+}
+
+impl AppChanges {
+    /// Validate the app flags locally, before any network call.
+    fn parse(
+        add_app: Option<&str>,
+        app_label: Option<&str>,
+        remove_apps: &[String],
+    ) -> Result<Self, CliError> {
+        let label = match app_label.map(str::trim) {
+            Some("") => return Err(CliError::Usage("--app-label must not be empty".into())),
+            Some(label) if label.len() > PROJECT_APP_LABEL_MAX_LEN => {
+                return Err(CliError::Usage(format!(
+                    "--app-label exceeds {PROJECT_APP_LABEL_MAX_LEN} bytes"
+                )))
+            }
+            other => other.map(str::to_string),
+        };
+        let add = add_app
+            .map(normalize_app_url)
+            .transpose()?
+            .map(|url| (url, label));
+        let remove = remove_apps
+            .iter()
+            .map(|raw| normalize_app_url(raw))
+            .collect::<Result<Vec<_>, _>>()?;
+        if let Some((url, _)) = &add {
+            if remove.contains(url) {
+                return Err(CliError::Usage(format!(
+                    "cannot both add and remove app {url:?}"
+                )));
+            }
+        }
+        Ok(Self { add, remove })
+    }
+
+    /// Apply the changes to a project's tags. Every other tag is kept.
+    ///
+    /// Removing an app the project does not link is `NotFound`; an add that
+    /// would take the project past [`PROJECT_APP_CAP`] apps is a usage error.
+    fn apply(&self, slug: &str, tags: Vec<Tag>) -> Result<Vec<Tag>, CliError> {
+        for url in &self.remove {
+            if !tags.iter().any(|t| app_tag_url(t).as_deref() == Some(url)) {
+                return Err(CliError::NotFound(format!(
+                    "project {slug:?} has no app {url:?}"
+                )));
+            }
+        }
+        let mut tags: Vec<Tag> = tags
+            .into_iter()
+            .filter(|t| app_tag_url(t).is_none_or(|url| !self.remove.contains(&url)))
+            .collect();
+        let Some((url, label)) = &self.add else {
+            return Ok(tags);
+        };
+        let new_tag = match label {
+            Some(label) => make_tag(&[PROJECT_APP_TAG, url, label])?,
+            None => make_tag(&[PROJECT_APP_TAG, url])?,
+        };
+        // Relabel in place (first match wins, as clients read it); drop any
+        // later duplicates of the same URL.
+        let mut replaced = false;
+        tags.retain_mut(|t| {
+            if app_tag_url(t).as_deref() != Some(url.as_str()) {
+                return true;
+            }
+            if replaced {
+                return false;
+            }
+            *t = new_tag.clone();
+            replaced = true;
+            true
+        });
+        if !replaced {
+            tags.push(new_tag);
+        }
+        let app_count = tags
+            .iter()
+            .filter_map(app_tag_url)
+            .collect::<std::collections::HashSet<_>>()
+            .len();
+        if app_count > PROJECT_APP_CAP {
+            return Err(CliError::Usage(format!(
+                "a project can link at most {PROJECT_APP_CAP} apps"
+            )));
+        }
+        Ok(tags)
+    }
 }
 
 /// `buzz projects delete`
@@ -853,6 +1014,9 @@ pub async fn dispatch(cmd: crate::ProjectsCmd, client: &BuzzClient) -> Result<()
             clear_channel,
             visibility,
             clear_visibility,
+            add_app,
+            app_label,
+            remove_app,
         } => {
             cmd_update(
                 client,
@@ -865,6 +1029,9 @@ pub async fn dispatch(cmd: crate::ProjectsCmd, client: &BuzzClient) -> Result<()
                 clear_channel,
                 visibility.map(|v| v.as_str()),
                 clear_visibility,
+                add_app.as_deref(),
+                app_label.as_deref(),
+                &remove_app,
             )
             .await
         }
@@ -1522,10 +1689,19 @@ mod tests {
             .expect("client construction");
 
         let err = cmd_update(
-            &client, "my-slug", None, false, // name / clear_name
-            None, false, // description / clear_description
-            None, false, // channel / clear_channel
-            None, false, // visibility / clear_visibility
+            &client,
+            "my-slug",
+            None,
+            false, // name / clear_name
+            None,
+            false, // description / clear_description
+            None,
+            false, // channel / clear_channel
+            None,
+            false, // visibility / clear_visibility
+            None,
+            None,
+            &[], // add_app / app_label / remove_app
         )
         .await
         .expect_err("empty update must fail");
@@ -1712,4 +1888,181 @@ mod tests {
     // The add-repo no-op Conflict path is pinned by the live transcript
     // (step 7: buzz already present → exit=5). No relay mock is available
     // for a unit test; the async no-network tests above cover all pre-await paths.
+    // ── project apps (`buzz-app`) ─────────────────────────────────────────────
+
+    fn app_tags(tags: &[Tag]) -> Vec<Vec<String>> {
+        tags.iter()
+            .filter(|t| tag_name(t) == Some(PROJECT_APP_TAG))
+            .map(|t| t.as_slice().to_vec())
+            .collect()
+    }
+
+    fn changes(add: Option<&str>, label: Option<&str>, remove: &[&str]) -> AppChanges {
+        let remove: Vec<String> = remove.iter().map(|s| s.to_string()).collect();
+        AppChanges::parse(add, label, &remove).expect("valid app flags")
+    }
+
+    #[test]
+    fn add_app_appends_tag_and_keeps_every_other_tag() {
+        let uuid = "3580ca9b-47b4-4af9-b22a-1068778f26c6";
+        let coord = format!("30617:{OWNER_HEX}:buzz");
+        let head = make_head_tags(&[
+            make_test_tag(&["name", "Side Hustles"]),
+            make_test_tag(&["a", &coord, "wss://relay.example"]),
+            make_test_tag(&["buzz-channel", uuid]),
+            make_test_tag(&["buzz-related-channel", uuid]),
+            make_test_tag(&["x-future", "keep", "me"]),
+        ]);
+        let result = changes(
+            Some("https://side-hustles.example.com/"),
+            Some("Side Hustles"),
+            &[],
+        )
+        .apply("side-hustles", head.clone())
+        .expect("add succeeds");
+
+        assert_eq!(&result[..head.len()], &head[..], "existing tags unchanged");
+        assert_eq!(
+            app_tags(&result),
+            [[
+                "buzz-app",
+                "https://side-hustles.example.com/",
+                "Side Hustles"
+            ]]
+        );
+        // The result is still a valid NIP-MP envelope.
+        assert!(rebuild_project("", result, Timestamp::from(1u64)).is_ok());
+    }
+
+    #[test]
+    fn add_app_without_label_writes_two_element_tag() {
+        let result = changes(Some("https://board.example.com"), None, &[])
+            .apply("p", make_head_tags(&[]))
+            .expect("add succeeds");
+        // Normalized by the url crate: a bare host gains a trailing slash.
+        assert_eq!(
+            app_tags(&result),
+            [["buzz-app", "https://board.example.com/"]]
+        );
+    }
+
+    #[test]
+    fn add_existing_app_relabels_in_place_and_drops_duplicates() {
+        let head = make_head_tags(&[
+            make_test_tag(&["buzz-app", "https://a.example.com/", "A"]),
+            make_test_tag(&["buzz-app", "https://b.example.com/", "Old"]),
+            make_test_tag(&["buzz-app", "https://c.example.com/", "C"]),
+            make_test_tag(&["buzz-app", "https://b.example.com", "Dup"]),
+        ]);
+        let result = changes(Some("https://b.example.com/"), Some("New"), &[])
+            .apply("p", head)
+            .expect("relabel succeeds");
+        assert_eq!(
+            app_tags(&result),
+            [
+                ["buzz-app", "https://a.example.com/", "A"],
+                ["buzz-app", "https://b.example.com/", "New"],
+                ["buzz-app", "https://c.example.com/", "C"],
+            ]
+        );
+    }
+
+    #[test]
+    fn remove_app_drops_only_that_app() {
+        let head = make_head_tags(&[
+            make_test_tag(&["name", "P"]),
+            make_test_tag(&["buzz-app", "https://a.example.com/", "A"]),
+            make_test_tag(&["buzz-app", "https://b.example.com/", "B"]),
+        ]);
+        let result = changes(None, None, &["https://a.example.com"])
+            .apply("p", head)
+            .expect("remove succeeds");
+        assert_eq!(
+            app_tags(&result),
+            [["buzz-app", "https://b.example.com/", "B"]]
+        );
+        assert!(result.iter().any(|t| tag_value(t) == Some("P")));
+    }
+
+    #[test]
+    fn remove_missing_app_is_not_found() {
+        let head = make_head_tags(&[make_test_tag(&["buzz-app", "https://a.example.com/"])]);
+        let err = changes(None, None, &["https://other.example.com/"])
+            .apply("p", head)
+            .expect_err("missing app must fail");
+        assert!(matches!(err, CliError::NotFound(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn add_app_past_cap_is_rejected() {
+        let extra: Vec<Tag> = (0..PROJECT_APP_CAP)
+            .map(|i| make_test_tag(&["buzz-app", &format!("https://app{i}.example.com/")]))
+            .collect();
+        let head = make_head_tags(&extra);
+        let err = changes(Some("https://one-more.example.com/"), None, &[])
+            .apply("p", head.clone())
+            .expect_err("21st app must fail");
+        assert!(matches!(err, CliError::Usage(_)), "got {err:?}");
+        // Relabeling an existing app at the cap is still allowed.
+        assert!(
+            changes(Some("https://app0.example.com/"), Some("Zero"), &[])
+                .apply("p", head)
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn app_flags_reject_non_https_urls_and_bad_labels() {
+        for url in [
+            "http://plain.example.com/",
+            "javascript:alert(1)",
+            "data:text/html,hi",
+            "https://user:pw@example.com/",
+            "not a url",
+            "",
+        ] {
+            let err = AppChanges::parse(Some(url), None, &[]).expect_err(url);
+            assert!(matches!(err, CliError::Usage(_)), "{url}: got {err:?}");
+            let err = AppChanges::parse(None, None, &[url.to_string()]).expect_err(url);
+            assert!(matches!(err, CliError::Usage(_)), "{url}: got {err:?}");
+        }
+        let long = format!(
+            "https://a.example.com/{}",
+            "a".repeat(PROJECT_APP_URL_MAX_LEN)
+        );
+        assert!(AppChanges::parse(Some(&long), None, &[]).is_err());
+        assert!(AppChanges::parse(Some("https://a.example.com/"), Some("  "), &[]).is_err());
+        let label = "x".repeat(PROJECT_APP_LABEL_MAX_LEN + 1);
+        assert!(AppChanges::parse(Some("https://a.example.com/"), Some(&label), &[]).is_err());
+        assert!(AppChanges::parse(
+            Some("https://a.example.com/"),
+            None,
+            &["https://a.example.com".to_string()],
+        )
+        .is_err());
+    }
+
+    /// A bad app URL fails locally, before any network call.
+    #[tokio::test]
+    async fn update_invalid_app_url_returns_usage_before_any_network_call() {
+        let client = discard_client();
+        let err = cmd_update(
+            &client,
+            "my-slug",
+            None,
+            false,
+            None,
+            false,
+            None,
+            false,
+            None,
+            false,
+            Some("http://insecure.example.com/"),
+            None,
+            &[],
+        )
+        .await
+        .expect_err("http app must fail");
+        assert!(matches!(err, CliError::Usage(_)), "got {err:?}");
+    }
 }

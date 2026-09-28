@@ -1,7 +1,7 @@
 import 'dart:async';
 
-import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
+import '../../shared/utils/native_platform.dart';
 
 /// How long Android viewport metrics must stay quiet before layout correction.
 const androidImeMetricsSettleDelay = Duration(milliseconds: 120);
@@ -28,7 +28,7 @@ class ImeMetricsSettleObserver with WidgetsBindingObserver {
 
   @override
   void didChangeMetrics() {
-    if (defaultTargetPlatform != TargetPlatform.android) {
+    if (!isNativeAndroid) {
       onMetricsSettled();
       return;
     }

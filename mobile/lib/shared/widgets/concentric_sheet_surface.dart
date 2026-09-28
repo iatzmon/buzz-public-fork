@@ -1,12 +1,12 @@
 import 'dart:async';
 
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_hooks/flutter_hooks.dart';
 
 import '../theme/theme.dart';
+import '../utils/native_platform.dart';
 
 enum ConcentricSurfaceCorners { all, bottom }
 
@@ -107,8 +107,7 @@ class ConcentricSheetSurface extends HookWidget {
 
   @override
   Widget build(BuildContext context) {
-    final shouldCheckNativeSurface =
-        enabled && defaultTargetPlatform == TargetPlatform.iOS;
+    final shouldCheckNativeSurface = enabled && isNativeIos;
     final supportFuture = useMemoized(
       () => shouldCheckNativeSurface
           ? _checkNativeSurfaceSupport()

@@ -39,6 +39,7 @@ import '../../shared/read_state/read_state_provider.dart';
 import 'thread_detail_page.dart';
 import 'thread_follows/thread_follows_provider.dart';
 import 'timeline_message.dart';
+import '../../shared/utils/native_platform.dart';
 
 part 'message_actions/reaction_popover.dart';
 part 'message_actions/quick_reaction_row.dart';
@@ -457,8 +458,7 @@ Future<void> _saveImage(
   final messenger = ScaffoldMessenger.maybeOf(context);
   try {
     final needsPhotoLibraryPermission =
-        defaultTargetPlatform == TargetPlatform.iOS ||
-        await requiresLegacyMediaStoragePermission();
+        isNativeIos || await requiresLegacyMediaStoragePermission();
     if (needsPhotoLibraryPermission) {
       final permission = await PhotoManager.requestPermissionExtend(
         requestOption: const PermissionRequestOption(

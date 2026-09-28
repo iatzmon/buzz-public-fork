@@ -19,7 +19,7 @@ bool _messageActionPresentationInFlight = false;
 bool? _iosNativeMessageActionSurfaceSupported;
 
 Future<bool> _supportsIosNativeMessageActionSurface() async {
-  if (!Platform.isIOS) return false;
+  if (kIsWeb || !Platform.isIOS) return false;
   final cached = _iosNativeMessageActionSurfaceSupported;
   if (cached != null) return cached;
 
@@ -135,7 +135,7 @@ Future<bool> _showMessageActionsPopover({
     );
     if (actions.isEmpty) return false;
     final nativeActionSurfaceSupport = _supportsIosNativeMessageActionSurface();
-    final isIos = defaultTargetPlatform == TargetPlatform.iOS;
+    final isIos = isNativeIos;
 
     unawaited(HapticFeedback.mediumImpact());
 
@@ -695,7 +695,7 @@ class _MessageActionsPopover extends HookWidget {
                     ),
                     builder: (context, child) {
                       final movement =
-                          (defaultTargetPlatform == TargetPlatform.iOS
+                          (isNativeIos
                                   ? Curves.easeOutCubic
                                   : Curves.easeInOutCubic)
                               .transform(animation.value);
@@ -775,7 +775,7 @@ class _MessageActionsPopover extends HookWidget {
                       opacity: appearance,
                       child: child,
                     );
-                    if (defaultTargetPlatform == TargetPlatform.iOS) {
+                    if (isNativeIos) {
                       return fadedChild;
                     }
                     return Transform.scale(

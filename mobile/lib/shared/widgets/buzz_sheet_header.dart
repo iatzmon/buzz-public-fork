@@ -7,6 +7,7 @@ import 'package:lucide_icons_flutter/lucide_icons.dart';
 import '../theme/theme.dart';
 import 'buzz_navigation_metrics.dart';
 import 'ios_glass_navigation_button.dart';
+import '../utils/native_platform.dart';
 
 /// A titled sheet header with balanced actions and an exactly centered title.
 class BuzzSheetHeader extends StatelessWidget {
@@ -82,7 +83,7 @@ class _SheetCloseButton extends StatelessWidget {
       Navigator.of(context).pop();
     }
 
-    if (Theme.of(context).platform == TargetPlatform.iOS) {
+    if (usesNativeIos(context)) {
       return IosGlassNavigationButton(
         key: const ValueKey('buzz-sheet-ios-glass-close'),
         icon: IosGlassNavigationIcon.close,

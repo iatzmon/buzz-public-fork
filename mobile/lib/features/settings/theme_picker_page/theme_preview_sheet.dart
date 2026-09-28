@@ -402,7 +402,7 @@ class _ThemePreviewCloseButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    if (defaultTargetPlatform == TargetPlatform.iOS) {
+    if (isNativeIos) {
       return IosGlassNavigationButton(
         key: const ValueKey('theme-preview-close'),
         icon: IosGlassNavigationIcon.close,
@@ -441,7 +441,7 @@ class _ThemePreviewSetButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final foreground = navigationPrimaryForeground(context);
-    if (defaultTargetPlatform == TargetPlatform.iOS) {
+    if (isNativeIos) {
       return IosGlassNavigationAction(
         key: const ValueKey('theme-preview-set'),
         label: 'Set',
@@ -492,7 +492,7 @@ class _PreviewSheetCircleAction extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    if (defaultTargetPlatform == TargetPlatform.iOS) {
+    if (isNativeIos) {
       return IosGlassNavigationButton(
         icon: IosGlassNavigationIcon.colorSwatch,
         semanticLabel: semanticLabel,
@@ -563,7 +563,7 @@ class _AppearanceCycleAction extends StatelessWidget {
   Widget build(BuildContext context) {
     final semanticLabel =
         '${appearanceModeLabel(mode)} appearance. Double tap to change.';
-    if (defaultTargetPlatform == TargetPlatform.iOS) {
+    if (isNativeIos) {
       return IosGlassNavigationButton(
         key: const ValueKey('theme-preview-appearance-action-button'),
         icon: _iosIcon,
@@ -652,7 +652,7 @@ class _ThemeScrubber extends StatelessWidget {
       child: SizedBox(
         key: const ValueKey('theme-preview-scrubber'),
         height: 54,
-        child: defaultTargetPlatform == TargetPlatform.iOS
+        child: isNativeIos
             ? Center(
                 child: SizedBox(
                   width: _iosThemeScrubberWidth,

@@ -42,9 +42,7 @@ class ComposeBar extends HookConsumerWidget {
     final draftRevision = useRef(0);
     final draftIdentity = _composerDraftIdentity(ref);
     final isComposerExpanded = useState(false);
-    final androidImeTransitionStarted = useState(
-      defaultTargetPlatform != TargetPlatform.android,
-    );
+    final androidImeTransitionStarted = useState(!isNativeAndroid);
     final androidImeFallbackTimer = useRef<Timer?>(null);
     final ownedFocusNode = useFocusNode();
     final focusNode = this.focusNode ?? ownedFocusNode;
@@ -142,7 +140,7 @@ class ComposeBar extends HookConsumerWidget {
         },
         onKeyboardHidden: () {
           androidImeFallbackTimer.value?.cancel();
-          if (defaultTargetPlatform == TargetPlatform.android) {
+          if (isNativeAndroid) {
             androidImeTransitionStarted.value = false;
           }
           voiceNote.onKeyboardHidden();
@@ -187,7 +185,7 @@ class ComposeBar extends HookConsumerWidget {
       ],
     );
     useEffect(() {
-      if (defaultTargetPlatform != TargetPlatform.iOS) return null;
+      if (!isNativeIos) return null;
 
       var disposed = false;
       Future<void> refreshClipboardAvailability() async {
@@ -723,7 +721,7 @@ class ComposeBar extends HookConsumerWidget {
       context,
       editableTextState,
     ) {
-      if (defaultTargetPlatform == TargetPlatform.iOS &&
+      if (isNativeIos &&
           SystemContextMenu.isSupportedByField(editableTextState)) {
         return SystemContextMenu.editableText(
           editableTextState: editableTextState,
@@ -739,8 +737,7 @@ class ComposeBar extends HookConsumerWidget {
       }
 
       final buttonItems = [...editableTextState.contextMenuButtonItems];
-      if (defaultTargetPlatform == TargetPlatform.iOS &&
-          clipboardHasImage.value) {
+      if (isNativeIos && clipboardHasImage.value) {
         buttonItems.insert(
           0,
           ContextMenuButtonItem(
@@ -823,7 +820,7 @@ class ComposeBar extends HookConsumerWidget {
     }
 
     void handleAttachmentTap(BuildContext triggerContext) {
-      if (defaultTargetPlatform != TargetPlatform.iOS ||
+      if (!isNativeIos ||
           attachmentSurface.value != _AttachmentSurface.closed) {
         toggleAttachments();
         return;

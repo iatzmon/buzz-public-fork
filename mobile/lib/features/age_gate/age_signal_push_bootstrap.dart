@@ -1,6 +1,5 @@
 import 'dart:async';
 
-import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_hooks/flutter_hooks.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
@@ -8,6 +7,7 @@ import 'package:hooks_riverpod/hooks_riverpod.dart';
 import '../../shared/push/push_bootstrap.dart';
 import '../../shared/push/push_bridge.dart';
 import 'age_signal_provider.dart';
+import '../../shared/utils/native_platform.dart';
 
 /// Delay between failed age-gate notification transitions.
 const ageSignalPushSnapshotInitialRetryDelay = Duration(seconds: 5);
@@ -56,7 +56,7 @@ const ageRestrictedNotificationMaintenancePurgeLimit = 3;
 /// Schedules a recheck for interactions donated by stale extensions.
 final ageRestrictedNotificationMaintenanceScheduleProvider =
     Provider<VoidCallback Function(VoidCallback)>((ref) {
-      if (defaultTargetPlatform != TargetPlatform.iOS) {
+      if (!isNativeIos) {
         return (_) => () {};
       }
       return (callback) {

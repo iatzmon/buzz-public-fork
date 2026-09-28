@@ -1,5 +1,5 @@
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import '../utils/native_platform.dart';
 
 /// A standalone system emoji whose visual centre matches its surrounding UI.
 ///
@@ -33,7 +33,7 @@ class NativeEmojiGlyph extends StatelessWidget {
       textScaler: TextScaler.noScaling,
       style: TextStyle(fontSize: size, height: 1),
     );
-    if (defaultTargetPlatform == TargetPlatform.iOS) {
+    if (isNativeIos) {
       glyph = Transform.translate(offset: const Offset(0, -1), child: glyph);
     }
     final boxSize = opticalBoxSize;

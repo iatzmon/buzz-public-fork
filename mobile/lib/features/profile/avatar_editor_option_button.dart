@@ -1,11 +1,11 @@
 import 'dart:async';
 
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../shared/theme/theme.dart';
 import '../../shared/widgets/ios_glass_navigation_button.dart';
+import '../../shared/utils/native_platform.dart';
 
 /// Space between avatar-editor controls and their labels.
 const avatarEditorOptionLabelGap = Grid.half;
@@ -82,7 +82,7 @@ class AvatarEditorOptionButton extends StatelessWidget {
       );
     }
 
-    if (defaultTargetPlatform == TargetPlatform.iOS && iosIcon != null) {
+    if (isNativeIos && iosIcon != null) {
       return Column(
         children: [
           IosGlassNavigationButton(

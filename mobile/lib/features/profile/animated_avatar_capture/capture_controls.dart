@@ -53,7 +53,7 @@ class _AnimatedRecordButton extends StatelessWidget {
           curve: Curves.easeOutCubic,
           width: busy ? 64 : constraints.maxWidth,
           height: 64,
-          child: defaultTargetPlatform == TargetPlatform.iOS
+          child: isNativeIos
               ? IosGlassNavigationButton(
                   key: const ValueKey('animated-avatar-record'),
                   icon: IosGlassNavigationIcon.shutter,

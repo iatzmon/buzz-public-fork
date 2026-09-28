@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_hooks/flutter_hooks.dart';
 
 import '../theme/theme.dart';
+import '../utils/native_platform.dart';
 
 /// The navigation glyph displayed by [IosGlassNavigationButton].
 enum IosGlassNavigationIcon {
@@ -105,7 +106,7 @@ class IosGlassNavigationButton extends HookWidget {
 
   @override
   Widget build(BuildContext context) {
-    assert(defaultTargetPlatform == TargetPlatform.iOS);
+    assert(isNativeIos);
     final nativeChannel = useState<MethodChannel?>(null);
     final onPressedRef = useRef(onPressed)..value = onPressed;
     final brightness = context.theme.brightness.name;

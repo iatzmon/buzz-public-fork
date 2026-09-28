@@ -30,7 +30,7 @@ class _MorphingCameraAction extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     Widget control;
-    if (defaultTargetPlatform == TargetPlatform.iOS) {
+    if (isNativeIos) {
       control = IgnorePointer(
         ignoring: onTap == null,
         child: IosGlassNavigationButton(

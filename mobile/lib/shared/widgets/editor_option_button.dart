@@ -1,11 +1,11 @@
 import 'dart:async';
 
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../theme/theme.dart';
 import 'ios_glass_navigation_button.dart';
+import '../utils/native_platform.dart';
 
 /// A labelled circular mode option matching the profile editor controls.
 class EditorOptionButton extends StatelessWidget {
@@ -64,7 +64,7 @@ class EditorOptionButton extends StatelessWidget {
       );
     }
 
-    if (defaultTargetPlatform == TargetPlatform.iOS && iosIcon != null) {
+    if (isNativeIos && iosIcon != null) {
       return Column(
         children: [
           IosGlassNavigationButton(

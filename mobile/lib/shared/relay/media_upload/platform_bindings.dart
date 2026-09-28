@@ -2,7 +2,7 @@ part of '../media_upload.dart';
 
 /// Whether saving media needs Android's pre-scoped-storage runtime permission.
 Future<bool> requiresLegacyMediaStoragePermission() async {
-  if (defaultTargetPlatform != TargetPlatform.android) {
+  if (!isNativeAndroid) {
     return false;
   }
   return await _mediaUploadPlatformChannel.invokeMethod<bool>(

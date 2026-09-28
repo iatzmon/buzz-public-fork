@@ -38,8 +38,7 @@ class MobileHuddleShell extends HookConsumerWidget {
     final drawerHeight =
         _mobileHuddleDrawerBaseHeight + MediaQuery.paddingOf(context).bottom;
     final surface = _huddleDrawerSurface(context);
-    final usesNativeConcentricSurface =
-        defaultTargetPlatform == TargetPlatform.iOS;
+    final usesNativeConcentricSurface = isNativeIos;
 
     return ColoredBox(
       color: drawerOpen ? surface : context.colors.surface,

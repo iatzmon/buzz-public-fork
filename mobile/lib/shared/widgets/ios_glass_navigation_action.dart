@@ -1,6 +1,5 @@
 import 'dart:async';
 
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart' show PlatformViewHitTestBehavior;
 import 'package:flutter/services.dart';
@@ -8,6 +7,7 @@ import 'package:flutter_hooks/flutter_hooks.dart';
 
 import '../theme/theme.dart';
 import 'ios_glass_navigation_button.dart';
+import '../utils/native_platform.dart';
 
 /// A native iOS glass capsule for a short navigation-bar text action.
 class IosGlassNavigationAction extends HookWidget {
@@ -42,7 +42,7 @@ class IosGlassNavigationAction extends HookWidget {
 
   @override
   Widget build(BuildContext context) {
-    assert(defaultTargetPlatform == TargetPlatform.iOS);
+    assert(isNativeIos);
     final nativeChannel = useState<MethodChannel?>(null);
     final onPressedRef = useRef(onPressed)..value = onPressed;
     final brightness = context.theme.brightness.name;

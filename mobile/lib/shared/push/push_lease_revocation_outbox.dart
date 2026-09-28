@@ -11,6 +11,7 @@ import '../community/community.dart';
 import '../relay/signed_event_relay.dart';
 import 'dev_push_lease.dart';
 import 'push_bridge.dart';
+import '../utils/native_platform.dart';
 
 const _maxSafeJsonInteger = 9007199254740991;
 const _baseRetryDelay = Duration(seconds: 30);
@@ -512,7 +513,7 @@ Uri _buzzPushRelayUri(String relayUrl) {
 Future<void> publishBuzzPushLeaseRevocation(
   BuzzPushLeaseRevocationRecord record,
 ) async {
-  final android = defaultTargetPlatform == TargetPlatform.android;
+  final android = isNativeAndroid;
   final descriptor = await fetchBuzzPushLeaseDescriptor(
     record.relayUrl,
     appProfile: android ? buzzAndroidPushAppProfile : buzzDevPushAppProfile,

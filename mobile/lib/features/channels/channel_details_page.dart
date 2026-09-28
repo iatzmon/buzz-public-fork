@@ -250,8 +250,7 @@ class ChannelDetailsPage extends HookConsumerWidget {
 
     final reducedMotion = MediaQuery.disableAnimationsOf(context);
     final usesNativeIosGlassBackButton =
-        Navigator.canPop(context) &&
-        Theme.of(context).platform == TargetPlatform.iOS;
+        Navigator.canPop(context) && usesNativeIos(context);
     return FrostedScaffold(
       useUtilitySurfaceTheme: true,
       appBar: FrostedAppBar(

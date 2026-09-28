@@ -1,10 +1,10 @@
 import 'dart:async';
 
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart' show PlatformViewHitTestBehavior;
 import 'package:flutter/services.dart';
 import 'package:flutter_hooks/flutter_hooks.dart';
+import '../utils/native_platform.dart';
 
 /// A platform-native iOS segmented control embedded in Flutter.
 class IosNativeSegmentedControl extends HookWidget {
@@ -34,7 +34,7 @@ class IosNativeSegmentedControl extends HookWidget {
 
   @override
   Widget build(BuildContext context) {
-    assert(defaultTargetPlatform == TargetPlatform.iOS);
+    assert(isNativeIos);
     final nativeChannel = useState<MethodChannel?>(null);
     final onChangedRef = useRef(onChanged)..value = onChanged;
     final brightness = Theme.of(context).brightness.name;

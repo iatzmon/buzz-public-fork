@@ -10,6 +10,7 @@ import 'package:flutter_hooks/flutter_hooks.dart';
 
 import '../../shared/theme/theme.dart';
 import '../../shared/widgets/message_action_backdrop_state.dart';
+import '../../shared/utils/native_platform.dart';
 
 /// The active date and vertical push-off applied to a sticky date header.
 @immutable
@@ -50,7 +51,7 @@ class StickyDateHeader extends StatelessWidget {
         (labelStyle?.fontSize ?? 14) * (labelStyle?.height ?? 1.25);
     final contentHeight =
         MediaQuery.textScalerOf(context).scale(unscaledLineHeight) + Grid.xxs;
-    return defaultTargetPlatform == TargetPlatform.iOS
+    return isNativeIos
         ? max(_minimumIosGlassHeight, contentHeight)
         : contentHeight;
   }
@@ -148,9 +149,7 @@ class StickyDateHeader extends StatelessWidget {
                 child: ValueListenableBuilder<bool>(
                   valueListenable: messageActionBackdropActive,
                   builder: (context, backdropActive, _) {
-                    final useNativeGlass =
-                        defaultTargetPlatform == TargetPlatform.iOS &&
-                        !backdropActive;
+                    final useNativeGlass = isNativeIos && !backdropActive;
                     final surface = Center(
                       child: RepaintBoundary(
                         child: useNativeGlass

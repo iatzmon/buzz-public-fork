@@ -124,8 +124,7 @@ class _InlineCameraPreview extends HookConsumerWidget {
     }
 
     final activeController = controller.value;
-    final usesAndroidCameraLayout =
-        defaultTargetPlatform == TargetPlatform.android;
+    final usesAndroidCameraLayout = isNativeAndroid;
     return ColoredBox(
       color: Colors.black,
       child: Stack(
@@ -287,7 +286,7 @@ class _CameraCloseButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    if (Theme.of(context).platform == TargetPlatform.iOS) {
+    if (usesNativeIos(context)) {
       return IosGlassNavigationButton(
         icon: IosGlassNavigationIcon.back,
         semanticLabel: 'Back to attachment options',

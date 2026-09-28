@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:ui';
 
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
@@ -10,6 +9,7 @@ import 'package:lucide_icons_flutter/lucide_icons.dart';
 
 import '../theme/theme.dart';
 import 'message_action_backdrop_state.dart';
+import '../utils/native_platform.dart';
 
 /// Shared channel/thread motion for an explicit return-to-latest action.
 const jumpToLatestScrollDuration = Duration(milliseconds: 220);
@@ -53,7 +53,7 @@ class JumpToLatestButton extends HookWidget {
     }, [nativeChannel.value, brightness]);
 
     final borderColor = context.colors.onSurface.withValues(alpha: 0.08);
-    final usesNativeIosGlass = defaultTargetPlatform == TargetPlatform.iOS;
+    final usesNativeIosGlass = isNativeIos;
 
     Widget buildFlutterSurface() {
       return Material(

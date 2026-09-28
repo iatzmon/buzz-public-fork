@@ -6,7 +6,7 @@ extension _ChannelPushCache on ChannelsNotifier {
     List<NostrEvent> metadata,
     List<NostrEvent> membership,
   ) async {
-    if (defaultTargetPlatform != TargetPlatform.iOS || communityID == null) {
+    if (!isNativeIos || communityID == null) {
       return;
     }
     if (_pushCacheExporting) {

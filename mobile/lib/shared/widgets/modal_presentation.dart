@@ -1,10 +1,10 @@
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../theme/theme.dart';
 import 'buzz_sheet_header.dart';
 import 'buzz_titled_sheet_layout.dart';
 import 'concentric_sheet_surface.dart';
+import '../utils/native_platform.dart';
 
 /// Shared motion for occasional modal UI.
 ///
@@ -48,7 +48,7 @@ Future<T?> showBuzzModalBottomSheet<T>({
   AnimationStyle? sheetAnimationStyle,
   bool? requestFocus,
 }) {
-  final isIos = defaultTargetPlatform == TargetPlatform.iOS;
+  final isIos = isNativeIos;
   final theme = Theme.of(context);
   // Explicitly colored sheets (for example the dark Huddle drawer) own their
   // complete surface treatment. Standard utility sheets use the quieter page

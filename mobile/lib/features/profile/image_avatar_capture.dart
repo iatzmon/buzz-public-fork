@@ -16,6 +16,7 @@ import '../../shared/theme/theme.dart';
 import '../../shared/widgets/buzz_loading_indicator.dart';
 import '../../shared/widgets/ios_glass_navigation_button.dart';
 import 'camera_disposal_barrier.dart';
+import '../../shared/utils/native_platform.dart';
 
 part 'image_avatar_capture/camera_preview.dart';
 part 'image_avatar_capture/morphing_camera_action.dart';

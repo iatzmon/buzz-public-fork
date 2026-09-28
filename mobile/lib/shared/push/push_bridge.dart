@@ -13,13 +13,12 @@ import '../relay/relay_provider.dart';
 import '../relay/app_lifecycle_provider.dart';
 import 'push_snapshot.dart';
 import 'android_push_registration.dart';
+import '../utils/native_platform.dart';
 
 const _channel = MethodChannel('buzz/push');
 
 bool get _hasNativeNotificationBridge =>
-    !kIsWeb &&
-    (defaultTargetPlatform == TargetPlatform.iOS ||
-        defaultTargetPlatform == TargetPlatform.android);
+    !kIsWeb && (isNativeIos || isNativeAndroid);
 
 enum BuzzPushAuthorizationStatus {
   notDetermined,
@@ -147,8 +146,7 @@ Future<void> syncPendingBuzzPushNotificationResponse() async {
 /// requests. Display authorization is intentionally not returned or persisted:
 /// APNs registration and enrollment remain valid while display is denied.
 Future<void> startBuzzPushRegistration() async {
-  if (!Env.pushGatewayConfigured ||
-      defaultTargetPlatform != TargetPlatform.iOS) {
+  if (!Env.pushGatewayConfigured || !isNativeIos) {
     return;
   }
   try {
@@ -199,8 +197,7 @@ class BuzzPushEndpointGrant {
 
 Future<List<BuzzPushEndpointGrant>> readBuzzPushEndpointGrants() async {
   if (isAndroidPushBuild) return readAndroidPushEndpoints();
-  if (!Env.pushGatewayConfigured ||
-      defaultTargetPlatform != TargetPlatform.iOS) {
+  if (!Env.pushGatewayConfigured || !isNativeIos) {
     return const [];
   }
   try {
@@ -283,7 +280,7 @@ Future<void> registerBuzzPushCommunitySnapshotStrict(
 
 /// Restores notification presentation without reading community storage.
 Future<void> restoreAgeRestrictedBuzzNotifications() async {
-  if (defaultTargetPlatform != TargetPlatform.iOS && !isAndroidPushBuild) {
+  if (!isNativeIos && !isAndroidPushBuild) {
     return;
   }
   await _channel.invokeMethod<void>('restoreAgeRestrictedNotifications');
@@ -291,7 +288,7 @@ Future<void> restoreAgeRestrictedBuzzNotifications() async {
 
 /// Removes notifications rendered before a confirmed age restriction.
 Future<void> purgeAgeRestrictedBuzzNotifications() async {
-  if (defaultTargetPlatform != TargetPlatform.iOS && !isAndroidPushBuild) {
+  if (!isNativeIos && !isAndroidPushBuild) {
     return;
   }
   await _channel.invokeMethod<void>('purgeAgeRestrictedNotifications');
@@ -302,7 +299,7 @@ Future<void> _registerBuzzPushCommunitySnapshot(
   required bool strict,
   bool settleFence = false,
 }) async {
-  if (defaultTargetPlatform != TargetPlatform.iOS && !isAndroidPushBuild) {
+  if (!isNativeIos && !isAndroidPushBuild) {
     return;
   }
   try {
@@ -351,8 +348,7 @@ Future<void> _registerBuzzPushCommunitySnapshot(
       {
         'section': 'communities',
         'communities': [for (final snapshot in snapshots) snapshot.toJson()],
-        if (defaultTargetPlatform == TargetPlatform.iOS)
-          'signingKeys': signingKeys,
+        if (isNativeIos) 'signingKeys': signingKeys,
         if (strict) 'settleFence': settleFence,
       },
     );

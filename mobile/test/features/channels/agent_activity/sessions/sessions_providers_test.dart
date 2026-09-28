@@ -80,9 +80,17 @@ NostrEvent _metricEvent({String? pTag, Map<String, Object?>? payload}) =>
       ],
     );
 
+Map<String, Object?> _usage(String sessionId) => {
+  'harness': 'claude',
+  'timestamp': '2026-09-27T12:00:00Z',
+  'sessionId': sessionId,
+  'turnSeq': 1,
+  'turn': {'inputTokens': 1200, 'outputTokens': 300},
+};
+
 /// A readable report whose signature is invalid.
-NostrEvent _unsignedMetricEvent() {
-  final event = _metricEvent();
+NostrEvent _unsignedMetricEvent({String sessionId = 'sess-1'}) {
+  final event = _metricEvent(payload: _usage(sessionId));
   return NostrEvent(
     id: event.id,
     pubkey: event.pubkey,
@@ -93,6 +101,13 @@ NostrEvent _unsignedMetricEvent() {
     sig: '0' * 128,
   );
 }
+
+SessionUsageBatch _batch(List<NostrEvent> events) => SessionUsageBatch(
+  ownerPrivkeyHex: _owner.secret,
+  ownerPubkey: _owner.public,
+  agentPubkey: _agent.public,
+  events: events,
+);
 
 void main() {
   group('stopActiveTurn', () {
@@ -184,15 +199,38 @@ void main() {
     });
 
     // Run with `flutter test --platform chrome` to cover the web build.
-    test('checks signatures on devices but not in the browser', () async {
-      final session = _FakeRelaySession(queryResult: [_unsignedMetricEvent()]);
-      final container = _container(session);
-
-      final usage = await container.read(
-        agentSessionUsageProvider(_agent.public).future,
+    test('leaves out a report with a bad signature', () async {
+      final session = _FakeRelaySession(
+        queryResult: [
+          _metricEvent(),
+          _unsignedMetricEvent(sessionId: 'sess-2'),
+        ],
+      );
+      final container = _container(
+        session,
+        turns: [
+          _turn(),
+          _turn().copyWith(sessionId: 'sess-2'),
+        ],
       );
 
-      expect(usage.containsKey('sess-1'), kIsWeb);
+      final usage = await _readUsage(container);
+
+      expect(usage.keys, ['sess-1']);
+    });
+
+    test('in the browser, sums only the running sessions', () async {
+      final session = _FakeRelaySession(
+        queryResult: [
+          _metricEvent(),
+          _metricEvent(payload: _usage('sess-2')),
+        ],
+      );
+      final container = _container(session);
+
+      final usage = await _readUsage(container);
+
+      expect(usage.keys, kIsWeb ? ['sess-1'] : ['sess-1', 'sess-2']);
     });
 
     test('a failed read is an error, not empty usage', () async {
@@ -226,6 +264,128 @@ void main() {
         ),
       );
       expect(usage['sess-1']!.inputTokens, const UsageTotal<int>(1200));
+    });
+  });
+
+  group('decodeSessionUsageInBrowser', () {
+    var checks = 0;
+    bool countingCheck(NostrEvent event) {
+      checks++;
+      return eventHasValidSignature(event);
+    }
+
+    setUp(() => checks = 0);
+
+    test('leaves out a report with a bad signature', () async {
+      final usage = await decodeSessionUsageInBrowser(
+        _batch([_unsignedMetricEvent()]),
+        sessionIds: {'sess-1'},
+        verifiedReports: {},
+      );
+      expect(usage, isEmpty);
+    });
+
+    test('checks only the reports of the requested sessions', () async {
+      final usage = await decodeSessionUsageInBrowser(
+        _batch([_metricEvent(), _unsignedMetricEvent(sessionId: 'sess-2')]),
+        sessionIds: {'sess-1'},
+        verifiedReports: {},
+        hasValidSignature: countingCheck,
+      );
+      expect(usage.keys, ['sess-1']);
+      expect(checks, 1);
+    });
+
+    test('checks each report once across refreshes', () async {
+      final verified = <String>{};
+      final report = _metricEvent();
+      for (var i = 0; i < 2; i++) {
+        final usage = await decodeSessionUsageInBrowser(
+          _batch([report]),
+          sessionIds: {'sess-1'},
+          verifiedReports: verified,
+          hasValidSignature: countingCheck,
+        );
+        expect(usage.keys, ['sess-1']);
+      }
+      expect(checks, 1);
+    });
+
+    test('a checked id and signature do not admit changed fields', () async {
+      final verified = <String>{};
+      final report = _metricEvent();
+      await decodeSessionUsageInBrowser(
+        _batch([report]),
+        sessionIds: {'sess-1'},
+        verifiedReports: verified,
+      );
+      final changed = NostrEvent(
+        id: report.id,
+        pubkey: report.pubkey,
+        createdAt: report.createdAt,
+        kind: report.kind,
+        tags: report.tags,
+        content: _metricEvent(payload: _usage('sess-1')).content,
+        sig: report.sig,
+      );
+
+      final usage = await decodeSessionUsageInBrowser(
+        _batch([changed]),
+        sessionIds: {'sess-1'},
+        verifiedReports: verified,
+        hasValidSignature: countingCheck,
+      );
+
+      expect(usage, isEmpty);
+      expect(checks, 0);
+    });
+
+    test('keeps the checked-report record bounded', () async {
+      final verified = {
+        for (var i = 0; i < maxVerifiedUsageReports; i++) 'old-$i',
+      };
+      await decodeSessionUsageInBrowser(
+        _batch([_metricEvent()]),
+        sessionIds: {'sess-1'},
+        verifiedReports: verified,
+      );
+      expect(verified, hasLength(1));
+    });
+
+    test('gives the page a turn between slow checks and stops when '
+        'cancelled', () async {
+      bool slowCheck(NostrEvent event) {
+        checks++;
+        final wait = Stopwatch()..start();
+        while (wait.elapsedMilliseconds < 20) {}
+        return eventHasValidSignature(event);
+      }
+
+      var pageTurns = 0;
+      final page = Timer.periodic(Duration.zero, (_) => pageTurns++);
+      addTearDown(page.cancel);
+      var cancelled = false;
+      final reports = [
+        _metricEvent(),
+        _metricEvent(payload: {..._usage('sess-1'), 'turnSeq': 2}),
+        _metricEvent(payload: {..._usage('sess-1'), 'turnSeq': 3}),
+      ];
+
+      final usage = await decodeSessionUsageInBrowser(
+        _batch(reports),
+        sessionIds: {'sess-1'},
+        verifiedReports: {},
+        hasValidSignature: slowCheck,
+        isCancelled: () {
+          cancelled = checks >= 2;
+          return cancelled;
+        },
+      );
+
+      expect(pageTurns, greaterThan(0));
+      expect(cancelled, isTrue);
+      expect(checks, 2);
+      expect(usage, isEmpty);
     });
   });
 
@@ -347,7 +507,7 @@ void main() {
         verifySignature: false,
       );
 
-      test('leaves the signature to the relay', () {
+      test('leaves the signature to the caller', () {
         expect(decodeUnverified(_unsignedMetricEvent())?.sessionId, 'sess-1');
       });
 
@@ -387,11 +547,24 @@ void main() {
 
 final _refProvider = Provider<Ref>((ref) => ref);
 
-ProviderContainer _container(_FakeRelaySession session) {
+/// Reads the agent's usage while listening, as the Sessions row does. The
+/// browser path stops once nothing listens.
+Future<Map<String, SessionUsage>> _readUsage(ProviderContainer container) {
+  final provider = agentSessionUsageProvider(_agent.public);
+  final sub = container.listen(provider, (_, _) {});
+  addTearDown(sub.close);
+  return container.read(provider.future);
+}
+
+ProviderContainer _container(
+  _FakeRelaySession session, {
+  List<ActiveTurn>? turns,
+}) {
   final container = ProviderContainer(
     overrides: [
       relaySessionProvider.overrideWith(() => session),
       relayConfigProvider.overrideWith(_FakeRelayConfigNotifier.new),
+      activeTurnsProvider.overrideWith((ref) => turns ?? [_turn()]),
     ],
   );
   addTearDown(container.dispose);

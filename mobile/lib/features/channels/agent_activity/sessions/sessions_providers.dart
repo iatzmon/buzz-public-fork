@@ -138,14 +138,11 @@ String? describeTurnActivity(List<TranscriptItem> items) {
 
 /// Usage per session id for one agent, from the agent's NIP-AM reports of
 /// the last [sessionUsageLookback]. Refreshes every [sessionUsageRefresh].
-/// A failed read is an error state, never an empty result. Verifying and
-/// decrypting the reports runs on a worker isolate ([decodeSessionUsage]).
-///
-/// The web build has no isolates, so decoding runs on the page's only
-/// thread, where one signature check takes about 60 ms. The browser
-/// therefore skips it: the relay checks every signature before it stores an
-/// event, and a report that decrypts with the owner-agent key was written by
-/// the agent. The observer frames on this page are read the same way.
+/// A failed read is an error state, never an empty result. On devices,
+/// verifying and decrypting the reports runs on a worker isolate
+/// ([decodeSessionUsage]). The web build has no worker isolate, so it uses
+/// [decodeSessionUsageInBrowser], which covers only the agent's running
+/// sessions.
 final agentSessionUsageProvider = FutureProvider.autoDispose
     .family<Map<String, SessionUsage>, String>((ref, agentPubkey) async {
       final timer = Timer(sessionUsageRefresh, ref.invalidateSelf);
@@ -154,6 +151,15 @@ final agentSessionUsageProvider = FutureProvider.autoDispose
       final privHex = _ownerPrivkey(ref.watch(relayConfigProvider).nsec);
       final owner = nostr.Keys(privHex).public;
       final agent = agentPubkey.toLowerCase();
+      // Joined into one string so the provider rebuilds only when the set
+      // of running sessions changes, not on every activity frame.
+      final runningSessions = kIsWeb
+          ? ref.watch(
+              activeTurnsProvider.select(
+                (turns) => _runningSessionIds(turns, agent).join('\n'),
+              ),
+            )
+          : '';
       final since = DateTime.now().subtract(sessionUsageLookback);
       final events = await ref.read(relaySessionProvider.notifier).queryRelay([
         NostrFilter(
@@ -167,17 +173,27 @@ final agentSessionUsageProvider = FutureProvider.autoDispose
         ),
       ]);
 
-      return compute(
-        decodeSessionUsage,
-        SessionUsageBatch(
-          ownerPrivkeyHex: privHex,
-          ownerPubkey: owner,
-          agentPubkey: agent,
-          events: events,
-          verifySignatures: !kIsWeb,
-        ),
+      final batch = SessionUsageBatch(
+        ownerPrivkeyHex: privHex,
+        ownerPubkey: owner,
+        agentPubkey: agent,
+        events: events,
+      );
+      if (!kIsWeb) return compute(decodeSessionUsage, batch);
+      return decodeSessionUsageInBrowser(
+        batch,
+        sessionIds: runningSessions.split('\n').toSet(),
+        verifiedReports: ref.read(verifiedUsageReportsProvider),
+        isCancelled: () => !ref.mounted,
       );
     });
+
+/// The sorted session ids of [agent]'s running turns.
+List<String> _runningSessionIds(List<ActiveTurn> turns, String agent) => {
+  for (final turn in turns)
+    if (turn.agentPubkey.toLowerCase() == agent && turn.sessionId != null)
+      turn.sessionId!,
+}.toList()..sort();
 
 /// One agent's usage reports to decode, with the owner's key.
 @immutable
@@ -187,15 +203,11 @@ class SessionUsageBatch {
   final String agentPubkey;
   final List<NostrEvent> events;
 
-  /// Whether to check each report's signature ([decodeTurnMetric]).
-  final bool verifySignatures;
-
   const SessionUsageBatch({
     required this.ownerPrivkeyHex,
     required this.ownerPubkey,
     required this.agentPubkey,
     required this.events,
-    this.verifySignatures = true,
   });
 }
 
@@ -216,17 +228,106 @@ Map<String, SessionUsage> decodeSessionUsage(SessionUsageBatch batch) {
       conversationKey: conversationKey,
       ownerPubkey: batch.ownerPubkey,
       agentPubkey: batch.agentPubkey,
-      verifySignature: batch.verifySignatures,
     );
     if (metric != null) metrics.add(metric);
   }
   return sumSessionUsage(metrics);
 }
 
+/// Usage reports whose signature passed in this browser tab, as `id:sig`.
+/// A report is checked once, not again on every refresh.
+final verifiedUsageReportsProvider = Provider<Set<String>>((ref) => {});
+
+/// Upper bound on [verifiedUsageReportsProvider]; it is emptied when full.
+const maxVerifiedUsageReports = 5000;
+
+/// Longest stretch of work before [decodeSessionUsageInBrowser] lets the
+/// page draw and handle input.
+const _browserSliceBudget = Duration(milliseconds: 8);
+
+/// The web build's [decodeSessionUsage]. The browser runs it on the page's
+/// only thread, where one signature check takes about 60 ms. To keep the
+/// page responsive it
+/// - sums only the reports of [sessionIds], and checks only their
+///   signatures;
+/// - checks each report once per tab ([verifiedReports]);
+/// - gives the page a turn after each [_browserSliceBudget] of work, and
+///   stops when [isCancelled] turns true.
+///
+/// A report is decrypted first to read its session id, but nothing in it is
+/// used until its signature passes (NIP-AM). A report that fails any check
+/// is left out.
+Future<Map<String, SessionUsage>> decodeSessionUsageInBrowser(
+  SessionUsageBatch batch, {
+  required Set<String> sessionIds,
+  required Set<String> verifiedReports,
+  bool Function() isCancelled = _neverCancelled,
+  bool Function(NostrEvent event) hasValidSignature = eventHasValidSignature,
+}) async {
+  final conversationKey = getConversationKey(
+    batch.ownerPrivkeyHex,
+    batch.agentPubkey,
+  );
+  final seen = <String>{};
+  final metrics = <TurnMetric>[];
+  final slice = Stopwatch()..start();
+  for (final event in batch.events) {
+    if (slice.elapsed > _browserSliceBudget) {
+      await Future<void>.delayed(Duration.zero);
+      if (isCancelled()) return const {};
+      slice.reset();
+    }
+    if (!seen.add(event.id)) continue;
+    final unverified = decodeTurnMetric(
+      event,
+      conversationKey: conversationKey,
+      ownerPubkey: batch.ownerPubkey,
+      agentPubkey: batch.agentPubkey,
+      verifySignature: false,
+    );
+    if (unverified == null || !sessionIds.contains(unverified.sessionId)) {
+      continue;
+    }
+    final key = '${event.id}:${event.sig}';
+    final verified = verifiedReports.contains(key)
+        ? eventIdMatches(event)
+        : hasValidSignature(event);
+    if (!verified) continue;
+    if (verifiedReports.length >= maxVerifiedUsageReports) {
+      verifiedReports.clear();
+    }
+    verifiedReports.add(key);
+    metrics.add(unverified);
+  }
+  return sumSessionUsage(metrics);
+}
+
+bool _neverCancelled() => false;
+
+/// Whether [event]'s id and signature are valid.
+bool eventHasValidSignature(NostrEvent event) => _nostrEvent(event).isValid();
+
+/// Whether [event]'s id is the hash of its fields. With a matching id, a
+/// signature that passed for the same `id:sig` is valid for this event.
+bool eventIdMatches(NostrEvent event) =>
+    _nostrEvent(event).getEventId() == event.id;
+
+nostr.Event _nostrEvent(NostrEvent event) => nostr.Event(
+  event.id,
+  event.pubkey,
+  event.createdAt,
+  event.kind,
+  event.tags,
+  event.content,
+  event.sig,
+  verify: false,
+);
+
 /// Verifies and decrypts one kind 44200 event from [agentPubkey] to the
 /// owner. Returns null for anything that fails a check (NIP-AM: ignore
 /// events that fail to verify, decrypt, or parse). With [verifySignature]
-/// false, the caller relies on the relay's signature check.
+/// false the result is unverified: the caller must check the signature
+/// before it uses the result.
 TurnMetric? decodeTurnMetric(
   NostrEvent event, {
   required Uint8List conversationKey,

@@ -402,10 +402,12 @@ class App extends HookConsumerWidget {
       // route that was pushed while the store signal request was in flight.
       builder: (context, child) => switch (ageSignalState) {
         AgeSignalState.restricted => const AgeRestrictionPage(),
-        _ => AppMarkdownTheme(
-          child: MobileHuddleShell(
-            navigatorKey: _mobileRootNavigatorKey,
-            child: EmojiBurstOverlay(child: child ?? const SizedBox.shrink()),
+        _ => WebStatusBarColor(
+          child: AppMarkdownTheme(
+            child: MobileHuddleShell(
+              navigatorKey: _mobileRootNavigatorKey,
+              child: EmojiBurstOverlay(child: child ?? const SizedBox.shrink()),
+            ),
           ),
         ),
       },

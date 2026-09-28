@@ -22,7 +22,10 @@
 
   <!-- iOS meta tags & icons -->
   <meta name="mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-status-bar-style" content="black">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <!-- The app sets this to the top color of the current theme. It must stay
+       before the theme-color tag that Flutter adds, so the browser uses it. -->
+  <meta id="buzz-theme-color" name="theme-color" content="#E6E6B6">
   <meta name="apple-mobile-web-app-title" content="Buzz">
   <link rel="apple-touch-icon" href="icons/Icon-192.png">
 

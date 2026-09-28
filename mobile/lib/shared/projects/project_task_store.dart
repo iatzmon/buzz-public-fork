@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:isolate';
 
+import 'package:flutter/foundation.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:nostr/nostr.dart' as nostr;
 import 'package:shared_preferences/shared_preferences.dart';
@@ -24,13 +24,16 @@ class ProjectTaskTransport {
 }
 
 /// The isolate captures only public events, never the provider or signing key.
+/// The web build has no isolates, so there [compute] runs on the UI thread.
 Future<List<NostrEvent>> verifyProjectTaskEvents(List<NostrEvent> events) =>
-    Isolate.run(() {
-      for (final event in events) {
-        nostr.Event.fromMap(event.toJson());
-      }
-      return events;
-    });
+    compute(_verifyProjectTaskEvents, events);
+
+List<NostrEvent> _verifyProjectTaskEvents(List<NostrEvent> events) {
+  for (final event in events) {
+    nostr.Event.fromMap(event.toJson());
+  }
+  return events;
+}
 
 final projectTaskTransportProvider = Provider<ProjectTaskTransport>((ref) {
   final config = ref.watch(relayConfigProvider);

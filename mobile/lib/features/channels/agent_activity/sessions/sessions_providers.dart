@@ -141,25 +141,19 @@ String? describeTurnActivity(List<TranscriptItem> items) {
 /// A failed read is an error state, never an empty result. On devices,
 /// verifying and decrypting the reports runs on a worker isolate
 /// ([decodeSessionUsage]). The web build has no worker isolate, so it uses
-/// [decodeSessionUsageInBrowser], which covers only the agent's running
-/// sessions.
+/// [decodeSessionUsageInBrowser].
 final agentSessionUsageProvider = FutureProvider.autoDispose
     .family<Map<String, SessionUsage>, String>((ref, agentPubkey) async {
       final timer = Timer(sessionUsageRefresh, ref.invalidateSelf);
       ref.onDispose(timer.cancel);
+      // True once this build is replaced (refresh) or disposed. Ref.mounted
+      // stays true across a rebuild, so it cannot stop a replaced build.
+      var retired = false;
+      ref.onDispose(() => retired = true);
 
       final privHex = _ownerPrivkey(ref.watch(relayConfigProvider).nsec);
       final owner = nostr.Keys(privHex).public;
       final agent = agentPubkey.toLowerCase();
-      // Joined into one string so the provider rebuilds only when the set
-      // of running sessions changes, not on every activity frame.
-      final runningSessions = kIsWeb
-          ? ref.watch(
-              activeTurnsProvider.select(
-                (turns) => _runningSessionIds(turns, agent).join('\n'),
-              ),
-            )
-          : '';
       final since = DateTime.now().subtract(sessionUsageLookback);
       final events = await ref.read(relaySessionProvider.notifier).queryRelay([
         NostrFilter(
@@ -182,18 +176,10 @@ final agentSessionUsageProvider = FutureProvider.autoDispose
       if (!kIsWeb) return compute(decodeSessionUsage, batch);
       return decodeSessionUsageInBrowser(
         batch,
-        sessionIds: runningSessions.split('\n').toSet(),
         verifiedReports: ref.read(verifiedUsageReportsProvider),
-        isCancelled: () => !ref.mounted,
+        isCancelled: () => retired,
       );
     });
-
-/// The sorted session ids of [agent]'s running turns.
-List<String> _runningSessionIds(List<ActiveTurn> turns, String agent) => {
-  for (final turn in turns)
-    if (turn.agentPubkey.toLowerCase() == agent && turn.sessionId != null)
-      turn.sessionId!,
-}.toList()..sort();
 
 /// One agent's usage reports to decode, with the owner's key.
 @immutable
@@ -241,29 +227,37 @@ final verifiedUsageReportsProvider = Provider<Set<String>>((ref) => {});
 /// Upper bound on [verifiedUsageReportsProvider]; it is emptied when full.
 const maxVerifiedUsageReports = 5000;
 
-/// Longest stretch of work before [decodeSessionUsageInBrowser] lets the
-/// page draw and handle input.
-const _browserSliceBudget = Duration(milliseconds: 8);
+/// After this much work, [decodeSessionUsageInBrowser] lets the page draw
+/// and handle input before the next report. One signature check can take
+/// longer than this on its own.
+const _browserYieldThreshold = Duration(milliseconds: 8);
 
-/// The web build's [decodeSessionUsage]. The browser runs it on the page's
-/// only thread, where one signature check takes about 60 ms. To keep the
-/// page responsive it
-/// - sums only the reports of [sessionIds], and checks only their
-///   signatures;
-/// - checks each report once per tab ([verifiedReports]);
-/// - gives the page a turn after each [_browserSliceBudget] of work, and
-///   stops when [isCancelled] turns true.
-///
-/// A report is decrypted first to read its session id, but nothing in it is
-/// used until its signature passes (NIP-AM). A report that fails any check
-/// is left out.
+/// The web build's [decodeSessionUsage], with the same checks in the same
+/// order: signature first, then decryption. The browser runs it on the
+/// page's only thread, where one signature check takes about 60 ms. To keep
+/// the page responsive it
+/// - checks each report's signature once per tab ([verifiedReports]); a
+///   recorded report must still have an id that matches its fields;
+/// - lets the page run after each [_browserYieldThreshold] of work;
+/// - stops as soon as [isCancelled] is true, before any further check.
 Future<Map<String, SessionUsage>> decodeSessionUsageInBrowser(
   SessionUsageBatch batch, {
-  required Set<String> sessionIds,
   required Set<String> verifiedReports,
   bool Function() isCancelled = _neverCancelled,
   bool Function(NostrEvent event) hasValidSignature = eventHasValidSignature,
 }) async {
+  if (isCancelled()) return const {};
+  bool checkOnce(NostrEvent event) {
+    final key = '${event.id}:${event.sig}';
+    if (verifiedReports.contains(key)) return eventIdMatches(event);
+    if (!hasValidSignature(event)) return false;
+    if (verifiedReports.length >= maxVerifiedUsageReports) {
+      verifiedReports.clear();
+    }
+    verifiedReports.add(key);
+    return true;
+  }
+
   final conversationKey = getConversationKey(
     batch.ownerPrivkeyHex,
     batch.agentPubkey,
@@ -272,32 +266,20 @@ Future<Map<String, SessionUsage>> decodeSessionUsageInBrowser(
   final metrics = <TurnMetric>[];
   final slice = Stopwatch()..start();
   for (final event in batch.events) {
-    if (slice.elapsed > _browserSliceBudget) {
+    if (slice.elapsed > _browserYieldThreshold) {
       await Future<void>.delayed(Duration.zero);
-      if (isCancelled()) return const {};
       slice.reset();
     }
+    if (isCancelled()) return const {};
     if (!seen.add(event.id)) continue;
-    final unverified = decodeTurnMetric(
+    final metric = decodeTurnMetric(
       event,
       conversationKey: conversationKey,
       ownerPubkey: batch.ownerPubkey,
       agentPubkey: batch.agentPubkey,
-      verifySignature: false,
+      hasValidSignature: checkOnce,
     );
-    if (unverified == null || !sessionIds.contains(unverified.sessionId)) {
-      continue;
-    }
-    final key = '${event.id}:${event.sig}';
-    final verified = verifiedReports.contains(key)
-        ? eventIdMatches(event)
-        : hasValidSignature(event);
-    if (!verified) continue;
-    if (verifiedReports.length >= maxVerifiedUsageReports) {
-      verifiedReports.clear();
-    }
-    verifiedReports.add(key);
-    metrics.add(unverified);
+    if (metric != null) metrics.add(metric);
   }
   return sumSessionUsage(metrics);
 }
@@ -323,17 +305,16 @@ nostr.Event _nostrEvent(NostrEvent event) => nostr.Event(
   verify: false,
 );
 
-/// Verifies and decrypts one kind 44200 event from [agentPubkey] to the
+/// Verifies, then decrypts, one kind 44200 event from [agentPubkey] to the
 /// owner. Returns null for anything that fails a check (NIP-AM: ignore
-/// events that fail to verify, decrypt, or parse). With [verifySignature]
-/// false the result is unverified: the caller must check the signature
-/// before it uses the result.
+/// events that fail to verify, decrypt, or parse). Decrypts only after
+/// [hasValidSignature] passes (NIP-44).
 TurnMetric? decodeTurnMetric(
   NostrEvent event, {
   required Uint8List conversationKey,
   required String ownerPubkey,
   required String agentPubkey,
-  bool verifySignature = true,
+  bool Function(NostrEvent event) hasValidSignature = eventHasValidSignature,
 }) {
   if (event.kind != EventKind.agentTurnMetric ||
       event.pubkey.toLowerCase() != agentPubkey ||
@@ -342,17 +323,7 @@ TurnMetric? decodeTurnMetric(
     return null;
   }
   try {
-    if (verifySignature) {
-      nostr.Event(
-        event.id,
-        event.pubkey,
-        event.createdAt,
-        event.kind,
-        event.tags,
-        event.content,
-        event.sig,
-      );
-    }
+    if (!hasValidSignature(event)) return null;
     final json = jsonDecode(nip44Decrypt(conversationKey, event.content));
     return json is Map<String, dynamic> ? TurnMetric.fromJson(json) : null;
   } catch (_) {

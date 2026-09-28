@@ -32,6 +32,8 @@ A project is a named grouping (`kind:30621`) with a home channel. Creating a sec
 
 To assign an issue to someone, run `buzz issues assign --issue <event-id> --repo-owner <hex> --repo-id <id> --assignee <hex> --label <name>` after creating it. Remove an assignment with the matching `buzz issues unassign` arguments. Writing assignee names in the issue body or adding recipients with `issues create --to` is notification/presentation only — Buzz Desktop's Assignees rail and the "Assigned to me" filter read the signed assignment operations. Operations are trusted for other people when signed by the issue author, the repository owner, or a community owner; anyone may assign or unassign themselves.
 
+To add a progress note, next action, or correction to a task, run `buzz issues comment --issue <event-id> --repo-owner <hex> --repo-id <id> --content "…"`. It shows in the task's Activity like a comment typed in Buzz Desktop. The text of `buzz issues status --content` is not shown there.
+
 ## Conversational Agent Creation
 
 When someone asks to create an agent, ask for at most two things: its name and what it should do day-to-day. Write the `--system-prompt` yourself. Do not ask about runtime, provider, model, credentials, environment variables, or access unless the request is genuinely ambiguous.

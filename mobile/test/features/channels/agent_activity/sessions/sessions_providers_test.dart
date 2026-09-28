@@ -8,6 +8,7 @@ import 'package:buzz/features/channels/agent_activity/sessions/session_usage.dar
 import 'package:buzz/features/channels/agent_activity/sessions/sessions_providers.dart';
 import 'package:buzz/shared/crypto/nip44.dart';
 import 'package:buzz/shared/relay/relay.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:nostr/nostr.dart' as nostr;
@@ -78,6 +79,20 @@ NostrEvent _metricEvent({String? pTag, Map<String, Object?>? payload}) =>
         ['agent', _agent.public],
       ],
     );
+
+/// A readable report whose signature is invalid.
+NostrEvent _unsignedMetricEvent() {
+  final event = _metricEvent();
+  return NostrEvent(
+    id: event.id,
+    pubkey: event.pubkey,
+    createdAt: event.createdAt,
+    kind: event.kind,
+    tags: event.tags,
+    content: event.content,
+    sig: '0' * 128,
+  );
+}
 
 void main() {
   group('stopActiveTurn', () {
@@ -166,6 +181,18 @@ void main() {
       expect(filter.kinds, [EventKind.agentTurnMetric]);
       expect(filter.authors, [_agent.public]);
       expect(filter.tags['#p'], [_owner.public]);
+    });
+
+    // Run with `flutter test --platform chrome` to cover the web build.
+    test('checks signatures on devices but not in the browser', () async {
+      final session = _FakeRelaySession(queryResult: [_unsignedMetricEvent()]);
+      final container = _container(session);
+
+      final usage = await container.read(
+        agentSessionUsageProvider(_agent.public).future,
+      );
+
+      expect(usage.containsKey('sess-1'), kIsWeb);
     });
 
     test('a failed read is an error, not empty usage', () async {
@@ -309,6 +336,51 @@ void main() {
         sig: event.sig,
       );
       expect(decode(forged), isNull);
+    });
+
+    group('without the signature check', () {
+      TurnMetric? decodeUnverified(NostrEvent event) => decodeTurnMetric(
+        event,
+        conversationKey: getConversationKey(_owner.secret, _agent.public),
+        ownerPubkey: _owner.public,
+        agentPubkey: _agent.public,
+        verifySignature: false,
+      );
+
+      test('leaves the signature to the relay', () {
+        expect(decodeUnverified(_unsignedMetricEvent())?.sessionId, 'sess-1');
+      });
+
+      test('rejects a report not encrypted with the owner-agent key', () {
+        final event = _metricEvent();
+        final stranger = nostr.Keys.generate();
+        final foreign = NostrEvent(
+          id: event.id,
+          pubkey: event.pubkey,
+          createdAt: event.createdAt,
+          kind: event.kind,
+          tags: event.tags,
+          content: nip44Encrypt(
+            getConversationKey(stranger.secret, _owner.public),
+            jsonEncode({
+              'harness': 'claude',
+              'timestamp': '2026-09-27T12:00:00Z',
+              'sessionId': 'sess-1',
+              'turnSeq': 1,
+              'turn': {'inputTokens': 1},
+            }),
+          ),
+          sig: event.sig,
+        );
+        expect(decodeUnverified(foreign), isNull);
+      });
+
+      test('rejects a report addressed to another owner', () {
+        expect(
+          decodeUnverified(_metricEvent(pTag: nostr.Keys.generate().public)),
+          isNull,
+        );
+      });
     });
   });
 }

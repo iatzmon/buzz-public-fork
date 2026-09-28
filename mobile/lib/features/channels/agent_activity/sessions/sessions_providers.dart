@@ -140,6 +140,12 @@ String? describeTurnActivity(List<TranscriptItem> items) {
 /// the last [sessionUsageLookback]. Refreshes every [sessionUsageRefresh].
 /// A failed read is an error state, never an empty result. Verifying and
 /// decrypting the reports runs on a worker isolate ([decodeSessionUsage]).
+///
+/// The web build has no isolates, so decoding runs on the page's only
+/// thread, where one signature check takes about 60 ms. The browser
+/// therefore skips it: the relay checks every signature before it stores an
+/// event, and a report that decrypts with the owner-agent key was written by
+/// the agent. The observer frames on this page are read the same way.
 final agentSessionUsageProvider = FutureProvider.autoDispose
     .family<Map<String, SessionUsage>, String>((ref, agentPubkey) async {
       final timer = Timer(sessionUsageRefresh, ref.invalidateSelf);
@@ -168,6 +174,7 @@ final agentSessionUsageProvider = FutureProvider.autoDispose
           ownerPubkey: owner,
           agentPubkey: agent,
           events: events,
+          verifySignatures: !kIsWeb,
         ),
       );
     });
@@ -180,11 +187,15 @@ class SessionUsageBatch {
   final String agentPubkey;
   final List<NostrEvent> events;
 
+  /// Whether to check each report's signature ([decodeTurnMetric]).
+  final bool verifySignatures;
+
   const SessionUsageBatch({
     required this.ownerPrivkeyHex,
     required this.ownerPubkey,
     required this.agentPubkey,
     required this.events,
+    this.verifySignatures = true,
   });
 }
 
@@ -205,6 +216,7 @@ Map<String, SessionUsage> decodeSessionUsage(SessionUsageBatch batch) {
       conversationKey: conversationKey,
       ownerPubkey: batch.ownerPubkey,
       agentPubkey: batch.agentPubkey,
+      verifySignature: batch.verifySignatures,
     );
     if (metric != null) metrics.add(metric);
   }
@@ -213,12 +225,14 @@ Map<String, SessionUsage> decodeSessionUsage(SessionUsageBatch batch) {
 
 /// Verifies and decrypts one kind 44200 event from [agentPubkey] to the
 /// owner. Returns null for anything that fails a check (NIP-AM: ignore
-/// events that fail to verify, decrypt, or parse).
+/// events that fail to verify, decrypt, or parse). With [verifySignature]
+/// false, the caller relies on the relay's signature check.
 TurnMetric? decodeTurnMetric(
   NostrEvent event, {
   required Uint8List conversationKey,
   required String ownerPubkey,
   required String agentPubkey,
+  bool verifySignature = true,
 }) {
   if (event.kind != EventKind.agentTurnMetric ||
       event.pubkey.toLowerCase() != agentPubkey ||
@@ -227,15 +241,17 @@ TurnMetric? decodeTurnMetric(
     return null;
   }
   try {
-    nostr.Event(
-      event.id,
-      event.pubkey,
-      event.createdAt,
-      event.kind,
-      event.tags,
-      event.content,
-      event.sig,
-    );
+    if (verifySignature) {
+      nostr.Event(
+        event.id,
+        event.pubkey,
+        event.createdAt,
+        event.kind,
+        event.tags,
+        event.content,
+        event.sig,
+      );
+    }
     final json = jsonDecode(nip44Decrypt(conversationKey, event.content));
     return json is Map<String, dynamic> ? TurnMetric.fromJson(json) : null;
   } catch (_) {

@@ -8,7 +8,9 @@ const _maxBoxDepth = 32;
 const _maxMoovBytes = 64 * 1024 * 1024;
 const _copyBufferBytes = 1024 * 1024;
 const _uint32Max = 0xffffffff;
-const _uint64Max = 0x7fffffffffffffff;
+// Built at runtime: dart2js rejects a 64-bit integer literal. Web builds never
+// run this native-file path.
+final _uint64Max = 0x7fffffff * 0x100000000 + 0xffffffff;
 const _containerTypes = {
   'moov',
   'trak',

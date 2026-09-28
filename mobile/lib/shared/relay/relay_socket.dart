@@ -3,10 +3,10 @@ import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 import 'package:nostr/nostr.dart' as nostr;
-import 'package:web_socket_channel/io.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 import 'nostr_models.dart';
+import 'web_socket_connect.dart';
 
 /// Low-level websocket connection with NIP-42 authentication.
 ///
@@ -70,7 +70,7 @@ class RelaySocket {
     _state = SocketState.connecting;
 
     try {
-      _channel = IOWebSocketChannel.connect(
+      _channel = connectWebSocket(
         Uri.parse(_wsUrl),
         pingInterval: debugPingInterval,
       );

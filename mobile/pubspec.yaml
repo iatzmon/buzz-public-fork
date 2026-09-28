@@ -52,6 +52,9 @@ dependencies:
   path_provider: ^2.1.6
   share_plus: ^13.3.0
   local_auth: ^3.0.2
+  # Browser APIs for the web build (project app iframes). Already present
+  # transitively via the Flutter SDK; declared here because we import it.
+  web: ^1.1.1
 
 dev_dependencies:
   integration_test:

@@ -1,5 +1,7 @@
 import 'package:flutter/foundation.dart';
 
+import 'project_apps.dart';
+
 /// Whether a NIP-MP project is listed in the community's project directory.
 enum ProjectVisibility { listed, unlisted }
 
@@ -116,6 +118,10 @@ class Project {
   /// True when synthesized from a repository no NIP-MP project claims.
   final bool legacy;
 
+  /// Web apps from repeatable `buzz-app` tags. Always empty for legacy
+  /// projects.
+  final List<ProjectApp> apps;
+
   const Project({
     required this.id,
     required this.dtag,
@@ -134,6 +140,7 @@ class Project {
     required this.unavailableRepositoryAddresses,
     required this.visibility,
     required this.legacy,
+    this.apps = const [],
   });
 
   /// True for an announced NIP-MP project, excluding repository-only models.
@@ -174,6 +181,7 @@ class Project {
       unavailableRepositoryAddresses: unavailableRepositoryAddresses,
       visibility: visibility,
       legacy: legacy,
+      apps: apps,
     );
   }
 }

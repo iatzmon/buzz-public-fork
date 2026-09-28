@@ -20,9 +20,14 @@ import '../channels/channel_detail_page.dart';
 import '../channels/channels_provider.dart';
 import 'project_activity.dart';
 import 'project_activity_section.dart';
+import 'project_apps/project_app_bridge.dart';
+import 'project_apps/project_app_frame.dart';
+import 'project_apps/project_app_host.dart';
 import 'project_task_visuals.dart';
 import 'project_tasks_page.dart';
 import 'project_tasks_view.dart';
+
+part 'project_page/apps.dart';
 
 /// The channel with [channelId] from the loaded channel list, or null.
 Channel? findLoadedChannel(WidgetRef ref, String channelId) {
@@ -45,7 +50,7 @@ Future<void> openProject(
   ),
 );
 
-enum _ProjectTab { tasks, activity, channels, repositories }
+enum _ProjectTab { tasks, activity, channels, repositories, apps }
 
 /// Height of the tab row under the project page's top bar.
 const _kProjectTabsHeight = 44.0;
@@ -60,6 +65,8 @@ class ProjectPage extends HookConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final tab = useState(_ProjectTab.tasks);
+    // The app open in the Apps tab (web only), by URL.
+    final openAppUrl = useState<String?>(null);
     final snapshotAsync = ref.watch(activeProjectsProvider);
     final snapshot = snapshotAsync.value;
     final project = ref.watch(projectByAddressProvider(projectAddress));
@@ -125,6 +132,56 @@ class ProjectPage extends HookConsumerWidget {
         retry(),
         refreshProjectTasks(ref, repositories.keys),
       ]);
+    }
+
+    final openApp = tab.value == _ProjectTab.apps && projectAppsCanEmbed
+        ? project.apps.where((app) => app.url == openAppUrl.value).firstOrNull
+        : null;
+    final tabsBar = _ProjectTabs(
+      selected: tab.value,
+      onSelected: (value) => tab.value = value,
+    );
+    final sidebarToggle = IconButton(
+      key: const ValueKey('project-page-sidebar-toggle'),
+      tooltip: added ? 'Remove from list' : 'Add to list',
+      icon: Icon(added ? LucideIcons.listMinus : LucideIcons.listPlus),
+      onPressed: () {
+        final notifier = ref.read(projectSidebarMembershipProvider.notifier);
+        unawaited(
+          added
+              ? notifier.remove(projectAddress)
+              : notifier.add(projectAddress),
+        );
+      },
+    );
+    final appBar = FrostedAppBar(
+      title: Text(project.name, maxLines: 1, overflow: TextOverflow.ellipsis),
+      actions: [sidebarToggle],
+      bottom: tabsBar,
+      bottomHeight: _kProjectTabsHeight,
+    );
+
+    // An open app fills the space under the tabs; it does not scroll.
+    if (openApp != null) {
+      return FrostedScaffold(
+        useUtilitySurfaceTheme: true,
+        appBar: appBar,
+        body: Padding(
+          padding: EdgeInsets.only(
+            top: frostedAppBarHeight(
+              context,
+              bottomHeight: _kProjectTabsHeight,
+            ),
+            bottom: MediaQuery.viewPaddingOf(context).bottom,
+          ),
+          child: _AppView(
+            key: ValueKey('project-app-view-${openApp.url}'),
+            app: openApp,
+            project: project,
+            onBack: () => openAppUrl.value = null,
+          ),
+        ),
+      );
     }
 
     final Widget content = switch (tab.value) {
@@ -214,35 +271,21 @@ class ProjectPage extends HookConsumerWidget {
                     ),
                 ],
               ),
+      _ProjectTab.apps => _AppsList(
+        apps: project.apps,
+        onOpen: (app) {
+          if (projectAppsCanEmbed) {
+            openAppUrl.value = app.url;
+          } else {
+            unawaited(_openExternal(context, app.url));
+          }
+        },
+      ),
     };
 
     return FrostedScaffold(
       useUtilitySurfaceTheme: true,
-      appBar: FrostedAppBar(
-        title: Text(project.name, maxLines: 1, overflow: TextOverflow.ellipsis),
-        actions: [
-          IconButton(
-            key: const ValueKey('project-page-sidebar-toggle'),
-            tooltip: added ? 'Remove from list' : 'Add to list',
-            icon: Icon(added ? LucideIcons.listMinus : LucideIcons.listPlus),
-            onPressed: () {
-              final notifier = ref.read(
-                projectSidebarMembershipProvider.notifier,
-              );
-              unawaited(
-                added
-                    ? notifier.remove(projectAddress)
-                    : notifier.add(projectAddress),
-              );
-            },
-          ),
-        ],
-        bottom: _ProjectTabs(
-          selected: tab.value,
-          onSelected: (value) => tab.value = value,
-        ),
-        bottomHeight: _kProjectTabsHeight,
-      ),
+      appBar: appBar,
       floatingActionButton:
           tab.value == _ProjectTab.tasks &&
               viewer != null &&
@@ -324,6 +367,7 @@ class _ProjectTabs extends StatelessWidget {
       label: 'Repos',
       icon: LucideIcons.folderGit2,
     ),
+    (tab: _ProjectTab.apps, label: 'Apps', icon: LucideIcons.appWindow),
   ];
 
   @override

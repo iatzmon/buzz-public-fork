@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import '../relay/nostr_models.dart';
+import 'project_apps.dart';
 import 'project_clone_url.dart';
 import 'project_models.dart';
 
@@ -257,6 +258,7 @@ Project? explicitProjectFromEvent(
     ),
     visibility: visibility,
     legacy: false,
+    apps: projectAppsFromTags(event.tags),
   );
 }
 

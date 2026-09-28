@@ -1515,6 +1515,16 @@ pub enum ProjectsCmd {
         /// Remove the visibility tag (absence defaults to `listed`)
         #[arg(long, group = "mutation", conflicts_with = "visibility")]
         clear_visibility: bool,
+        /// Link a web app (https URL) shown in the project's Apps tab; an
+        /// existing app with the same URL is relabeled
+        #[arg(long, group = "mutation")]
+        add_app: Option<String>,
+        /// Label for `--add-app` (≤256 bytes). Defaults to the URL host.
+        #[arg(long, requires = "add_app")]
+        app_label: Option<String>,
+        /// Unlink a web app by URL (repeatable)
+        #[arg(long = "remove-app", group = "mutation")]
+        remove_app: Vec<String>,
     },
     /// Delete a project (head-based tombstone; verified after submit)
     Delete {
@@ -2810,6 +2820,76 @@ mod tests {
             ])
             .is_err(),
             "--visibility chartreuse on update must be rejected at parse time"
+        );
+    }
+
+    /// App flags parse as project update mutations.
+    #[test]
+    fn projects_update_app_flags_parse() {
+        let parsed = Cli::try_parse_from([
+            "buzz",
+            "projects",
+            "update",
+            "side-hustles",
+            "--add-app",
+            "https://side-hustles.example.com/",
+            "--app-label",
+            "Side Hustles",
+            "--remove-app",
+            "https://old.example.com/",
+            "--remove-app",
+            "https://older.example.com/",
+        ])
+        .expect("app flags must parse");
+        let Cmd::Projects(ProjectsCmd::Update {
+            add_app,
+            app_label,
+            remove_app,
+            ..
+        }) = parsed.command
+        else {
+            panic!("expected projects update");
+        };
+        assert_eq!(
+            add_app.as_deref(),
+            Some("https://side-hustles.example.com/")
+        );
+        assert_eq!(app_label.as_deref(), Some("Side Hustles"));
+        assert_eq!(
+            remove_app,
+            ["https://old.example.com/", "https://older.example.com/"]
+        );
+
+        assert!(
+            Cli::try_parse_from([
+                "buzz",
+                "projects",
+                "update",
+                "side-hustles",
+                "--remove-app",
+                "https://old.example.com/",
+            ])
+            .is_ok(),
+            "--remove-app alone is a mutation"
+        );
+    }
+
+    /// `--app-label` names the app being added; alone it is rejected by clap.
+    #[test]
+    fn projects_update_app_label_requires_add_app() {
+        assert!(
+            Cli::try_parse_from([
+                "buzz",
+                "projects",
+                "update",
+                "side-hustles",
+                "--name",
+                "Side Hustles",
+                "--app-label",
+                "Orphan",
+            ])
+            .is_err(),
+            "--app-label without --add-app must be rejected at parse time"
         );
     }
 }

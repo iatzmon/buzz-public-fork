@@ -1,12 +1,17 @@
 import 'dart:async';
+import 'dart:convert';
 
+import 'package:buzz/features/activity/compose_drafts_provider.dart';
 import 'package:buzz/features/channels/channel.dart';
+import 'package:buzz/features/channels/compose_bar.dart';
 import 'package:buzz/features/channels/channels_page.dart';
 import 'package:buzz/features/channels/channels_provider.dart';
 import 'package:buzz/features/forum/forum_models.dart';
 import 'package:buzz/features/forum/forum_posts_view.dart';
 import 'package:buzz/features/forum/forum_provider.dart';
 import 'package:buzz/features/profile/profile_provider.dart';
+import 'package:buzz/features/projects/project_apps/project_app_bridge.dart';
+import 'package:buzz/features/projects/project_apps/project_app_host.dart';
 import 'package:buzz/features/projects/project_page.dart';
 import 'package:buzz/features/projects/project_tasks_view.dart';
 import 'package:buzz/shared/community/community_icon_provider.dart';
@@ -31,20 +36,23 @@ const _scope = (
   viewerPubkey: alice,
 );
 
-ProjectsSnapshot _snapshot(CommunityFixture fixture, {bool empty = false}) =>
-    ProjectsSnapshot(
-      scope: _scope,
-      projects: empty
-          ? const []
-          : buildProjectReadModels(
-              projectEvents: fixture.projectEvents,
-              repositoryEvents: fixture.repositoryEvents,
-              deletionEvents: fixture.deletionEvents,
-              relayOrigin: relayOrigin,
-              viewerPubkey: alice,
-            ),
-      fetchedAt: DateTime(2026, 9, 27),
-    );
+ProjectsSnapshot _snapshot(
+  CommunityFixture fixture, {
+  bool empty = false,
+  List<NostrEvent> extraProjects = const [],
+}) => ProjectsSnapshot(
+  scope: _scope,
+  projects: empty
+      ? const []
+      : buildProjectReadModels(
+          projectEvents: [...fixture.projectEvents, ...extraProjects],
+          repositoryEvents: fixture.repositoryEvents,
+          deletionEvents: fixture.deletionEvents,
+          relayOrigin: relayOrigin,
+          viewerPubkey: alice,
+        ),
+  fetchedAt: DateTime(2026, 9, 27),
+);
 
 Channel _channel(String id, String name, String type) => Channel(
   id: id,
@@ -565,6 +573,172 @@ void main() {
         repoAddress(alice, 'buzz'): streamHomeChannel,
         repoAddress(alice, 'buzz-infra'): streamHomeChannel,
       });
+    });
+  });
+  group('Apps tab', () {
+    final sideHustles = projectAddress(alice, 'side-hustles');
+    final appsProject = projectEvent(
+      owner: alice,
+      dtag: 'side-hustles',
+      name: 'Side Hustles',
+      channel: forumHomeChannel,
+      createdAt: 1_700_000_500,
+      repoAddresses: const [],
+      extraTags: [
+        ['buzz-app', 'https://side-hustles.acs.example.com/', 'Candidates'],
+        ['buzz-app', 'https://board.example.com/view'],
+        ['buzz-app', 'http://insecure.example.com/', 'Insecure'],
+      ],
+    );
+    Map<String, Object> added(String address) => {
+      _membershipKey: const ProjectSidebarMembershipStore()
+          .withSelection(address, selected: true, updatedAt: 1)
+          .encode(),
+    };
+
+    Future<void> openApps(WidgetTester tester, String address) async {
+      await tester.tap(_projectRow(address));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('project-tab-apps')));
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('lists the project apps with label and host', (tester) async {
+      await _pumpChannels(
+        tester,
+        snapshot: _snapshot(CommunityFixture(), extraProjects: [appsProject]),
+        prefs: added(sideHustles),
+      );
+      await openApps(tester, sideHustles);
+
+      expect(find.text('Apps'), findsOneWidget);
+      expect(find.byKey(const ValueKey('project-app-0')), findsOneWidget);
+      expect(find.text('Candidates'), findsOneWidget);
+      expect(find.text('side-hustles.acs.example.com'), findsOneWidget);
+      // No label: the host is the label.
+      expect(find.text('board.example.com'), findsNWidgets(2));
+      // Only https apps are listed.
+      expect(find.byKey(const ValueKey('project-app-2')), findsNothing);
+      expect(find.text('Insecure'), findsNothing);
+      expect(find.byKey(const ValueKey('project-apps-empty')), findsNothing);
+    });
+
+    testWidgets('explains how to add an app when there are none', (
+      tester,
+    ) async {
+      await _pumpChannels(
+        tester,
+        snapshot: _snapshot(CommunityFixture()),
+        prefs: added(platform),
+      );
+      await openApps(tester, platform);
+
+      expect(find.byKey(const ValueKey('project-apps-empty')), findsOneWidget);
+      expect(find.text('This project has no apps.'), findsOneWidget);
+      expect(find.textContaining('--add-app'), findsOneWidget);
+    });
+
+    BuzzProjectAppHost hostFor(WidgetTester tester, String address) {
+      final element = tester.element(find.byType(ProjectPage));
+      final ref = element as WidgetRef;
+      return BuzzProjectAppHost(
+        context: element,
+        ref: ref,
+        project: ref.read(projectByAddressProvider(address))!,
+      );
+    }
+
+    List<ComposeDraft> drafts(WidgetTester tester) => ProviderScope.containerOf(
+      tester.element(find.byType(MaterialApp)),
+      listen: false,
+    ).read(composeDraftsProvider);
+
+    testWidgets(
+      'ui/message opens the forum home new-post composer with the draft',
+      (tester) async {
+        await _pumpChannels(
+          tester,
+          snapshot: _snapshot(CommunityFixture(), extraProjects: [appsProject]),
+          prefs: {
+            ...added(sideHustles),
+            // An unsent draft the user already had stays first.
+            'compose_drafts_v1:$relayOrigin:$alice': jsonEncode([
+              ComposeDraft(
+                key: forumHomeChannel,
+                channelId: forumHomeChannel,
+                threadHeadId: null,
+                text: 'Earlier note',
+                updatedAt: 1,
+              ).toJson(),
+            ]),
+          },
+        );
+        await openApps(tester, sideHustles);
+
+        await hostFor(
+          tester,
+          sideHustles,
+        ).draftMessage('@Claude Forge dig deeper on Etsy printables');
+        await tester.pumpAndSettle();
+
+        const expected =
+            'Earlier note\n\n@Claude Forge dig deeper on Etsy printables';
+        expect(drafts(tester).single.key, forumHomeChannel);
+        expect(drafts(tester).single.text, expected);
+        // Forum home: the new-post composer is open with the draft, unsent.
+        expect(find.byType(ForumPostsView), findsOneWidget);
+        expect(find.byType(ComposeBar), findsOneWidget);
+        // The collapsed composer previews the draft on one line.
+        expect(
+          find.descendant(
+            of: find.byType(ComposeBar),
+            matching: find.text(
+              'Earlier note @Claude Forge dig deeper on Etsy printables',
+            ),
+          ),
+          findsOneWidget,
+        );
+      },
+    );
+
+    testWidgets('ui/message is refused without a readable home channel', (
+      tester,
+    ) async {
+      final noHome = projectEvent(
+        owner: alice,
+        dtag: 'no-home',
+        name: 'No Home',
+        createdAt: 1_700_000_600,
+        repoAddresses: const [],
+      );
+      await _pumpChannels(
+        tester,
+        snapshot: _snapshot(
+          CommunityFixture(),
+          extraProjects: [appsProject, noHome],
+        ),
+        channels: [_general],
+        prefs: added(sideHustles),
+      );
+      await tester.tap(_projectRow(sideHustles));
+      await tester.pumpAndSettle();
+
+      await expectLater(
+        hostFor(tester, sideHustles).draftMessage('hi'),
+        throwsA(
+          isA<ProjectAppHostException>().having(
+            (e) => e.message,
+            'message',
+            'The project home channel is not available to you.',
+          ),
+        ),
+      );
+      await expectLater(
+        hostFor(tester, projectAddress(alice, 'no-home')).draftMessage('hi'),
+        throwsA(isA<ProjectAppHostException>()),
+      );
+      expect(drafts(tester), isEmpty);
+      expect(find.byType(ForumPostsView), findsNothing);
     });
   });
 }

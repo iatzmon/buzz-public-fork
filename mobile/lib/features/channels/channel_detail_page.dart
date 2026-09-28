@@ -260,12 +260,16 @@ class ChannelDetailPage extends HookConsumerWidget {
   /// How the automatically opened initial thread affects the route stack.
   final InitialThreadRouteBehavior initialThreadRouteBehavior;
 
+  /// For a forum, opens with the new-post composer showing its saved draft.
+  final bool startForumPost;
+
   const ChannelDetailPage({
     super.key,
     required this.channel,
     this.initialMessageId,
     this.initialThreadRootId,
     this.initialThreadRouteBehavior = InitialThreadRouteBehavior.push,
+    this.startForumPost = false,
   });
 
   @override
@@ -697,6 +701,7 @@ class ChannelDetailPage extends HookConsumerWidget {
                           ForumPostsView(
                             channel: resolvedChannel,
                             currentPubkey: currentPubkey,
+                            startComposing: startForumPost,
                           ),
                           if (showConnectionSkeleton.value)
                             Positioned(

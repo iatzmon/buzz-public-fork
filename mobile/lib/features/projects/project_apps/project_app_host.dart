@@ -45,6 +45,13 @@ class BuzzProjectAppHost implements ProjectAppHost {
         'The project home channel is archived.',
       );
     }
+    // Same rule the channel and forum views use to show a composer: without
+    // it the draft would be saved where the viewer has no way to send it.
+    if (!channel.canPost) {
+      throw const ProjectAppHostException(
+        'Join the project home channel to post there.',
+      );
+    }
     if (!context.mounted) {
       throw const ProjectAppHostException('The app is no longer open.');
     }

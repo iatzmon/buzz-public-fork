@@ -41,7 +41,7 @@ class ForumPostsView extends HookConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final postsAsync = ref.watch(forumPostsProvider(channel.id));
-    final canPost = channel.isMember && !channel.isArchived;
+    final canPost = channel.canPost;
     final isComposing = useState(startComposing && canPost);
     // A queued attachment can finish after this view is popped. Capture the
     // app-level provider container instead of retaining the route's WidgetRef.

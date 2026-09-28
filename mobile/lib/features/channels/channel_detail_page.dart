@@ -378,10 +378,7 @@ class ChannelDetailPage extends HookConsumerWidget {
       ],
     );
     final memberProfilesPreloadState = useFuture(memberProfilesPreload);
-    final showsComposer =
-        !resolvedChannel.isForum &&
-        resolvedChannel.isMember &&
-        !resolvedChannel.isArchived;
+    final showsComposer = !resolvedChannel.isForum && resolvedChannel.canPost;
     final profileOwnedAgentPubkeys = <String>[];
     for (final participantPubkey in resolvedChannel.participantPubkeys) {
       final normalized = participantPubkey.trim().toLowerCase();

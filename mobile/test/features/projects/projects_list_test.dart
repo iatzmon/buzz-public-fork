@@ -3,6 +3,7 @@ import 'dart:convert';
 
 import 'package:buzz/features/activity/compose_drafts_provider.dart';
 import 'package:buzz/features/channels/channel.dart';
+import 'package:buzz/features/channels/channel_detail_page.dart';
 import 'package:buzz/features/channels/compose_bar.dart';
 import 'package:buzz/features/channels/channels_page.dart';
 import 'package:buzz/features/channels/channels_provider.dart';
@@ -740,5 +741,52 @@ void main() {
       expect(drafts(tester), isEmpty);
       expect(find.byType(ForumPostsView), findsNothing);
     });
+
+    testWidgets(
+      'ui/message is refused when the viewer cannot post in the home forum',
+      (tester) async {
+        // Open and readable, but the viewer is not a member: the forum shows
+        // no composer, so a saved draft could never be sent.
+        await _pumpChannels(
+          tester,
+          snapshot: _snapshot(CommunityFixture(), extraProjects: [appsProject]),
+          channels: [_general, _docsForum.copyWith(isMember: false)],
+          prefs: added(sideHustles),
+        );
+        await openApps(tester, sideHustles);
+
+        final host = hostFor(tester, sideHustles);
+        final app = host.project.apps.first;
+        final reply = await handleProjectAppMessage(
+          app: app,
+          projectApps: host.project.apps,
+          origin: app.origin,
+          fromAppFrame: true,
+          data: {
+            'jsonrpc': '2.0',
+            'id': 7,
+            'method': 'ui/message',
+            'params': {
+              'role': 'user',
+              'content': {'type': 'text', 'text': 'hi'},
+            },
+          },
+          host: host,
+        );
+        await tester.pumpAndSettle();
+
+        expect(reply, {
+          'jsonrpc': '2.0',
+          'id': 7,
+          'error': {
+            'code': ProjectAppRpcError.denied,
+            'message': 'Join the project home channel to post there.',
+          },
+        });
+        expect(drafts(tester), isEmpty);
+        expect(find.byType(ChannelDetailPage), findsNothing);
+        expect(find.byType(ForumPostsView), findsNothing);
+      },
+    );
   });
 }

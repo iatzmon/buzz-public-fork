@@ -32,7 +32,13 @@ class NotesPage extends HookConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final notes = ref.watch(longNotesProvider);
-    final authors = notes.value?.map((n) => n.author).toSet().toList() ?? [];
+    final scope = ref.watch(relayConfigProvider);
+    // Notes read under another community or account are never shown.
+    final loaded = notes.value;
+    final current = loaded != null && loaded.scope == scope
+        ? loaded.notes
+        : null;
+    final authors = current?.map((n) => n.author).toSet().toList() ?? [];
     useEffect(() {
       unawaited(ref.read(userCacheProvider.notifier).preload(authors));
       return null;
@@ -54,16 +60,15 @@ class NotesPage extends HookConsumerWidget {
       child: const Text('Retry'),
     );
 
-    final body = switch (notes) {
-      AsyncValue(:final value?) when value.isEmpty && refreshError == null =>
-        centered(
-          const _NotesMessage(
-            icon: LucideIcons.notebookText,
-            message: 'No notes yet.',
-            detail: 'Agents publish notes with buzz notes set.',
-          ),
+    final body = switch (current) {
+      final value? when value.isEmpty && refreshError == null => centered(
+        const _NotesMessage(
+          icon: LucideIcons.notebookText,
+          message: 'No notes yet.',
+          detail: 'Agents publish notes with buzz notes set.',
         ),
-      AsyncValue(:final value?) => ListView(
+      ),
+      final value? => ListView(
         key: const Key('notes-page-list'),
         padding: EdgeInsets.fromLTRB(0, top, 0, Grid.lg),
         children: [
@@ -97,21 +102,18 @@ class NotesPage extends HookConsumerWidget {
               ),
               onTap: () => Navigator.of(context).push(
                 MaterialPageRoute<void>(
-                  builder: (_) => NoteReaderPage(
-                    note: note,
-                    scope: ref.read(relayConfigProvider),
-                  ),
+                  builder: (_) => NoteReaderPage(note: note, scope: scope),
                 ),
               ),
             ),
         ],
       ),
-      AsyncValue(:final error?) => centered(
+      null when refreshError != null => centered(
         _NotesMessage(
           icon: LucideIcons.circleAlert,
           isError: true,
           message: 'Notes could not load.',
-          detail: '$error',
+          detail: '$refreshError',
           action: retry,
         ),
       ),

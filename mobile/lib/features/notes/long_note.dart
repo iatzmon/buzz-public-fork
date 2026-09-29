@@ -66,18 +66,27 @@ List<LongNote> latestLongNotes(Iterable<NostrEvent> events) {
   });
 }
 
+/// Notes and the community and account they were read for.
+class LongNoteList {
+  const LongNoteList({required this.scope, required this.notes});
+
+  /// Show [notes] only while this is still the active relay config: a failed
+  /// load after a switch keeps the old list as the provider's last value.
+  final RelayConfig scope;
+  final List<LongNote> notes;
+}
+
 /// Every author's long-form notes in the current community. Reloads when the
 /// community or account changes. The relay is not trusted: a note whose id or
 /// signature does not verify is dropped before it is shown under an author.
-final longNotesProvider = FutureProvider.autoDispose<List<LongNote>>((
-  ref,
-) async {
-  ref.watch(relayConfigProvider);
+final longNotesProvider = FutureProvider.autoDispose<LongNoteList>((ref) async {
+  final scope = ref.watch(relayConfigProvider);
   final session = ref.watch(relaySessionProvider.notifier);
   final events = await session.queryRelay([
     NostrFilter(kinds: const [longNoteKind], limit: 200),
   ]);
-  return latestLongNotes(await ref.read(longNoteVerifierProvider)(events));
+  final verified = await ref.read(longNoteVerifierProvider)(events);
+  return LongNoteList(scope: scope, notes: latestLongNotes(verified));
 });
 
 /// Checks notes before they are shown. Tests replace the background isolate

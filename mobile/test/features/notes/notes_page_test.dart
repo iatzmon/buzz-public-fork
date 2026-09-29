@@ -226,6 +226,32 @@ void main() {
     );
   }
 
+  for (final accountOnly in [false, true]) {
+    testWidgets(
+      'old notes are not shown after a ${accountOnly ? 'same-community account' : 'community'} change whose load fails',
+      (tester) async {
+        var fail = false;
+        final container = await pump(tester, (_) async {
+          if (fail) throw StateError('New community is offline');
+          return [_note(content: 'Old community body')];
+        });
+        expect(find.text('Relay retro'), findsOneWidget);
+        fail = true;
+        container
+            .read(relayConfigProvider.notifier)
+            .update(
+              baseUrl: accountOnly
+                  ? 'https://notes.example'
+                  : 'https://other.example',
+              nsec: accountOnly ? 'second' : null,
+            );
+        await tester.pumpAndSettle();
+        expect(find.text('Relay retro'), findsNothing);
+        expect(find.text('Notes could not load.'), findsOneWidget);
+      },
+    );
+  }
+
   testWidgets('a Buzz link in a note goes to the in-app link handler', (
     tester,
   ) async {

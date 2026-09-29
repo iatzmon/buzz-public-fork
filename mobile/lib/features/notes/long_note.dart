@@ -1,5 +1,6 @@
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 
+import '../../shared/projects/project_event_verification.dart';
 import '../../shared/relay/relay.dart';
 
 /// Kind:30023 NIP-23 long-form note, published with `buzz notes set`.
@@ -66,7 +67,8 @@ List<LongNote> latestLongNotes(Iterable<NostrEvent> events) {
 }
 
 /// Every author's long-form notes in the current community. Reloads when the
-/// community or account changes.
+/// community or account changes. The relay is not trusted: a note whose id or
+/// signature does not verify is dropped before it is shown under an author.
 final longNotesProvider = FutureProvider.autoDispose<List<LongNote>>((
   ref,
 ) async {
@@ -75,5 +77,11 @@ final longNotesProvider = FutureProvider.autoDispose<List<LongNote>>((
   final events = await session.queryRelay([
     NostrFilter(kinds: const [longNoteKind], limit: 200),
   ]);
-  return latestLongNotes(events);
+  return latestLongNotes(await ref.read(longNoteVerifierProvider)(events));
 });
+
+/// Checks notes before they are shown. Tests replace the background isolate
+/// with an inline check of the same signatures.
+final longNoteVerifierProvider = Provider<ProjectEventVerifier>(
+  (ref) => verifyProjectEvents,
+);

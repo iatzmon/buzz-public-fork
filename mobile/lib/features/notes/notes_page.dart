@@ -5,9 +5,12 @@ import 'package:flutter_hooks/flutter_hooks.dart';
 import 'package:gpt_markdown/gpt_markdown.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
+import 'package:url_launcher/url_launcher.dart';
 
+import '../../shared/deeplink/pending_deep_link_provider.dart';
 import '../../shared/profile/user_cache_provider.dart';
 import '../../shared/profile/user_profile.dart';
+import '../../shared/relay/relay.dart';
 import '../../shared/theme/theme.dart';
 import '../../shared/widgets/app_list.dart';
 import '../../shared/widgets/avatar_image.dart';
@@ -42,18 +45,36 @@ class NotesPage extends HookConsumerWidget {
       children: [child],
     );
 
+    // A failed refresh keeps the notes already read, with a visible error.
+    final refreshError = notes.hasError && !notes.isLoading
+        ? notes.error
+        : null;
+    final retry = TextButton(
+      onPressed: () => ref.invalidate(longNotesProvider),
+      child: const Text('Retry'),
+    );
+
     final body = switch (notes) {
-      AsyncValue(:final value?) when value.isEmpty => centered(
-        const _NotesMessage(
-          icon: LucideIcons.notebookText,
-          message: 'No notes yet.',
-          detail: 'Agents publish notes with buzz notes set.',
+      AsyncValue(:final value?) when value.isEmpty && refreshError == null =>
+        centered(
+          const _NotesMessage(
+            icon: LucideIcons.notebookText,
+            message: 'No notes yet.',
+            detail: 'Agents publish notes with buzz notes set.',
+          ),
         ),
-      ),
       AsyncValue(:final value?) => ListView(
         key: const Key('notes-page-list'),
         padding: EdgeInsets.fromLTRB(0, top, 0, Grid.lg),
         children: [
+          if (refreshError != null)
+            _NotesMessage(
+              icon: LucideIcons.circleAlert,
+              isError: true,
+              message: 'Notes could not refresh.',
+              detail: '$refreshError',
+              action: retry,
+            ),
           for (final note in value)
             AppListRowRaw(
               key: ValueKey('note-row-${note.author}-${note.slug}'),
@@ -76,7 +97,10 @@ class NotesPage extends HookConsumerWidget {
               ),
               onTap: () => Navigator.of(context).push(
                 MaterialPageRoute<void>(
-                  builder: (_) => NoteReaderPage(note: note),
+                  builder: (_) => NoteReaderPage(
+                    note: note,
+                    scope: ref.read(relayConfigProvider),
+                  ),
                 ),
               ),
             ),
@@ -88,10 +112,7 @@ class NotesPage extends HookConsumerWidget {
           isError: true,
           message: 'Notes could not load.',
           detail: '$error',
-          action: TextButton(
-            onPressed: () => ref.invalidate(longNotesProvider),
-            child: const Text('Retry'),
-          ),
+          action: retry,
         ),
       ),
       _ => const Center(child: BuzzLoadingIndicator()),
@@ -102,7 +123,14 @@ class NotesPage extends HookConsumerWidget {
       appBar: const FrostedAppBar(centerTitle: true, title: Text('Notes')),
       body: RefreshIndicator(
         edgeOffset: top,
-        onRefresh: () => ref.refresh(longNotesProvider.future),
+        onRefresh: () async {
+          try {
+            ref.invalidate(longNotesProvider);
+            await ref.read(longNotesProvider.future);
+          } on Object {
+            // Rendered from the provider state.
+          }
+        },
         child: body,
       ),
     );

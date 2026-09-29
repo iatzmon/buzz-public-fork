@@ -524,6 +524,21 @@ void main() {
     expect(task.comments.map((e) => e.content), ['A comment']);
     expect(task.status, 'Done');
   });
+  test('a status note must target the task with a lowercase e tag', () {
+    final task = ProjectTask.fromEvents(root(), [
+      event(
+        '2',
+        kind: 1631,
+        signer: owner,
+        tags: [
+          ['E', root().id],
+        ],
+        content: 'Ignored for status',
+      ),
+    ]);
+    expect(task.status, isNot('Done'));
+    expect(task.statusNotes, isEmpty);
+  });
   test(
     'write guard refuses assignment of others and emits real operation tags',
     () {

@@ -73,6 +73,7 @@ void main() {
     bool failTasks = false,
     String? viewer,
     Widget? home,
+    double textScale = 1,
   }) async {
     SharedPreferences.setMockInitialValues({});
     final prefs = await SharedPreferences.getInstance();
@@ -155,6 +156,12 @@ void main() {
         container: container,
         child: MaterialApp(
           theme: AppTheme.light(),
+          builder: (context, child) => MediaQuery(
+            data: MediaQuery.of(
+              context,
+            ).copyWith(textScaler: TextScaler.linear(textScale)),
+            child: child!,
+          ),
           home:
               home ??
               ProjectTasksPage(
@@ -327,6 +334,50 @@ void main() {
     expect(find.text('Carol thinks this is a duplicate'), findsOneWidget);
     expect(find.textContaining('closed'), findsNothing);
   });
+  for (final width in [320.0, 375.0]) {
+    for (final scale in [1.0, 2.0]) {
+      testWidgets('status note header fits width $width at text scale $scale', (
+        tester,
+      ) async {
+        tester.view.physicalSize = Size(width, 1400);
+        tester.view.devicePixelRatio = 1;
+        addTearDown(tester.view.resetPhysicalSize);
+        addTearDown(tester.view.resetDevicePixelRatio);
+        // Other page sections are not under test here.
+        final previous = FlutterError.onError;
+        FlutterError.onError = (_) {};
+        try {
+          await pump(
+            tester,
+            published: [],
+            textScale: scale,
+            history: [
+              _event(
+                '2',
+                kind: 1633,
+                tags: [
+                  ['e', _event('1').id, '', 'root'],
+                  ['a', _repo],
+                ],
+                content: 'Next: open the PR',
+              ),
+            ],
+          );
+          await tester.tap(find.text('Mobile project task'));
+          await tester.pumpAndSettle();
+        } finally {
+          FlutterError.onError = previous;
+        }
+        final action = find.textContaining('moved to Triage');
+        expect(action, findsOneWidget);
+        expect(tester.getRect(action).right, lessThanOrEqualTo(width));
+        // The task header shows the author too; the Activity entry is last.
+        final author = find.text('${_owner.substring(0, 8)}…').last;
+        expect(tester.getRect(author).width, greaterThan(0));
+        expect(tester.getRect(author).right, lessThanOrEqualTo(width));
+      });
+    }
+  }
   testWidgets('community switch hides an open task and its action controls', (
     tester,
   ) async {

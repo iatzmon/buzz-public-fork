@@ -92,10 +92,17 @@ class ProjectTask {
     final comments = events
         .where((e) => e.kind == 1 || e.kind == 1111)
         .toList();
+    // Same target rule as [statuses], so an action label is never shown for
+    // a status event this task ignored.
     final statusNotes = events
         .where(
           (e) =>
-              e.kind >= 1630 && e.kind <= 1633 && e.content.trim().isNotEmpty,
+              e.kind >= 1630 &&
+              e.kind <= 1633 &&
+              e.content.trim().isNotEmpty &&
+              e.tags.any(
+                (tag) => tag.length > 1 && tag[0] == 'e' && tag[1] == root.id,
+              ),
         )
         .toList();
     final self = <NostrEvent>[];

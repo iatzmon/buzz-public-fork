@@ -1,0 +1,7 @@
+# The upstream bip340 files stay exactly as published (see README.md), so only
+# the files this copy adds are analyzed.
+analyzer:
+  exclude:
+    - lib/src/bip340_dart.dart
+    - lib/src/helpers.dart
+    - lib/src/hex.dart

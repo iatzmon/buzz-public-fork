@@ -853,6 +853,11 @@ mobile-test:
 mobile-emoji-data:
     node {{mobile_dir}}/scripts/generate-emoji-data.mjs
 
+# Rebuild mobile/web/buzz_schnorr.js (browser Schnorr for the web build) from
+# the @noble/curves version pnpm-lock.yaml pins. Needs `pnpm install` first.
+mobile-web-schnorr:
+    NODE_PATH={{justfile_directory()}}/node_modules/.pnpm/node_modules npx --yes esbuild@0.25.10 {{mobile_dir}}/scripts/web-schnorr-entry.mjs --bundle --format=iife --target=es2020 --legal-comments=inline --outfile={{mobile_dir}}/web/buzz_schnorr.js
+
 # Compile an unsigned Android debug APK (worktree-aware debug identity)
 mobile-build-android:
     #!/usr/bin/env bash

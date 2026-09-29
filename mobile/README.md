@@ -188,8 +188,18 @@ Or from the repo root: `just mobile-check` and `just mobile-test`.
 The same app builds for the browser:
 
 ```bash
-flutter build web --base-href /app/
+flutter build web --wasm --base-href /app/
 ```
+
+Build with `--wasm`. The app signs and checks Nostr events with Dart
+`BigInt`, which is much slower in the JavaScript build. Measured in Chrome
+(profile builds, first minute on the home screen): the JavaScript build blocked
+the page for 10.5 s in total, the `--wasm` build for 1.7 s, all during
+startup. Browsers without WasmGC load the JavaScript build (`main.dart.js`)
+from the same output automatically.
+The server must send `.mjs` as `application/javascript` and `.wasm` as
+`application/wasm`; nginx's default `mime.types` has no `mjs` entry, so add
+`types { application/javascript mjs; }` after including it.
 
 `--base-href` must match the path the app is served under. Serve `build/web`
 from the relay's own origin, or add the page's origin to the

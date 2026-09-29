@@ -339,6 +339,23 @@ class App extends HookConsumerWidget {
       resolved.darkTheme?.name ?? '',
       darkScheme.brightness,
     );
+    // Two ThemeData built from the same inputs never compare equal, so a new
+    // one on every rebuild makes MaterialApp animate between identical
+    // themes, and icons briefly brighten. Rebuild them only when inputs change.
+    final lightTheme = useMemoized(
+      () => AppTheme.light(
+        colorScheme: lightScheme,
+        topSectionGradient: buzzLightGradient,
+      ),
+      [lightScheme, buzzLightGradient],
+    );
+    final darkTheme = useMemoized(
+      () => AppTheme.dark(
+        colorScheme: darkScheme,
+        topSectionGradient: buzzDarkGradient,
+      ),
+      [darkScheme, buzzDarkGradient],
+    );
 
     // Eagerly initialize websocket session and lifecycle observer when
     // authenticated. These providers connect and manage the websocket.
@@ -389,14 +406,8 @@ class App extends HookConsumerWidget {
       navigatorKey: _mobileRootNavigatorKey,
       navigatorObservers: [voiceNoteRouteObserver],
       title: 'Buzz',
-      theme: AppTheme.light(
-        colorScheme: lightScheme,
-        topSectionGradient: buzzLightGradient,
-      ),
-      darkTheme: AppTheme.dark(
-        colorScheme: darkScheme,
-        topSectionGradient: buzzDarkGradient,
-      ),
+      theme: lightTheme,
+      darkTheme: darkTheme,
       themeMode: effectiveMode,
       // Above the navigator, so an age restriction cannot be bypassed by a
       // route that was pushed while the store signal request was in flight.

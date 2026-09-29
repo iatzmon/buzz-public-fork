@@ -4414,6 +4414,11 @@ fn try_native_steer(
         prompt_tag: prompt_tag.clone(),
         received_at: std::time::Instant::now(),
     };
+    let verified = queue::verified_events_section(
+        "buzz-verified-current-events",
+        channel_id,
+        std::iter::once(&be),
+    );
     let event_block = queue::format_event_block(channel_id, None, &be, None);
     let new_message = prompt_framing::semantic_section(tag, "");
     let event_section = prompt_framing::semantic_section_with_attributes(
@@ -4421,7 +4426,10 @@ fn try_native_steer(
         &[("type", prompt_tag.as_str())],
         &event_block,
     );
-    let body = format!("{new_message}\n\n{event_section}\n\n{closing}");
+    let body = match verified {
+        Some(verified) => format!("{new_message}\n\n{verified}\n\n{event_section}\n\n{closing}"),
+        None => format!("{new_message}\n\n{event_section}\n\n{closing}"),
+    };
 
     let (ack_tx, ack_rx) = tokio::sync::oneshot::channel::<pool::SteerAck>();
     let request = pool::SteerRequest {

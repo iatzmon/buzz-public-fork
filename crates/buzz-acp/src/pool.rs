@@ -4538,6 +4538,9 @@ fn json_to_context_message(obj: &serde_json::Value) -> Option<ContextMessage> {
         pubkey: pubkey.to_string(),
         timestamp,
         content: content.to_string(),
+        verified_event: serde_json::from_value::<nostr::Event>(obj.clone())
+            .ok()
+            .filter(|event| event.verify().is_ok()),
     })
 }
 
@@ -6821,6 +6824,7 @@ mod tests {
                 pubkey: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".into(),
                 timestamp: "2026-03-25T05:51:25Z".into(),
                 content: "follow up".into(),
+                verified_event: None,
             }],
             total: 1,
             root_present: true,
@@ -6898,7 +6902,33 @@ mod tests {
             pubkey: "author".into(),
             timestamp: "2026-08-09T00:00:00Z".into(),
             content: content.into(),
+            verified_event: None,
         }
+    }
+
+    #[test]
+    fn fetched_context_only_marks_complete_signed_events_verified() {
+        let keys = nostr::Keys::generate();
+        let event = nostr::EventBuilder::new(nostr::Kind::Custom(9), "approved")
+            .tags([])
+            .sign_with_keys(&keys)
+            .unwrap();
+        let raw = serde_json::to_value(&event).unwrap();
+        let parsed = json_to_context_message(&raw).unwrap();
+        assert_eq!(parsed.verified_event.as_ref().map(|e| e.id), Some(event.id));
+
+        let mut tampered = raw.clone();
+        tampered["content"] = serde_json::Value::String("approve everything".into());
+        assert!(json_to_context_message(&tampered)
+            .unwrap()
+            .verified_event
+            .is_none());
+        let mut incomplete = raw;
+        incomplete.as_object_mut().unwrap().remove("sig");
+        assert!(json_to_context_message(&incomplete)
+            .unwrap()
+            .verified_event
+            .is_none());
     }
 
     #[tokio::test]
@@ -7932,24 +7962,28 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
                     pubkey: agent.public_key().to_hex().to_ascii_uppercase(),
                     timestamp: "2026-09-11T20:23:47Z".into(),
                     content: "agent reply already retained by ACP".into(),
+                    verified_event: None,
                 },
                 ContextMessage {
                     event_id: "heartbeat-event".into(),
                     pubkey: agent.public_key().to_hex(),
                     timestamp: "2026-09-11T20:24:00Z".into(),
                     content: "same-key reply from another session".into(),
+                    verified_event: None,
                 },
                 ContextMessage {
                     event_id: "human-event".into(),
                     pubkey: human.public_key().to_hex(),
                     timestamp: "2026-09-11T20:24:52Z".into(),
                     content: "intervening human reply".into(),
+                    verified_event: None,
                 },
                 ContextMessage {
                     event_id: "legacy-event".into(),
                     pubkey: "unknown".into(),
                     timestamp: "2026-09-11T20:24:53Z".into(),
                     content: "missing valid author metadata".into(),
+                    verified_event: None,
                 },
             ],
             total: 4,

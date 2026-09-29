@@ -8,6 +8,7 @@ class ProjectTask {
     required this.assignees,
     required this.assignmentHeads,
     required this.comments,
+    this.statusNotes = const [],
     this.appliedAssignmentIds = const {},
     this.communityOwners = const {},
   });
@@ -21,6 +22,14 @@ class ProjectTask {
   /// shows only these, so it never reports a change the state ignored.
   final Set<String> appliedAssignmentIds;
   final List<NostrEvent> comments;
+
+  /// Status events that carry a note, from any signer. The note is shown
+  /// even when the signer cannot change the status.
+  final List<NostrEvent> statusNotes;
+
+  /// Comments and status notes, oldest first.
+  List<NostrEvent> get activity =>
+      [...comments, ...statusNotes]..sort(compareEvents);
 
   /// Community owners (lowercase hex) who may manage every task.
   final Set<String> communityOwners;
@@ -82,6 +91,19 @@ class ProjectTask {
     };
     final comments = events
         .where((e) => e.kind == 1 || e.kind == 1111)
+        .toList();
+    // Same target rule as [statuses], so an action label is never shown for
+    // a status event this task ignored.
+    final statusNotes = events
+        .where(
+          (e) =>
+              e.kind >= 1630 &&
+              e.kind <= 1633 &&
+              e.content.trim().isNotEmpty &&
+              e.tags.any(
+                (tag) => tag.length > 1 && tag[0] == 'e' && tag[1] == root.id,
+              ),
+        )
         .toList();
     final self = <NostrEvent>[];
     final authority = <NostrEvent>[];
@@ -151,6 +173,7 @@ class ProjectTask {
       appliedAssignmentIds: Set.unmodifiable(applied),
       communityOwners: communityOwners,
       comments: List.unmodifiable(comments),
+      statusNotes: List.unmodifiable(statusNotes),
     );
   }
 

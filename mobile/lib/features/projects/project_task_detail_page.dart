@@ -82,7 +82,7 @@ class ProjectTaskDetailPage extends HookConsumerWidget {
     // Load names for them and for everyone shown in the activity.
     final keys = <String>{
       ...candidates,
-      ...?task?.comments.map((c) => c.pubkey.toLowerCase()),
+      ...?task?.activity.map((c) => c.pubkey.toLowerCase()),
       ?task?.root.pubkey.toLowerCase(),
     };
     useEffect(() {
@@ -524,13 +524,24 @@ class _Activity extends StatelessWidget {
               ),
             ),
           ),
-          if (task.comments.isEmpty)
+          if (task.activity.isEmpty)
             Padding(
               padding: const EdgeInsets.only(left: Grid.half),
               child: Text('No activity yet.', style: muted),
             ),
-          for (final comment in task.comments)
-            if (_isAssignmentOperation(comment))
+          for (final comment in task.activity)
+            if (comment.kind >= 1630 && comment.kind <= 1633)
+              _CommentEntry(
+                pubkey: comment.pubkey,
+                author: label(comment.pubkey),
+                time: relativeTime(comment.createdAt),
+                content: comment.content,
+                // Only a signer who can manage the task changes its status.
+                action: task.canManage(comment.pubkey)
+                    ? _statusAction(comment.kind)
+                    : null,
+              )
+            else if (_isAssignmentOperation(comment))
               if (_appliedAssignmentChange(task, comment) case final change?)
                 _AssignmentLine(
                   icon: change.assign
@@ -558,6 +569,14 @@ List<String> _labels(NostrEvent event) => [
   for (final tag in event.tags)
     if (tag.length > 1 && tag[0] == 't') tag[1],
 ];
+
+/// What a trusted status event did, for its Activity entry.
+String _statusAction(int kind) => switch (kind) {
+  1631 => 'marked Done',
+  1632 => 'closed',
+  1633 => 'moved to Triage',
+  _ => 'set to Open',
+};
 
 /// Whether [event] is tagged as an assignment change, valid or not.
 bool _isAssignmentOperation(NostrEvent event) {
@@ -637,12 +656,16 @@ class _CommentEntry extends StatelessWidget {
     required this.author,
     required this.time,
     required this.content,
+    this.action,
   });
 
   final String pubkey;
   final String author;
   final String time;
   final String content;
+
+  /// A status change shown beside the author, such as "marked Done".
+  final String? action;
 
   @override
   Widget build(BuildContext context) => Padding(
@@ -657,21 +680,21 @@ class _CommentEntry extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Row(
+                // Wraps so a status action fits narrow screens and large text.
+                Wrap(
+                  spacing: Grid.half,
+                  crossAxisAlignment: WrapCrossAlignment.center,
                   children: [
-                    Flexible(
-                      child: Text(
-                        author,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: context.textTheme.labelLarge?.copyWith(
-                          fontWeight: FontWeight.w600,
-                        ),
+                    Text(
+                      author,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: context.textTheme.labelLarge?.copyWith(
+                        fontWeight: FontWeight.w600,
                       ),
                     ),
-                    const SizedBox(width: Grid.half),
                     Text(
-                      time,
+                      action == null ? time : '$action · $time',
                       style: context.textTheme.labelSmall?.copyWith(
                         color: context.colors.onSurfaceVariant,
                       ),

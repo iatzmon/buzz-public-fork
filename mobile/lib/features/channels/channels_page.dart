@@ -33,6 +33,7 @@ import '../profile/profile_avatar.dart';
 import '../profile/profile_provider.dart';
 import '../profile/presence_cache_provider.dart';
 import '../../shared/profile/user_cache_provider.dart';
+import '../notes/notes_page.dart';
 import '../pairing/pairing_page.dart';
 import '../projects/project_page.dart';
 import '../pairing/pairing_provider.dart';
@@ -348,6 +349,14 @@ class ChannelsPage extends HookConsumerWidget {
           onTap: openCommunitySwitcher,
         ),
         actions: [
+          IconButton(
+            key: const Key('open-notes-page'),
+            tooltip: 'Notes',
+            icon: const Icon(LucideIcons.notebookText),
+            onPressed: () => Navigator.of(
+              context,
+            ).push(MaterialPageRoute<void>(builder: (_) => const NotesPage())),
+          ),
           IconButton(
             key: const Key('open-sessions-page'),
             tooltip: 'Agent sessions',

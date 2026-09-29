@@ -130,13 +130,12 @@ packages:
     source: hosted
     version: "0.2.2"
   bip340:
-    dependency: transitive
+    dependency: "direct dev"
     description:
-      name: bip340
-      sha256: "4c2df9fa2409d26f1d9334b2801015ebe4dc3978191f186743e60e89a90230c4"
-      url: "https://pub.dev"
-    source: hosted
-    version: "0.3.1"
+      path: "packages/bip340"
+      relative: true
+    source: path
+    version: "0.3.1+buzz.1"
   boolean_selector:
     dependency: transitive
     description:

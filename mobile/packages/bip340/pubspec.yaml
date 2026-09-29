@@ -1,0 +1,13 @@
+name: bip340
+description: >-
+  bip340 0.3.1 (github.com/fiatjaf/dart-bip340) with a fast browser backend.
+  The mobile app overrides the hosted package with this copy. See README.md.
+publish_to: none
+version: 0.3.1+buzz.1
+
+environment:
+  sdk: '>=3.3.0 <4.0.0'
+
+dependencies:
+  crypto: ^3.0.6
+  pointycastle: ^4.0.0
